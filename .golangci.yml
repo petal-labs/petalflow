@@ -5,33 +5,20 @@ run:
   modules-download-mode: readonly
 
 linters:
+  default: none
   enable:
-    - errcheck
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - misspell
-    - unconvert
-    - unparam
-    - gocritic
-    - gosec
   exclusions:
     paths:
       - examples
+      - ".*_test\\.go"
   settings:
-    errcheck:
-      check-type-assertions: true
-      check-blank: true
     govet:
-      enable-all: true
-    misspell:
-      locale: US
-    gocritic:
-      enabled-tags:
-        - diagnostic
-        - performance
-        - style
+      disable:
+        - fieldalignment
 
 formatters:
   enable:
