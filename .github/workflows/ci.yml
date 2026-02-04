@@ -26,7 +26,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.0.2
 
   test:
     name: Test
@@ -85,4 +85,4 @@ jobs:
       - name: Run gosec
         uses: securego/gosec@v2.22.11
         with:
-          args: -exclude-dir=examples ./...
+          args: -exclude-dir=examples -exclude-dir=irisadapter ./...
