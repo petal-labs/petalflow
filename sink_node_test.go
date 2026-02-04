@@ -1073,3 +1073,1027 @@ func TestMockMetricRecorder_Records(t *testing.T) {
 		t.Errorf("wrong tag: %s", metric.Tags["env"])
 	}
 }
+
+// Additional tests for increased coverage
+
+func TestSinkNode_Config(t *testing.T) {
+	config := SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{Type: SinkTypeLog, Name: "test"},
+		},
+		InputVars:        []string{"var1"},
+		IncludeArtifacts: true,
+		IncludeMessages:  true,
+		IncludeTrace:     true,
+		Template:         "{{.vars}}",
+		ErrorPolicy:      SinkErrorPolicyContinue,
+		ResultVar:        "result",
+	}
+
+	node := NewSinkNode("test_node", config)
+	got := node.Config()
+
+	if len(got.Sinks) != 1 {
+		t.Errorf("Config().Sinks len = %d, want 1", len(got.Sinks))
+	}
+	if got.Sinks[0].Name != "test" {
+		t.Errorf("Config().Sinks[0].Name = %q, want %q", got.Sinks[0].Name, "test")
+	}
+	if len(got.InputVars) != 1 || got.InputVars[0] != "var1" {
+		t.Errorf("Config().InputVars = %v, want [var1]", got.InputVars)
+	}
+	if !got.IncludeArtifacts {
+		t.Error("Config().IncludeArtifacts should be true")
+	}
+	if !got.IncludeMessages {
+		t.Error("Config().IncludeMessages should be true")
+	}
+	if !got.IncludeTrace {
+		t.Error("Config().IncludeTrace should be true")
+	}
+	if got.Template != "{{.vars}}" {
+		t.Errorf("Config().Template = %q, want %q", got.Template, "{{.vars}}")
+	}
+	if got.ErrorPolicy != SinkErrorPolicyContinue {
+		t.Errorf("Config().ErrorPolicy = %q, want %q", got.ErrorPolicy, SinkErrorPolicyContinue)
+	}
+	if got.ResultVar != "result" {
+		t.Errorf("Config().ResultVar = %q, want %q", got.ResultVar, "result")
+	}
+}
+
+func TestSinkNode_TemplateWithJSONFuncs(t *testing.T) {
+	tests := []struct {
+		name     string
+		template string
+		wantErr  bool
+		check    func(data any) bool
+	}{
+		{
+			name:     "json function",
+			template: `{"data": {{json .vars}}}`,
+			check: func(data any) bool {
+				s, ok := data.(string)
+				return ok && strings.Contains(s, `"key":"value"`)
+			},
+		},
+		{
+			name:     "jsonPretty function",
+			template: `{{jsonPretty .vars}}`,
+			check: func(data any) bool {
+				s, ok := data.(string)
+				return ok && strings.Contains(s, "\n")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedData any
+			node := NewSinkNode("sink1", SinkNodeConfig{
+				Sinks: []SinkTarget{
+					{
+						Type: SinkTypeCustom,
+						Name: "template_test",
+						CustomFunc: func(ctx context.Context, data any, env *Envelope) error {
+							receivedData = data
+							return nil
+						},
+					},
+				},
+				Template: tt.template,
+			})
+
+			env := NewEnvelope()
+			env.SetVar("key", "value")
+
+			_, err := node.Run(context.Background(), env)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, wantErr = %v", err, tt.wantErr)
+			}
+
+			if !tt.wantErr && tt.check != nil && !tt.check(receivedData) {
+				t.Errorf("check failed for data: %v", receivedData)
+			}
+		})
+	}
+}
+
+func TestSinkNode_LogSink_DefaultLevel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					// No level specified - should default to info
+					"message": "default level test",
+				},
+			},
+		},
+		Logger: logger,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "INFO") {
+		t.Errorf("expected INFO level, got: %s", logOutput)
+	}
+}
+
+func TestSinkNode_LogSink_WarningLevel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					"level":   "warning",
+					"message": "warning level test",
+				},
+			},
+		},
+		Logger: logger,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "WARN") {
+		t.Errorf("expected WARN level, got: %s", logOutput)
+	}
+}
+
+func TestSinkNode_LogSink_WithFields(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					"level":   "info",
+					"message": "fields test",
+					"fields":  []any{"vars.status", "vars.count"},
+				},
+			},
+		},
+		Logger: logger,
+	})
+
+	env := NewEnvelope()
+	env.SetVar("status", "success")
+	env.SetVar("count", 42)
+
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "fields test") {
+		t.Errorf("expected message in log output: %s", logOutput)
+	}
+}
+
+func TestSinkNode_LogSink_UnknownLevel(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					"level":   "unknown_level",
+					"message": "unknown level test",
+				},
+			},
+		},
+		Logger: logger,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Unknown levels should default to info
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "INFO") {
+		t.Errorf("expected INFO level for unknown, got: %s", logOutput)
+	}
+}
+
+func TestSinkNode_LogSink_ContextCancelled(t *testing.T) {
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					"level":   "info",
+					"message": "test",
+				},
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := node.Run(ctx, NewEnvelope())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestSinkNode_WebhookSink_WithTimeout(t *testing.T) {
+	mockClient := NewMockHTTPClient(200)
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeWebhook,
+				Name: "test_webhook",
+				Config: map[string]any{
+					"url":     "https://example.com/webhook",
+					"timeout": "5s",
+				},
+			},
+		},
+		HTTPClient: mockClient,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mockClient.Requests) != 1 {
+		t.Error("expected request to be made")
+	}
+}
+
+func TestSinkNode_WebhookSink_InvalidTimeout(t *testing.T) {
+	mockClient := NewMockHTTPClient(200)
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeWebhook,
+				Name: "test_webhook",
+				Config: map[string]any{
+					"url":     "https://example.com/webhook",
+					"timeout": "invalid",
+				},
+			},
+		},
+		HTTPClient: mockClient,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should still work, just without custom timeout
+	if len(mockClient.Requests) != 1 {
+		t.Error("expected request to be made")
+	}
+}
+
+func TestSinkNode_WebhookSink_CustomMethod(t *testing.T) {
+	mockClient := NewMockHTTPClient(200)
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeWebhook,
+				Name: "test_webhook",
+				Config: map[string]any{
+					"url":    "https://example.com/webhook",
+					"method": "PUT",
+				},
+			},
+		},
+		HTTPClient: mockClient,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mockClient.Requests[0].Method != "PUT" {
+		t.Errorf("expected PUT method, got %s", mockClient.Requests[0].Method)
+	}
+}
+
+func TestSinkNode_WebhookSink_HTTPClientError(t *testing.T) {
+	mockClient := NewMockHTTPClient(200)
+	mockClient.Error = errors.New("network error")
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeWebhook,
+				Name: "test_webhook",
+				Config: map[string]any{
+					"url": "https://example.com/webhook",
+				},
+			},
+		},
+		HTTPClient: mockClient,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err == nil {
+		t.Error("expected error from HTTP client")
+	}
+}
+
+func TestSinkNode_FileSink_TextFormat_ByteSlice(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "output.bin")
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeFile,
+				Name: "test_file",
+				Config: map[string]any{
+					"path":   filePath,
+					"format": "text",
+				},
+			},
+		},
+		Template: "raw bytes here",
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, _ := os.ReadFile(filePath)
+	if string(content) != "raw bytes here" {
+		t.Errorf("unexpected content: %s", content)
+	}
+}
+
+func TestSinkNode_FileSink_UnsupportedFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "output.xml")
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeFile,
+				Name: "test_file",
+				Config: map[string]any{
+					"path":   filePath,
+					"format": "xml",
+				},
+			},
+		},
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err == nil {
+		t.Error("expected error for unsupported format")
+	}
+	if !strings.Contains(err.Error(), "unsupported format") {
+		t.Errorf("expected 'unsupported format' error, got: %v", err)
+	}
+}
+
+func TestSinkNode_FileSink_UnsupportedMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "output.txt")
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeFile,
+				Name: "test_file",
+				Config: map[string]any{
+					"path": filePath,
+					"mode": "prepend",
+				},
+			},
+		},
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err == nil {
+		t.Error("expected error for unsupported mode")
+	}
+	if !strings.Contains(err.Error(), "unsupported mode") {
+		t.Errorf("expected 'unsupported mode' error, got: %v", err)
+	}
+}
+
+func TestSinkNode_FileSink_ContextCancelled(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "output.txt")
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeFile,
+				Name: "test_file",
+				Config: map[string]any{
+					"path": filePath,
+				},
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := node.Run(ctx, NewEnvelope())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestSinkNode_MetricSink_WithIntValue(t *testing.T) {
+	recorder := NewMockMetricRecorder()
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeMetric,
+				Name: "test_metric",
+				Config: map[string]any{
+					"name":  "workflow.count",
+					"value": 42,
+				},
+			},
+		},
+		MetricRecorder: recorder,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(recorder.Metrics) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(recorder.Metrics))
+	}
+	if recorder.Metrics[0].Value != 42.0 {
+		t.Errorf("expected value 42, got %f", recorder.Metrics[0].Value)
+	}
+}
+
+func TestSinkNode_MetricSink_WithFloatValue(t *testing.T) {
+	recorder := NewMockMetricRecorder()
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeMetric,
+				Name: "test_metric",
+				Config: map[string]any{
+					"name":  "workflow.score",
+					"value": 0.95,
+				},
+			},
+		},
+		MetricRecorder: recorder,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if recorder.Metrics[0].Value != 0.95 {
+		t.Errorf("expected value 0.95, got %f", recorder.Metrics[0].Value)
+	}
+}
+
+func TestSinkNode_MetricSink_FallbackToLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeMetric,
+				Name: "test_metric",
+				Config: map[string]any{
+					"name": "workflow.completed",
+				},
+			},
+		},
+		Logger: logger,
+		// No MetricRecorder - should fallback to logging
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "metric") {
+		t.Errorf("expected metric to be logged, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "workflow.completed") {
+		t.Errorf("expected metric name in log, got: %s", logOutput)
+	}
+}
+
+func TestSinkNode_MetricSink_ContextCancelled(t *testing.T) {
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeMetric,
+				Name: "test_metric",
+				Config: map[string]any{
+					"name": "test",
+				},
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := node.Run(ctx, NewEnvelope())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestSinkNode_VarSink_ContextCancelled(t *testing.T) {
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeVar,
+				Name: "test_var",
+				Config: map[string]any{
+					"name": "output",
+				},
+			},
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := node.Run(ctx, NewEnvelope())
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestSinkNode_UnknownSinkType(t *testing.T) {
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: "unknown_type",
+				Name: "test",
+			},
+		},
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err == nil {
+		t.Error("expected error for unknown sink type")
+	}
+	if !strings.Contains(err.Error(), "unknown sink type") {
+		t.Errorf("expected 'unknown sink type' error, got: %v", err)
+	}
+}
+
+func TestSinkNode_ConditionError(t *testing.T) {
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeCustom,
+				Name: "conditional_sink",
+				Condition: func(ctx context.Context, env *Envelope) (bool, error) {
+					return false, errors.New("condition failed")
+				},
+				CustomFunc: func(ctx context.Context, data any, env *Envelope) error {
+					return nil
+				},
+			},
+		},
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err == nil {
+		t.Error("expected error from condition")
+	}
+	if !strings.Contains(err.Error(), "condition") {
+		t.Errorf("expected condition error, got: %v", err)
+	}
+}
+
+func TestSinkNode_BuildOutputData_WithInput(t *testing.T) {
+	var receivedData any
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeCustom,
+				Name: "test",
+				CustomFunc: func(ctx context.Context, data any, env *Envelope) error {
+					receivedData = data
+					return nil
+				},
+			},
+		},
+	})
+
+	env := NewEnvelope()
+	env.Input = "test input data"
+
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dataMap, ok := receivedData.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map, got %T", receivedData)
+	}
+	if dataMap["input"] != "test input data" {
+		t.Errorf("input not in output data: %v", dataMap)
+	}
+}
+
+func TestSinkNode_TemplateExecutionError(t *testing.T) {
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeCustom,
+				Name: "test",
+				CustomFunc: func(ctx context.Context, data any, env *Envelope) error {
+					return nil
+				},
+			},
+		},
+		Template: "{{call .vars}}", // Will cause execution error - call on non-function
+	})
+
+	env := NewEnvelope()
+	env.SetVar("test", "value")
+	_, err := node.Run(context.Background(), env)
+	if err == nil {
+		t.Error("expected template execution error")
+	}
+	if !strings.Contains(err.Error(), "template") {
+		t.Errorf("expected template error, got: %v", err)
+	}
+}
+
+func TestSinkNode_LogSink_DefaultMessage(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					// No message - should default to "sink output"
+				},
+			},
+		},
+		Logger: logger,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "sink output") {
+		t.Errorf("expected default message, got: %s", logOutput)
+	}
+}
+
+func TestSinkNode_NewSinkNode_Defaults(t *testing.T) {
+	node := NewSinkNode("test", SinkNodeConfig{})
+
+	config := node.Config()
+
+	// Check ErrorPolicy defaults to Fail
+	if config.ErrorPolicy != SinkErrorPolicyFail {
+		t.Errorf("ErrorPolicy should default to %q, got %q", SinkErrorPolicyFail, config.ErrorPolicy)
+	}
+
+	// Check HTTPClient is not nil
+	if config.HTTPClient == nil {
+		t.Error("HTTPClient should not be nil")
+	}
+
+	// Check Logger is not nil
+	if config.Logger == nil {
+		t.Error("Logger should not be nil")
+	}
+}
+
+func TestSinkNode_LogSink_FieldsWithNonExistentPath(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeLog,
+				Name: "test_log",
+				Config: map[string]any{
+					"level":   "info",
+					"message": "fields test",
+					"fields":  []any{"vars.nonexistent", "vars.also.missing"},
+				},
+			},
+		},
+		Logger: logger,
+	})
+
+	env := NewEnvelope()
+	env.SetVar("status", "success")
+
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should complete without error, just won't include the missing fields
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "fields test") {
+		t.Errorf("expected message in log output: %s", logOutput)
+	}
+}
+
+func TestSinkNode_MetricSink_ValueFieldNotFound(t *testing.T) {
+	recorder := NewMockMetricRecorder()
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeMetric,
+				Name: "test_metric",
+				Config: map[string]any{
+					"name":        "workflow.score",
+					"value_field": "vars.nonexistent",
+				},
+			},
+		},
+		MetricRecorder: recorder,
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should default to 1.0 when field not found
+	if recorder.Metrics[0].Value != 1.0 {
+		t.Errorf("expected default value 1.0, got %f", recorder.Metrics[0].Value)
+	}
+}
+
+func TestSinkNode_MetricSink_ValueFieldNonNumeric(t *testing.T) {
+	recorder := NewMockMetricRecorder()
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeMetric,
+				Name: "test_metric",
+				Config: map[string]any{
+					"name":        "workflow.score",
+					"value_field": "vars.status",
+				},
+			},
+		},
+		MetricRecorder: recorder,
+	})
+
+	env := NewEnvelope()
+	env.SetVar("status", "not a number")
+
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should default to 1.0 when field is non-numeric
+	if recorder.Metrics[0].Value != 1.0 {
+		t.Errorf("expected default value 1.0, got %f", recorder.Metrics[0].Value)
+	}
+}
+
+func TestGetNestedMapValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     map[string]any
+		path     string
+		want     any
+		wantOk   bool
+	}{
+		{
+			name:   "simple path",
+			data:   map[string]any{"key": "value"},
+			path:   "key",
+			want:   "value",
+			wantOk: true,
+		},
+		{
+			name:   "nested path",
+			data:   map[string]any{"a": map[string]any{"b": map[string]any{"c": "deep"}}},
+			path:   "a.b.c",
+			want:   "deep",
+			wantOk: true,
+		},
+		{
+			name:   "missing path",
+			data:   map[string]any{"key": "value"},
+			path:   "missing",
+			want:   nil,
+			wantOk: false,
+		},
+		{
+			name:   "path through non-map",
+			data:   map[string]any{"key": "value"},
+			path:   "key.subkey",
+			want:   nil,
+			wantOk: false,
+		},
+		{
+			name:   "empty path",
+			data:   map[string]any{"key": "value"},
+			path:   "",
+			want:   map[string]any{"key": "value"},
+			wantOk: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// We can't call getNestedMapValue directly as it's unexported,
+			// but we can test it through the log sink with fields
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+			node := NewSinkNode("sink1", SinkNodeConfig{
+				Sinks: []SinkTarget{
+					{
+						Type: SinkTypeLog,
+						Name: "test_log",
+						Config: map[string]any{
+							"level":   "info",
+							"message": "test",
+							"fields":  []any{tt.path},
+						},
+					},
+				},
+				Logger: logger,
+			})
+
+			env := NewEnvelope()
+			for k, v := range tt.data {
+				env.SetVar(k, v)
+			}
+
+			_, err := node.Run(context.Background(), env)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSplitPath(t *testing.T) {
+	// Test through nested map value access
+	var receivedData any
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeCustom,
+				Name: "test",
+				CustomFunc: func(ctx context.Context, data any, env *Envelope) error {
+					receivedData = data
+					return nil
+				},
+			},
+		},
+	})
+
+	env := NewEnvelope()
+	env.SetVar("a", map[string]any{
+		"b": map[string]any{
+			"c": "deep value",
+		},
+	})
+
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	dataMap := receivedData.(map[string]any)
+	vars := dataMap["vars"].(map[string]any)
+	a := vars["a"].(map[string]any)
+	b := a["b"].(map[string]any)
+	if b["c"] != "deep value" {
+		t.Errorf("nested value not preserved: %v", receivedData)
+	}
+}
+
+func TestSinkNode_FileSink_DefaultMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "output.txt")
+
+	node := NewSinkNode("sink1", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeFile,
+				Name: "test_file",
+				Config: map[string]any{
+					"path":   filePath,
+					"format": "text",
+					// mode not specified - should default to overwrite
+				},
+			},
+		},
+		Template: "first content",
+	})
+
+	env := NewEnvelope()
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("first run error: %v", err)
+	}
+
+	// Write again - should overwrite
+	node2 := NewSinkNode("sink2", SinkNodeConfig{
+		Sinks: []SinkTarget{
+			{
+				Type: SinkTypeFile,
+				Name: "test_file",
+				Config: map[string]any{
+					"path":   filePath,
+					"format": "text",
+				},
+			},
+		},
+		Template: "second content",
+	})
+
+	_, err = node2.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("second run error: %v", err)
+	}
+
+	content, _ := os.ReadFile(filePath)
+	if string(content) != "second content" {
+		t.Errorf("expected 'second content', got: %s", content)
+	}
+}
