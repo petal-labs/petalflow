@@ -1,17 +1,8 @@
-version: "2"
-
 run:
   timeout: 5m
   modules-download-mode: readonly
-
-formatters:
-  enable:
-    - gofmt
-    - goimports
-  settings:
-    goimports:
-      local-prefixes:
-        - github.com/petal-labs/petalflow
+  skip-dirs:
+    - examples
 
 linters:
   enable:
@@ -20,24 +11,30 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+    - gofmt
+    - goimports
     - misspell
     - unconvert
     - unparam
     - gocritic
     - gosec
-  settings:
-    errcheck:
-      check-type-assertions: true
-      check-blank: true
-    govet:
-      enable-all: true
-    misspell:
-      locale: US
-    gocritic:
-      enabled-tags:
-        - diagnostic
-        - performance
-        - style
+    - gosimple
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  govet:
+    enable-all: true
+  goimports:
+    local-prefixes: github.com/petal-labs/petalflow
+  misspell:
+    locale: US
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
 
 issues:
   exclude-use-default: false
