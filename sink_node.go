@@ -448,7 +448,7 @@ func (n *SinkNode) executeFileSink(ctx context.Context, sink SinkTarget, data an
 		return fmt.Errorf("unsupported mode: %s", mode)
 	}
 
-	f, err := os.OpenFile(path, flag, 0600) //nolint:gosec // G304: path is validated by caller; G302: 0600 for secure file permissions
+	f, err := os.OpenFile(path, flag, 0600) // #nosec G304 -- path is validated by caller
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

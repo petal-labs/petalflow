@@ -16,6 +16,9 @@ linters:
     - unparam
     - gocritic
     - gosec
+  exclusions:
+    paths:
+      - examples
   settings:
     errcheck:
       check-type-assertions: true
@@ -40,9 +43,5 @@ formatters:
         - github.com/petal-labs/petalflow
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclusions:
-    paths:
-      - examples
