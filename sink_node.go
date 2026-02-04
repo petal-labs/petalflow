@@ -433,7 +433,7 @@ func (n *SinkNode) executeFileSink(ctx context.Context, sink SinkTarget, data an
 
 	// Ensure directory exists
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0750); err != nil { //nolint:gosec // G301: 0750 is appropriate for workflow output directories
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
@@ -448,7 +448,7 @@ func (n *SinkNode) executeFileSink(ctx context.Context, sink SinkTarget, data an
 		return fmt.Errorf("unsupported mode: %s", mode)
 	}
 
-	f, err := os.OpenFile(path, flag, 0644)
+	f, err := os.OpenFile(path, flag, 0600) //nolint:gosec // G304: path is validated by caller; G302: 0600 for secure file permissions
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
