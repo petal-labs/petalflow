@@ -3,7 +3,7 @@ module github.com/petal-labs/petalflow/irisadapter
 go 1.24.0
 
 require (
-	github.com/petal-labs/iris v0.9.0
+	github.com/petal-labs/iris v0.10.0
 	github.com/petal-labs/petalflow v0.1.0
 )
 
