@@ -1,5 +1,7 @@
 # PetalFlow
 
+[![codecov](https://codecov.io/gh/petal-labs/petalflow/graph/badge.svg?token=O26NV7IVRR)](https://codecov.io/gh/petal-labs/petalflow)
+
 A lightweight Go workflow graph runtime for building AI agent workflows. Chain LLM calls, tools, routers, and data transformations into directed graphs.
 
 ## Installation
