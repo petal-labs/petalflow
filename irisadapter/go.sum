@@ -1,2 +1,4 @@
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/petal-labs/iris v0.11.0 h1:YWm2etDvR7UUqvF7dmGnP0+UN0vBxbotczWvHhahjNM=
+github.com/petal-labs/iris v0.11.0/go.mod h1:kK5XEFDRd/zz9m23Hh1G5knFdx8ScXNEKj2ri6QVY6I=
