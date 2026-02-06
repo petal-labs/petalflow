@@ -49,10 +49,37 @@ func (a *ProviderAdapter) toCoreChatRequest(req petalflow.LLMRequest) *core.Chat
 
 	// Add conversation messages
 	for _, m := range req.Messages {
-		messages = append(messages, core.Message{
+		msg := core.Message{
 			Role:    toRole(m.Role),
 			Content: m.Content,
-		})
+		}
+
+		// Handle assistant messages with tool calls
+		if len(m.ToolCalls) > 0 {
+			msg.ToolCalls = make([]core.ToolCall, len(m.ToolCalls))
+			for i, tc := range m.ToolCalls {
+				args, _ := json.Marshal(tc.Arguments)
+				msg.ToolCalls[i] = core.ToolCall{
+					ID:        tc.ID,
+					Name:      tc.Name,
+					Arguments: args,
+				}
+			}
+		}
+
+		// Handle tool result messages
+		if len(m.ToolResults) > 0 {
+			msg.ToolResults = make([]core.ToolResult, len(m.ToolResults))
+			for i, tr := range m.ToolResults {
+				msg.ToolResults[i] = core.ToolResult{
+					CallID:  tr.CallID,
+					Content: tr.Content,
+					IsError: tr.IsError,
+				}
+			}
+		}
+
+		messages = append(messages, msg)
 	}
 
 	// Add InputText as user message if provided (simple prompt mode)
@@ -64,8 +91,9 @@ func (a *ProviderAdapter) toCoreChatRequest(req petalflow.LLMRequest) *core.Chat
 	}
 
 	chatReq := &core.ChatRequest{
-		Model:    core.ModelID(req.Model),
-		Messages: messages,
+		Model:        core.ModelID(req.Model),
+		Messages:     messages,
+		Instructions: req.Instructions,
 	}
 
 	// Set optional parameters
@@ -86,6 +114,7 @@ func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req peta
 		Text:     resp.Output,
 		Provider: a.provider.ID(),
 		Model:    string(resp.Model),
+		Status:   resp.Status,
 		Usage: petalflow.LLMTokenUsage{
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
@@ -97,6 +126,14 @@ func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req peta
 	// Store response ID if available
 	if resp.ID != "" {
 		result.Meta["response_id"] = resp.ID
+	}
+
+	// Map reasoning output if available
+	if resp.Reasoning != nil {
+		result.Reasoning = &petalflow.LLMReasoningOutput{
+			ID:      resp.Reasoning.ID,
+			Summary: resp.Reasoning.Summary,
+		}
 	}
 
 	// Convert tool calls
@@ -126,10 +163,14 @@ func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req peta
 	// Build messages including the assistant response
 	result.Messages = make([]petalflow.LLMMessage, 0, len(req.Messages)+1)
 	result.Messages = append(result.Messages, req.Messages...)
-	result.Messages = append(result.Messages, petalflow.LLMMessage{
-		Role:    "assistant",
-		Content: resp.Output,
-	})
+
+	// Include tool calls in the assistant message
+	assistantMsg := petalflow.LLMMessage{
+		Role:      "assistant",
+		Content:   resp.Output,
+		ToolCalls: result.ToolCalls,
+	}
+	result.Messages = append(result.Messages, assistantMsg)
 
 	return result
 }
@@ -143,6 +184,8 @@ func toRole(role string) core.Role {
 		return core.RoleUser
 	case "assistant":
 		return core.RoleAssistant
+	case "tool":
+		return core.RoleTool
 	default:
 		return core.RoleUser
 	}
