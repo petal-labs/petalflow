@@ -316,3 +316,211 @@ func (c *capturingProvider) Chat(ctx context.Context, req *core.ChatRequest) (*c
 	}
 	return c.mockProvider.Chat(ctx, req)
 }
+
+func TestToRole_Tool(t *testing.T) {
+	result := toRole("tool")
+	if result != core.RoleTool {
+		t.Errorf("toRole(\"tool\") = %v, expected %v", result, core.RoleTool)
+	}
+}
+
+func TestProviderAdapter_Complete_WithToolResults(t *testing.T) {
+	var capturedReq *core.ChatRequest
+
+	adapter := &ProviderAdapter{
+		provider: &capturingProvider{
+			mockProvider: &mockProvider{
+				id: "mock",
+				chatResponse: &core.ChatResponse{
+					Output: "The weather in NYC is sunny and 72°F.",
+				},
+			},
+			capture: func(req *core.ChatRequest) { capturedReq = req },
+		},
+	}
+
+	_, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model: "mock-model",
+		Messages: []petalflow.LLMMessage{
+			{Role: "user", Content: "What's the weather in NYC?"},
+			{
+				Role: "assistant",
+				ToolCalls: []petalflow.LLMToolCall{
+					{ID: "call-1", Name: "get_weather", Arguments: map[string]any{"city": "NYC"}},
+				},
+			},
+			{
+				Role: "tool",
+				ToolResults: []petalflow.LLMToolResult{
+					{CallID: "call-1", Content: map[string]any{"temp": 72, "condition": "sunny"}, IsError: false},
+				},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify tool results were passed through
+	if capturedReq == nil {
+		t.Fatal("expected request to be captured")
+	}
+	if len(capturedReq.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(capturedReq.Messages))
+	}
+
+	// Check the tool message has tool results
+	toolMsg := capturedReq.Messages[2]
+	if toolMsg.Role != core.RoleTool {
+		t.Errorf("expected tool role, got %v", toolMsg.Role)
+	}
+	if len(toolMsg.ToolResults) != 1 {
+		t.Fatalf("expected 1 tool result, got %d", len(toolMsg.ToolResults))
+	}
+	if toolMsg.ToolResults[0].CallID != "call-1" {
+		t.Errorf("expected CallID 'call-1', got %q", toolMsg.ToolResults[0].CallID)
+	}
+
+	// Check the assistant message has tool calls
+	assistantMsg := capturedReq.Messages[1]
+	if len(assistantMsg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(assistantMsg.ToolCalls))
+	}
+	if assistantMsg.ToolCalls[0].ID != "call-1" {
+		t.Errorf("expected tool call ID 'call-1', got %q", assistantMsg.ToolCalls[0].ID)
+	}
+}
+
+func TestProviderAdapter_Complete_WithReasoning(t *testing.T) {
+	mock := &mockProvider{
+		id: "mock",
+		chatResponse: &core.ChatResponse{
+			Output: "42",
+			Reasoning: &core.ReasoningOutput{
+				ID:      "reason-1",
+				Summary: []string{"Analyzed the question", "Applied logic", "Determined answer"},
+			},
+		},
+	}
+
+	adapter := NewProviderAdapter(mock)
+
+	resp, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model:     "mock-model",
+		InputText: "What is the meaning of life?",
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Reasoning == nil {
+		t.Fatal("expected reasoning to be populated")
+	}
+	if resp.Reasoning.ID != "reason-1" {
+		t.Errorf("expected reasoning ID 'reason-1', got %q", resp.Reasoning.ID)
+	}
+	if len(resp.Reasoning.Summary) != 3 {
+		t.Errorf("expected 3 summary items, got %d", len(resp.Reasoning.Summary))
+	}
+	if resp.Reasoning.Summary[0] != "Analyzed the question" {
+		t.Errorf("unexpected first summary item: %q", resp.Reasoning.Summary[0])
+	}
+}
+
+func TestProviderAdapter_Complete_WithInstructions(t *testing.T) {
+	var capturedReq *core.ChatRequest
+
+	adapter := &ProviderAdapter{
+		provider: &capturingProvider{
+			mockProvider: &mockProvider{
+				id: "mock",
+				chatResponse: &core.ChatResponse{
+					Output: "Hello!",
+				},
+			},
+			capture: func(req *core.ChatRequest) { capturedReq = req },
+		},
+	}
+
+	_, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model:        "mock-model",
+		Instructions: "Be concise and helpful. Always respond in JSON format.",
+		InputText:    "Hi",
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedReq == nil {
+		t.Fatal("expected request to be captured")
+	}
+	if capturedReq.Instructions != "Be concise and helpful. Always respond in JSON format." {
+		t.Errorf("expected instructions to be passed through, got %q", capturedReq.Instructions)
+	}
+}
+
+func TestProviderAdapter_Complete_WithStatus(t *testing.T) {
+	mock := &mockProvider{
+		id: "mock",
+		chatResponse: &core.ChatResponse{
+			Output: "Done",
+			Status: "completed",
+		},
+	}
+
+	adapter := NewProviderAdapter(mock)
+
+	resp, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model:     "mock-model",
+		InputText: "Do something",
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", resp.Status)
+	}
+}
+
+func TestProviderAdapter_Complete_ToolCallsInMessage(t *testing.T) {
+	args := map[string]string{"query": "weather"}
+	argsJSON, _ := json.Marshal(args)
+
+	mock := &mockProvider{
+		id: "mock",
+		chatResponse: &core.ChatResponse{
+			Output: "",
+			ToolCalls: []core.ToolCall{
+				{ID: "call-1", Name: "get_weather", Arguments: argsJSON},
+			},
+		},
+	}
+
+	adapter := NewProviderAdapter(mock)
+
+	resp, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model:     "mock-model",
+		InputText: "What's the weather?",
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify that the assistant message contains the tool calls
+	if len(resp.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(resp.Messages))
+	}
+	assistantMsg := resp.Messages[0]
+	if assistantMsg.Role != "assistant" {
+		t.Errorf("expected assistant role, got %q", assistantMsg.Role)
+	}
+	if len(assistantMsg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call in message, got %d", len(assistantMsg.ToolCalls))
+	}
+	if assistantMsg.ToolCalls[0].ID != "call-1" {
+		t.Errorf("expected tool call ID 'call-1', got %q", assistantMsg.ToolCalls[0].ID)
+	}
+}

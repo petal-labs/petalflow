@@ -77,6 +77,12 @@ type (
 	// LLMToolCall represents a tool invocation requested by the model.
 	LLMToolCall = core.LLMToolCall
 
+	// LLMToolResult represents the result of executing a tool.
+	LLMToolResult = core.LLMToolResult
+
+	// LLMReasoningOutput contains reasoning information from the model.
+	LLMReasoningOutput = core.LLMReasoningOutput
+
 	// PetalTool is the tool interface for PetalFlow.
 	PetalTool = core.PetalTool
 

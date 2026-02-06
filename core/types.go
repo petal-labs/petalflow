@@ -160,34 +160,39 @@ type LLMClient interface {
 // LLMRequest is the request structure for LLM completion.
 // It is transport-agnostic and works across different providers.
 type LLMRequest struct {
-	Model       string         // model identifier (e.g., "gpt-4", "claude-3-opus")
-	System      string         // system prompt
-	Messages    []LLMMessage   // conversation messages
-	InputText   string         // optional: simple prompt mode (converted to user message)
-	JSONSchema  map[string]any // optional: structured output constraints
-	Temperature *float64       // optional: sampling temperature
-	MaxTokens   *int           // optional: maximum output tokens
-	Meta        map[string]any // trace/cost controls
+	Model        string         // model identifier (e.g., "gpt-4", "claude-3-opus")
+	System       string         // system prompt (Chat Completions API style)
+	Instructions string         // system instructions (Responses API style)
+	Messages     []LLMMessage   // conversation messages
+	InputText    string         // optional: simple prompt mode (converted to user message)
+	JSONSchema   map[string]any // optional: structured output constraints
+	Temperature  *float64       // optional: sampling temperature
+	MaxTokens    *int           // optional: maximum output tokens
+	Meta         map[string]any // trace/cost controls
 }
 
 // LLMMessage is a chat message in PetalFlow format.
 type LLMMessage struct {
-	Role    string         // "system", "user", "assistant", "tool"
-	Content string         // message content
-	Name    string         // optional: tool name, agent role, etc.
-	Meta    map[string]any // optional metadata
+	Role        string          // "system", "user", "assistant", "tool"
+	Content     string          // message content
+	Name        string          // optional: tool name, agent role, etc.
+	ToolCalls   []LLMToolCall   // for assistant messages with pending tool calls
+	ToolResults []LLMToolResult // for tool result messages (Role="tool")
+	Meta        map[string]any  // optional metadata
 }
 
 // LLMResponse captures the output from an LLM call.
 type LLMResponse struct {
-	Text      string         // raw text output
-	JSON      map[string]any // parsed JSON if structured output was requested
-	Messages  []LLMMessage   // conversation messages including response
-	Usage     LLMTokenUsage  // token consumption
-	Provider  string         // provider ID that handled the request
-	Model     string         // model that generated the response
-	ToolCalls []LLMToolCall  // tool calls requested by the model
-	Meta      map[string]any // additional response metadata
+	Text      string              // raw text output
+	JSON      map[string]any      // parsed JSON if structured output was requested
+	Messages  []LLMMessage        // conversation messages including response
+	Usage     LLMTokenUsage       // token consumption
+	Provider  string              // provider ID that handled the request
+	Model     string              // model that generated the response
+	ToolCalls []LLMToolCall       // tool calls requested by the model
+	Reasoning *LLMReasoningOutput // reasoning output from the model (optional)
+	Status    string              // response status (optional)
+	Meta      map[string]any      // additional response metadata
 }
 
 // LLMTokenUsage tracks token consumption for LLM calls.
@@ -203,6 +208,21 @@ type LLMToolCall struct {
 	ID        string
 	Name      string
 	Arguments map[string]any
+}
+
+// LLMToolResult represents the result of executing a tool.
+// This is used to send tool execution results back to the model for multi-turn tool use.
+type LLMToolResult struct {
+	CallID  string // Must match LLMToolCall.ID from the response
+	Content any    // Result data (will be JSON marshaled by the adapter)
+	IsError bool   // True if this represents an error result
+}
+
+// LLMReasoningOutput contains reasoning information from the model.
+// This is populated for models that support reasoning features (e.g., o1, o3).
+type LLMReasoningOutput struct {
+	ID      string   // Reasoning output identifier
+	Summary []string // Reasoning summary points
 }
 
 // =============================================================================
