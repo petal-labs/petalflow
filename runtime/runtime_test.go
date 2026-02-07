@@ -1209,6 +1209,45 @@ func TestRuntime_Run_GateNode_Redirect(t *testing.T) {
 	}
 }
 
+func TestRuntime_Run_EventsHaveMonotonicSeq(t *testing.T) {
+	g := graph.NewGraph("seq-test")
+	g.AddNode(core.NewNoopNode("a"))
+	g.AddNode(core.NewNoopNode("b"))
+	g.AddEdge("a", "b")
+	g.SetEntry("a")
+
+	rt := NewRuntime()
+	var events []Event
+
+	opts := DefaultRunOptions()
+	opts.EventHandler = func(e Event) {
+		events = append(events, e)
+	}
+
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Verify all events have Seq > 0 and are strictly increasing
+	if len(events) == 0 {
+		t.Fatal("expected events")
+	}
+	for i, e := range events {
+		if e.Seq == 0 {
+			t.Errorf("events[%d].Seq = 0, want > 0", i)
+		}
+		if i > 0 && e.Seq <= events[i-1].Seq {
+			t.Errorf("events[%d].Seq=%d not greater than events[%d].Seq=%d",
+				i, e.Seq, i-1, events[i-1].Seq)
+		}
+	}
+	// First event should be Seq=1
+	if events[0].Seq != 1 {
+		t.Errorf("first event Seq = %d, want 1", events[0].Seq)
+	}
+}
+
 func TestRuntime_Run_MapNode(t *testing.T) {
 	// Test MapNode within a graph
 	g := graph.NewGraph("map-test")

@@ -108,7 +108,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	env.Trace.Started = opts.Now()
 
 	// Create event emitter
+	seq := newSeqGen()
 	emit := func(e Event) {
+		e.Seq = seq.Next()
 		if opts.EventHandler != nil {
 			opts.EventHandler(e)
 		}
