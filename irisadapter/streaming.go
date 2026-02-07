@@ -50,6 +50,15 @@ func (a *ProviderAdapter) CompleteStream(ctx context.Context, req petalflow.LLMR
 			index++
 		}
 
+		// Check if context was canceled while reading chunks.
+		if ctx.Err() != nil {
+			out <- petalflow.StreamChunk{
+				Error: ctx.Err(),
+				Done:  true,
+			}
+			return
+		}
+
 		// Check for streaming errors.
 		select {
 		case err, ok := <-stream.Err:
