@@ -109,6 +109,36 @@ func TestTokenUsage_Add(t *testing.T) {
 	}
 }
 
+func TestParseNodeKind(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected NodeKind
+	}{
+		{"llm", NodeKindLLM},
+		{"tool", NodeKindTool},
+		{"router", NodeKindRouter},
+		{"merge", NodeKindMerge},
+		{"map", NodeKindMap},
+		{"gate", NodeKindGate},
+		{"noop", NodeKindNoop},
+		{"filter", NodeKindFilter},
+		{"transform", NodeKindTransform},
+		{"guardian", NodeKindGuardian},
+		{"cache", NodeKindCache},
+		{"sink", NodeKindSink},
+		{"human", NodeKindHuman},
+		{"unknown", NodeKind("unknown")},
+		{"", NodeKind("")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := ParseNodeKind(tt.input); got != tt.expected {
+				t.Errorf("ParseNodeKind(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestErrorPolicy_Values(t *testing.T) {
 	if ErrorPolicyFail != "fail" {
 		t.Errorf("ErrorPolicyFail = %v, want 'fail'", ErrorPolicyFail)
@@ -118,5 +148,24 @@ func TestErrorPolicy_Values(t *testing.T) {
 	}
 	if ErrorPolicyRecord != "record" {
 		t.Errorf("ErrorPolicyRecord = %v, want 'record'", ErrorPolicyRecord)
+	}
+}
+
+func TestStreamChunk_ZeroValue(t *testing.T) {
+	var chunk StreamChunk
+	if chunk.Done {
+		t.Error("zero value Done should be false")
+	}
+	if chunk.Usage != nil {
+		t.Error("zero value Usage should be nil")
+	}
+	if chunk.Delta != "" {
+		t.Error("zero value Delta should be empty")
+	}
+	if chunk.Index != 0 {
+		t.Error("zero value Index should be 0")
+	}
+	if chunk.Error != nil {
+		t.Error("zero value Error should be nil")
 	}
 }

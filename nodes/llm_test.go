@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // mockLLMClient is a mock implementation of adapters.LLMClient for testing.
@@ -343,6 +344,120 @@ func TestLLMNode_Run_Temperature(t *testing.T) {
 
 func TestLLMNode_InterfaceCompliance(t *testing.T) {
 	var _ core.Node = (*LLMNode)(nil)
+}
+
+func TestLLMNode_Run_EmitsOutputFinalEvent(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{
+			Text:  "Hello!",
+			Model: "gpt-4",
+			Usage: core.LLMTokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		},
+	}
+
+	node := NewLLMNode("test-llm", client, LLMNodeConfig{
+		Model:     "gpt-4",
+		OutputKey: "answer",
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	_, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should emit node.output.final
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != runtime.EventNodeOutputFinal {
+		t.Errorf("kind = %v, want %v", events[0].Kind, runtime.EventNodeOutputFinal)
+	}
+	if events[0].Payload["text"] != "Hello!" {
+		t.Errorf("text = %v, want 'Hello!'", events[0].Payload["text"])
+	}
+}
+
+// mockStreamingLLMClient implements core.StreamingLLMClient
+type mockStreamingLLMClient struct {
+	chunks []core.StreamChunk
+	err    error
+}
+
+func (m *mockStreamingLLMClient) Complete(ctx context.Context, req core.LLMRequest) (core.LLMResponse, error) {
+	return core.LLMResponse{Text: "sync-fallback"}, nil
+}
+
+func (m *mockStreamingLLMClient) CompleteStream(ctx context.Context, req core.LLMRequest) (<-chan core.StreamChunk, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	ch := make(chan core.StreamChunk, len(m.chunks))
+	for _, c := range m.chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch, nil
+}
+
+func TestLLMNode_Run_Streaming(t *testing.T) {
+	client := &mockStreamingLLMClient{
+		chunks: []core.StreamChunk{
+			{Delta: "Hello", Index: 0},
+			{Delta: " world", Index: 1},
+			{Delta: "!", Index: 2},
+			{Done: true, Usage: &core.LLMTokenUsage{InputTokens: 5, OutputTokens: 3, TotalTokens: 8}},
+		},
+	}
+
+	node := NewLLMNode("test-llm", client, LLMNodeConfig{
+		Model:     "gpt-4",
+		OutputKey: "answer",
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	result, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check output stored correctly
+	answer, ok := result.GetVar("answer")
+	if !ok || answer != "Hello world!" {
+		t.Errorf("answer = %v, want 'Hello world!'", answer)
+	}
+
+	// Check delta events emitted
+	var deltas, finals int
+	for _, e := range events {
+		switch e.Kind {
+		case runtime.EventNodeOutputDelta:
+			deltas++
+		case runtime.EventNodeOutputFinal:
+			finals++
+		}
+	}
+	if deltas != 3 {
+		t.Errorf("delta events = %d, want 3", deltas)
+	}
+	if finals != 1 {
+		t.Errorf("final events = %d, want 1", finals)
+	}
 }
 
 // countingMockLLMClient fails a specified number of times before succeeding.

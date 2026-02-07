@@ -1,4 +1,4 @@
-package runtime
+package runtime_test
 
 import (
 	"context"
@@ -10,10 +10,11 @@ import (
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/nodes"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 func TestNewRuntime(t *testing.T) {
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 
 	if rt == nil {
 		t.Fatal("NewRuntime() returned nil")
@@ -27,7 +28,7 @@ func TestNewRuntime(t *testing.T) {
 }
 
 func TestDefaultRunOptions(t *testing.T) {
-	opts := DefaultRunOptions()
+	opts := runtime.DefaultRunOptions()
 
 	if opts.MaxHops != 100 {
 		t.Errorf("DefaultRunOptions().MaxHops = %v, want 100", opts.MaxHops)
@@ -59,10 +60,10 @@ func TestRuntime_Run_SimpleLinear(t *testing.T) {
 	g.AddEdge("b", "c")
 	g.SetEntry("a")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 	env := core.NewEnvelope()
 
-	result, err := rt.Run(context.Background(), g, env, DefaultRunOptions())
+	result, err := rt.Run(context.Background(), g, env, runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Errorf("Run() error = %v", err)
@@ -86,11 +87,11 @@ func TestRuntime_Run_Events(t *testing.T) {
 	g.AddNode(core.NewNoopNode("start"))
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	events := make([]Event, 0)
+	rt := runtime.NewRuntime()
+	events := make([]runtime.Event, 0)
 
-	opts := DefaultRunOptions()
-	opts.EventHandler = func(e Event) {
+	opts := runtime.DefaultRunOptions()
+	opts.EventHandler = func(e runtime.Event) {
 		events = append(events, e)
 	}
 
@@ -101,11 +102,11 @@ func TestRuntime_Run_Events(t *testing.T) {
 	}
 
 	// Should have: run_started, node_started, node_finished, run_finished
-	expectedKinds := []EventKind{
-		EventRunStarted,
-		EventNodeStarted,
-		EventNodeFinished,
-		EventRunFinished,
+	expectedKinds := []runtime.EventKind{
+		runtime.EventRunStarted,
+		runtime.EventNodeStarted,
+		runtime.EventNodeFinished,
+		runtime.EventRunFinished,
 	}
 
 	if len(events) != len(expectedKinds) {
@@ -124,9 +125,9 @@ func TestRuntime_Run_NilEnvelope(t *testing.T) {
 	g.AddNode(core.NewNoopNode("start"))
 	g.SetEntry("start")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 
-	result, err := rt.Run(context.Background(), g, nil, DefaultRunOptions())
+	result, err := rt.Run(context.Background(), g, nil, runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Errorf("Run() error = %v", err)
@@ -137,9 +138,9 @@ func TestRuntime_Run_NilEnvelope(t *testing.T) {
 }
 
 func TestRuntime_Run_NilGraph(t *testing.T) {
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 
-	_, err := rt.Run(context.Background(), nil, core.NewEnvelope(), DefaultRunOptions())
+	_, err := rt.Run(context.Background(), nil, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err == nil {
 		t.Error("Run() should error on nil graph")
@@ -148,9 +149,9 @@ func TestRuntime_Run_NilGraph(t *testing.T) {
 
 func TestRuntime_Run_EmptyGraph(t *testing.T) {
 	g := graph.NewGraph("empty")
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 
-	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if !errors.Is(err, graph.ErrEmptyGraph) {
 		t.Errorf("Run() error = %v, want %v", err, graph.ErrEmptyGraph)
@@ -161,9 +162,9 @@ func TestRuntime_Run_NoEntry(t *testing.T) {
 	g := graph.NewGraph("no-entry")
 	g.AddNode(core.NewNoopNode("orphan"))
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 
-	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if !errors.Is(err, graph.ErrNoEntryNode) {
 		t.Errorf("Run() error = %v, want %v", err, graph.ErrNoEntryNode)
@@ -182,7 +183,7 @@ func TestRuntime_Run_ContextCancellation(t *testing.T) {
 	}))
 	g.SetEntry("slow")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Cancel after a short delay
@@ -191,7 +192,7 @@ func TestRuntime_Run_ContextCancellation(t *testing.T) {
 		cancel()
 	}()
 
-	_, err := rt.Run(ctx, g, core.NewEnvelope(), DefaultRunOptions())
+	_, err := rt.Run(ctx, g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err == nil {
 		t.Error("Run() should error on context cancellation")
@@ -206,12 +207,12 @@ func TestRuntime_Run_NodeError(t *testing.T) {
 	}))
 	g.SetEntry("fail")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 
-	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
-	if !errors.Is(err, ErrNodeExecution) {
-		t.Errorf("Run() error = %v, want wrapped %v", err, ErrNodeExecution)
+	if !errors.Is(err, runtime.ErrNodeExecution) {
+		t.Errorf("Run() error = %v, want wrapped %v", err, runtime.ErrNodeExecution)
 	}
 }
 
@@ -227,8 +228,8 @@ func TestRuntime_Run_ContinueOnError(t *testing.T) {
 	g.AddEdge("fail", "after")
 	g.SetEntry("fail")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.ContinueOnError = true
 
 	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -258,12 +259,12 @@ func TestRuntime_Run_EventNodeFailed(t *testing.T) {
 	}))
 	g.SetEntry("fail")
 
-	rt := NewRuntime()
-	var failedEvent *Event
+	rt := runtime.NewRuntime()
+	var failedEvent *runtime.Event
 
-	opts := DefaultRunOptions()
-	opts.EventHandler = func(e Event) {
-		if e.Kind == EventNodeFailed {
+	opts := runtime.DefaultRunOptions()
+	opts.EventHandler = func(e runtime.Event) {
+		if e.Kind == runtime.EventNodeFailed {
 			failedEvent = &e
 		}
 	}
@@ -293,8 +294,8 @@ func TestRuntime_Run_ExecutionOrder(t *testing.T) {
 	g.AddEdge("b", "c")
 	g.SetEntry("a")
 
-	rt := NewRuntime()
-	rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	expected := []string{"a", "b", "c"}
 	if len(order) != len(expected) {
@@ -325,8 +326,8 @@ func TestRuntime_Run_BranchingGraph(t *testing.T) {
 	g.AddEdge("c", "d")
 	g.SetEntry("a")
 
-	rt := NewRuntime()
-	rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	// All nodes should be executed
 	for _, id := range []string{"a", "b", "c", "d"} {
@@ -341,15 +342,15 @@ func TestRuntime_Run_RunIDGenerated(t *testing.T) {
 	g.AddNode(core.NewNoopNode("start"))
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	result, _ := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	result, _ := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if result.Trace.RunID == "" {
 		t.Error("RunID should be generated")
 	}
 
 	// Run again and verify different ID
-	result2, _ := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	result2, _ := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 	if result2.Trace.RunID == result.Trace.RunID {
 		t.Error("Different runs should have different RunIDs")
 	}
@@ -362,8 +363,8 @@ func TestRuntime_Run_CustomNow(t *testing.T) {
 	g.AddNode(core.NewNoopNode("start"))
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Now = func() time.Time { return fixedTime }
 
 	result, _ := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -374,19 +375,7 @@ func TestRuntime_Run_CustomNow(t *testing.T) {
 }
 
 func TestRuntime_InterfaceCompliance(t *testing.T) {
-	var _ Runtime = (*BasicRuntime)(nil)
-}
-
-func TestGenerateRunID(t *testing.T) {
-	id1 := generateRunID()
-	id2 := generateRunID()
-
-	if id1 == "" {
-		t.Error("generateRunID() returned empty string")
-	}
-	if id1 == id2 {
-		t.Error("generateRunID() should return unique IDs")
-	}
+	var _ runtime.Runtime = (*runtime.BasicRuntime)(nil)
 }
 
 // RouterNode handling tests
@@ -427,10 +416,10 @@ func TestRuntime_Run_RouterNode_SingleTarget(t *testing.T) {
 	g.AddEdge("router", "handler-b")
 	g.SetEntry("router")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 	env := core.NewEnvelope().WithVar("route", "a")
 
-	_, err := rt.Run(context.Background(), g, env, DefaultRunOptions())
+	_, err := rt.Run(context.Background(), g, env, runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -476,10 +465,10 @@ func TestRuntime_Run_RouterNode_DefaultTarget(t *testing.T) {
 	g.AddEdge("router", "default-handler")
 	g.SetEntry("router")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 	env := core.NewEnvelope().WithVar("route", "normal") // No match, use default
 
-	_, err := rt.Run(context.Background(), g, env, DefaultRunOptions())
+	_, err := rt.Run(context.Background(), g, env, runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -530,12 +519,12 @@ func TestRuntime_Run_RouterNode_MultipleTargets(t *testing.T) {
 	g.AddEdge("router", "sms-handler")
 	g.SetEntry("router")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 	env := core.NewEnvelope().
 		WithVar("notify_email", true).
 		WithVar("notify_sms", true)
 
-	_, err := rt.Run(context.Background(), g, env, DefaultRunOptions())
+	_, err := rt.Run(context.Background(), g, env, runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -563,12 +552,12 @@ func TestRuntime_Run_RouterNode_EventEmitted(t *testing.T) {
 	g.AddEdge("classifier", "next")
 	g.SetEntry("classifier")
 
-	rt := NewRuntime()
-	var routeEvent *Event
+	rt := runtime.NewRuntime()
+	var routeEvent *runtime.Event
 
-	opts := DefaultRunOptions()
-	opts.EventHandler = func(e Event) {
-		if e.Kind == EventRouteDecision {
+	opts := runtime.DefaultRunOptions()
+	opts.EventHandler = func(e runtime.Event) {
+		if e.Kind == runtime.EventRouteDecision {
 			routeEvent = &e
 		}
 	}
@@ -640,8 +629,8 @@ func TestRuntime_Run_RouterNode_ChainedRouters(t *testing.T) {
 	g.AddEdge("router2", "alternate")
 	g.SetEntry("router1")
 
-	rt := NewRuntime()
-	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -687,8 +676,8 @@ func TestRuntime_Run_RouterNode_NoTargetsMatched(t *testing.T) {
 	g.AddEdge("router", "handler")
 	g.SetEntry("router")
 
-	rt := NewRuntime()
-	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -731,8 +720,8 @@ func TestRuntime_Run_Concurrent_SimpleFanOut(t *testing.T) {
 	g.AddEdge("start", "branch-b")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 2
 
 	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -797,8 +786,8 @@ func TestRuntime_Run_Concurrent_FanOutMerge(t *testing.T) {
 	g.AddEdge("merge", "final")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 4
 
 	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -855,8 +844,8 @@ func TestRuntime_Run_Concurrent_EnvelopeCloning(t *testing.T) {
 	g.AddEdge("start", "branch-b")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 2
 
 	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -903,8 +892,8 @@ func TestRuntime_Run_Concurrent_MergeNodeWithStrategy(t *testing.T) {
 	g.AddEdge("branch-b", "merge")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 2
 
 	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -932,8 +921,8 @@ func TestRuntime_Run_Concurrent_ErrorHandling(t *testing.T) {
 	g.AddEdge("start", "branch-b")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 2
 
 	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -963,8 +952,8 @@ func TestRuntime_Run_Concurrent_ErrorContinue(t *testing.T) {
 	g.AddEdge("start", "branch-b")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 2
 	opts.ContinueOnError = true
 
@@ -1002,10 +991,10 @@ func TestRuntime_Run_Concurrent_ContextCancellation(t *testing.T) {
 	g.AddEdge("start", "slow")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
+	rt := runtime.NewRuntime()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	opts := DefaultRunOptions()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 2
 
 	// Cancel after a short delay
@@ -1066,8 +1055,8 @@ func TestRuntime_Run_Concurrent_DiamondPattern(t *testing.T) {
 	g.AddEdge("merge", "end")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	opts := DefaultRunOptions()
+	rt := runtime.NewRuntime()
+	opts := runtime.DefaultRunOptions()
 	opts.Concurrency = 4
 
 	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
@@ -1121,8 +1110,8 @@ func TestRuntime_Run_GateNode_Pass(t *testing.T) {
 	g.AddEdge("gate", "end")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1158,8 +1147,8 @@ func TestRuntime_Run_GateNode_Block(t *testing.T) {
 	g.AddEdge("gate", "end")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err == nil {
 		t.Fatal("expected error when gate blocks")
@@ -1196,8 +1185,8 @@ func TestRuntime_Run_GateNode_Redirect(t *testing.T) {
 	g.AddEdge("gate", "error_handler")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1206,6 +1195,45 @@ func TestRuntime_Run_GateNode_Redirect(t *testing.T) {
 	path, _ := result.GetVar("path")
 	if path != "error" {
 		t.Errorf("expected redirect to error_handler, got path=%v", path)
+	}
+}
+
+func TestRuntime_Run_EventsHaveMonotonicSeq(t *testing.T) {
+	g := graph.NewGraph("seq-test")
+	g.AddNode(core.NewNoopNode("a"))
+	g.AddNode(core.NewNoopNode("b"))
+	g.AddEdge("a", "b")
+	g.SetEntry("a")
+
+	rt := runtime.NewRuntime()
+	var events []runtime.Event
+
+	opts := runtime.DefaultRunOptions()
+	opts.EventHandler = func(e runtime.Event) {
+		events = append(events, e)
+	}
+
+	_, err := rt.Run(context.Background(), g, core.NewEnvelope(), opts)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	// Verify all events have Seq > 0 and are strictly increasing
+	if len(events) == 0 {
+		t.Fatal("expected events")
+	}
+	for i, e := range events {
+		if e.Seq == 0 {
+			t.Errorf("events[%d].Seq = 0, want > 0", i)
+		}
+		if i > 0 && e.Seq <= events[i-1].Seq {
+			t.Errorf("events[%d].Seq=%d not greater than events[%d].Seq=%d",
+				i, e.Seq, i-1, events[i-1].Seq)
+		}
+	}
+	// First event should be Seq=1
+	if events[0].Seq != 1 {
+		t.Errorf("first event Seq = %d, want 1", events[0].Seq)
 	}
 }
 
@@ -1235,8 +1263,8 @@ func TestRuntime_Run_MapNode(t *testing.T) {
 	g.AddEdge("mapper", "end")
 	g.SetEntry("start")
 
-	rt := NewRuntime()
-	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), DefaultRunOptions())
+	rt := runtime.NewRuntime()
+	result, err := rt.Run(context.Background(), g, core.NewEnvelope(), runtime.DefaultRunOptions())
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -62,6 +62,7 @@ type TraceInfo struct {
 	RunID    string    // unique identifier for this run
 	ParentID string    // optional: for subgraphs or map/fanout
 	SpanID   string    // optional: for node-level tracing
+	TraceID  string    // OpenTelemetry trace ID
 	Started  time.Time // when the run started
 }
 
@@ -155,6 +156,25 @@ const (
 // Implementations adapt various LLM providers to this common interface.
 type LLMClient interface {
 	Complete(ctx context.Context, req LLMRequest) (LLMResponse, error)
+}
+
+// StreamingLLMClient extends LLMClient with streaming capability.
+type StreamingLLMClient interface {
+	LLMClient
+	// CompleteStream returns a channel of StreamChunks.
+	// The channel is closed when streaming is complete.
+	// The final chunk has Done=true and includes Usage.
+	CompleteStream(ctx context.Context, req LLMRequest) (<-chan StreamChunk, error)
+}
+
+// StreamChunk is a partial response from the LLM.
+type StreamChunk struct {
+	Delta       string         // incremental text
+	Index       int            // chunk sequence (0-indexed)
+	Done        bool           // final chunk indicator
+	Accumulated string         // full text so far (optional)
+	Usage       *LLMTokenUsage // populated on final chunk
+	Error       error          // streaming error
 }
 
 // LLMRequest is the request structure for LLM completion.
@@ -301,6 +321,11 @@ func (r *ToolRegistry) List() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// ParseNodeKind converts a string to a NodeKind.
+func ParseNodeKind(s string) NodeKind {
+	return NodeKind(s)
 }
 
 // Ensure interface compliance at compile time.

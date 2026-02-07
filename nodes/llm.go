@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // LLMNodeConfig configures an LLMNode.
@@ -82,6 +83,8 @@ func NewLLMNode(id string, client core.LLMClient, config LLMNodeConfig) *LLMNode
 
 // Run executes the LLM call and stores the result in the envelope.
 func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
+	emit := runtime.EmitterFromContext(ctx)
+
 	// Apply timeout
 	if n.config.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -95,6 +98,15 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 		return nil, fmt.Errorf("failed to build prompt: %w", err)
 	}
 
+	// If the client supports streaming, use the streaming path
+	if streamClient, ok := n.client.(core.StreamingLLMClient); ok {
+		return n.runStreaming(ctx, env, streamClient, emit, prompt)
+	}
+	return n.runSync(ctx, env, emit, prompt)
+}
+
+// runSync executes a synchronous (non-streaming) LLM call.
+func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
 	// Build the LLM request
 	req := core.LLMRequest{
 		Model:      n.config.Model,
@@ -146,6 +158,11 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 		}
 	}
 
+	// Emit node.output.final event
+	emit(runtime.NewEvent(runtime.EventNodeOutputFinal, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("text", resp.Text))
+
 	// Store output in envelope
 	if n.config.JSONSchema != nil && resp.JSON != nil {
 		env.SetVar(n.config.OutputKey, resp.JSON)
@@ -176,6 +193,94 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 				"model":    resp.Model,
 				"provider": resp.Provider,
 			},
+		})
+	}
+
+	return env, nil
+}
+
+// runStreaming executes a streaming LLM call, emitting delta events for each chunk.
+func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamClient core.StreamingLLMClient, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
+	// Build the LLM request
+	req := core.LLMRequest{
+		Model:      n.config.Model,
+		System:     n.config.System,
+		InputText:  prompt,
+		JSONSchema: n.config.JSONSchema,
+	}
+
+	if n.config.Temperature != nil {
+		req.Temperature = n.config.Temperature
+	}
+	if n.config.MaxTokens != nil {
+		req.MaxTokens = n.config.MaxTokens
+	}
+
+	// Start streaming
+	ch, err := streamClient.CompleteStream(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("streaming LLM call failed: %w", err)
+	}
+
+	// Read chunks, accumulate text, emit delta events
+	var accumulated strings.Builder
+	var usage core.LLMTokenUsage
+
+	for chunk := range ch {
+		// Handle chunk errors
+		if chunk.Error != nil {
+			return nil, fmt.Errorf("streaming error: %w", chunk.Error)
+		}
+
+		if chunk.Done {
+			// Capture usage from the final chunk
+			if chunk.Usage != nil {
+				usage = *chunk.Usage
+			}
+			break
+		}
+
+		// Accumulate text
+		accumulated.WriteString(chunk.Delta)
+
+		// Emit delta event
+		emit(runtime.NewEvent(runtime.EventNodeOutputDelta, env.Trace.RunID).
+			WithNode(n.ID(), n.Kind()).
+			WithPayload("delta", chunk.Delta).
+			WithPayload("index", chunk.Index))
+	}
+
+	text := accumulated.String()
+
+	// Check budget if configured
+	if n.config.Budget != nil {
+		if err := n.checkBudget(usage); err != nil {
+			return nil, err
+		}
+	}
+
+	// Emit node.output.final event
+	emit(runtime.NewEvent(runtime.EventNodeOutputFinal, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("text", text))
+
+	// Store output in envelope
+	env.SetVar(n.config.OutputKey, text)
+
+	// Record token usage
+	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage(usage))
+
+	// Record messages if configured
+	if n.config.RecordMessages {
+		env.AppendMessage(core.Message{
+			Role:    "user",
+			Content: prompt,
+			Name:    n.ID(),
+		})
+		env.AppendMessage(core.Message{
+			Role:    "assistant",
+			Content: text,
+			Name:    n.ID(),
 		})
 	}
 

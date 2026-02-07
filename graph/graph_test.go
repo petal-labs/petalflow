@@ -1,14 +1,15 @@
-package graph
+package graph_test
 
 import (
 	"errors"
 	"testing"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/graph"
 )
 
 func TestNewGraph(t *testing.T) {
-	g := NewGraph("test-graph")
+	g := graph.NewGraph("test-graph")
 
 	if g.Name() != "test-graph" {
 		t.Errorf("Graph.Name() = %v, want 'test-graph'", g.Name())
@@ -25,7 +26,7 @@ func TestNewGraph(t *testing.T) {
 }
 
 func TestGraph_AddNode(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 
 	node := core.NewNoopNode("node-1")
 	err := g.AddNode(node)
@@ -44,18 +45,18 @@ func TestGraph_AddNode(t *testing.T) {
 }
 
 func TestGraph_AddNode_Duplicate(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 
 	g.AddNode(core.NewNoopNode("node-1"))
 	err := g.AddNode(core.NewNoopNode("node-1"))
 
-	if !errors.Is(err, ErrDuplicateNode) {
-		t.Errorf("AddNode() error = %v, want %v", err, ErrDuplicateNode)
+	if !errors.Is(err, graph.ErrDuplicateNode) {
+		t.Errorf("AddNode() error = %v, want %v", err, graph.ErrDuplicateNode)
 	}
 }
 
 func TestGraph_AddNode_Nil(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 
 	err := g.AddNode(nil)
 
@@ -65,7 +66,7 @@ func TestGraph_AddNode_Nil(t *testing.T) {
 }
 
 func TestGraph_NodeByID(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	node := core.NewNoopNode("node-1")
 	g.AddNode(node)
 
@@ -86,7 +87,7 @@ func TestGraph_NodeByID(t *testing.T) {
 }
 
 func TestGraph_AddEdge(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 
@@ -106,29 +107,29 @@ func TestGraph_AddEdge(t *testing.T) {
 }
 
 func TestGraph_AddEdge_MissingSource(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("b"))
 
 	err := g.AddEdge("a", "b")
 
-	if !errors.Is(err, ErrInvalidEdge) {
-		t.Errorf("AddEdge() error = %v, want %v", err, ErrInvalidEdge)
+	if !errors.Is(err, graph.ErrInvalidEdge) {
+		t.Errorf("AddEdge() error = %v, want %v", err, graph.ErrInvalidEdge)
 	}
 }
 
 func TestGraph_AddEdge_MissingTarget(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 
 	err := g.AddEdge("a", "b")
 
-	if !errors.Is(err, ErrInvalidEdge) {
-		t.Errorf("AddEdge() error = %v, want %v", err, ErrInvalidEdge)
+	if !errors.Is(err, graph.ErrInvalidEdge) {
+		t.Errorf("AddEdge() error = %v, want %v", err, graph.ErrInvalidEdge)
 	}
 }
 
 func TestGraph_AddEdge_Duplicate(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 	g.AddEdge("a", "b")
@@ -145,7 +146,7 @@ func TestGraph_AddEdge_Duplicate(t *testing.T) {
 }
 
 func TestGraph_SetEntry(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("start"))
 
 	err := g.SetEntry("start")
@@ -159,17 +160,17 @@ func TestGraph_SetEntry(t *testing.T) {
 }
 
 func TestGraph_SetEntry_MissingNode(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 
 	err := g.SetEntry("missing")
 
-	if !errors.Is(err, ErrNodeNotFound) {
-		t.Errorf("SetEntry() error = %v, want %v", err, ErrNodeNotFound)
+	if !errors.Is(err, graph.ErrNodeNotFound) {
+		t.Errorf("SetEntry() error = %v, want %v", err, graph.ErrNodeNotFound)
 	}
 }
 
 func TestGraph_Successors(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 	g.AddNode(core.NewNoopNode("c"))
@@ -184,7 +185,7 @@ func TestGraph_Successors(t *testing.T) {
 }
 
 func TestGraph_Predecessors(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 	g.AddNode(core.NewNoopNode("c"))
@@ -201,24 +202,24 @@ func TestGraph_Predecessors(t *testing.T) {
 func TestGraph_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		setup   func(*BasicGraph)
+		setup   func(*graph.BasicGraph)
 		wantErr error
 	}{
 		{
 			name:    "empty graph",
-			setup:   func(g *BasicGraph) {},
-			wantErr: ErrEmptyGraph,
+			setup:   func(g *graph.BasicGraph) {},
+			wantErr: graph.ErrEmptyGraph,
 		},
 		{
 			name: "no entry",
-			setup: func(g *BasicGraph) {
+			setup: func(g *graph.BasicGraph) {
 				g.AddNode(core.NewNoopNode("a"))
 			},
-			wantErr: ErrNoEntryNode,
+			wantErr: graph.ErrNoEntryNode,
 		},
 		{
 			name: "valid graph",
-			setup: func(g *BasicGraph) {
+			setup: func(g *graph.BasicGraph) {
 				g.AddNode(core.NewNoopNode("a"))
 				g.SetEntry("a")
 			},
@@ -228,7 +229,7 @@ func TestGraph_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := NewGraph("test")
+			g := graph.NewGraph("test")
 			tt.setup(g)
 
 			err := g.Validate()
@@ -247,7 +248,7 @@ func TestGraph_Validate(t *testing.T) {
 }
 
 func TestGraph_TopologicalSort(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 	g.AddNode(core.NewNoopNode("c"))
@@ -288,7 +289,7 @@ func TestGraph_TopologicalSort(t *testing.T) {
 }
 
 func TestGraph_TopologicalSort_Cycle(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 	g.AddNode(core.NewNoopNode("c"))
@@ -298,15 +299,15 @@ func TestGraph_TopologicalSort_Cycle(t *testing.T) {
 
 	_, err := g.TopologicalSort(false)
 
-	if !errors.Is(err, ErrCycleDetected) {
-		t.Errorf("TopologicalSort() error = %v, want %v", err, ErrCycleDetected)
+	if !errors.Is(err, graph.ErrCycleDetected) {
+		t.Errorf("TopologicalSort() error = %v, want %v", err, graph.ErrCycleDetected)
 	}
 }
 
 func TestGraph_TopologicalSort_CycleAllowed(t *testing.T) {
 	// Realistic revise loop: start -> process -> review -> process (cycle)
 	// With allowCycles=true, we should get a partial order containing 'start'
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("start"))
 	g.AddNode(core.NewNoopNode("process"))
 	g.AddNode(core.NewNoopNode("review"))
@@ -337,7 +338,7 @@ func TestGraph_TopologicalSort_CycleAllowed(t *testing.T) {
 }
 
 func TestGraph_Reachable(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
 	g.AddNode(core.NewNoopNode("c"))
@@ -360,7 +361,7 @@ func TestGraph_Reachable(t *testing.T) {
 }
 
 func TestGraph_NodeOrder(t *testing.T) {
-	g := NewGraph("test")
+	g := graph.NewGraph("test")
 	g.AddNode(core.NewNoopNode("c"))
 	g.AddNode(core.NewNoopNode("a"))
 	g.AddNode(core.NewNoopNode("b"))
@@ -377,5 +378,5 @@ func TestGraph_NodeOrder(t *testing.T) {
 }
 
 func TestGraph_InterfaceCompliance(t *testing.T) {
-	var _ Graph = (*BasicGraph)(nil)
+	var _ graph.Graph = (*graph.BasicGraph)(nil)
 }

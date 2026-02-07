@@ -62,6 +62,12 @@ type (
 	// LLMClient abstracts a single provider/model backend for PetalFlow.
 	LLMClient = core.LLMClient
 
+	// StreamingLLMClient extends LLMClient with streaming capability.
+	StreamingLLMClient = core.StreamingLLMClient
+
+	// StreamChunk is a partial response from the LLM.
+	StreamChunk = core.StreamChunk
+
 	// LLMRequest is the request structure for LLM completion.
 	LLMRequest = core.LLMRequest
 
