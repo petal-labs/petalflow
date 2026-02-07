@@ -19,9 +19,9 @@ type TracingHandler struct {
 	tracer trace.Tracer
 
 	mu        sync.RWMutex
-	runSpans  map[string]trace.Span    // runID -> span
+	runSpans  map[string]trace.Span      // runID -> span
 	runCtxs   map[string]context.Context // runID -> context (for child spans)
-	nodeSpans map[string]trace.Span    // runID:nodeID -> span
+	nodeSpans map[string]trace.Span      // runID:nodeID -> span
 }
 
 // NewTracingHandler creates a new TracingHandler that uses the given tracer

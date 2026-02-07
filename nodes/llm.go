@@ -268,12 +268,7 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 	env.SetVar(n.config.OutputKey, text)
 
 	// Record token usage
-	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.TotalTokens,
-		CostUSD:      usage.CostUSD,
-	})
+	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage(usage))
 
 	// Record messages if configured
 	if n.config.RecordMessages {

@@ -55,13 +55,13 @@ func NewSQLiteEventStore(cfg SQLiteStoreConfig) (*SQLiteEventStore, error) {
 
 	// Enable WAL mode for concurrent reads.
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlitestore: set WAL mode: %w", err)
 	}
 
 	// Create schema.
 	if _, err := db.Exec(sqliteSchema); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("sqlitestore: create schema: %w", err)
 	}
 
@@ -146,10 +146,10 @@ func (s *SQLiteEventStore) LatestSeq(ctx context.Context, runID string) (uint64,
 	if err != nil {
 		return 0, fmt.Errorf("sqlitestore: latest seq: %w", err)
 	}
-	if !seq.Valid {
+	if !seq.Valid || seq.Int64 < 0 {
 		return 0, nil
 	}
-	return uint64(seq.Int64), nil
+	return uint64(seq.Int64), nil // #nosec G115 -- seq is always non-negative (auto-increment)
 }
 
 // RunIDs returns distinct run IDs from the store.
@@ -205,12 +205,12 @@ func (s *SQLiteEventStore) Prune(ctx context.Context) error {
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return fmt.Errorf("sqlitestore: prune scan run id: %w", err)
 			}
 			runIDs = append(runIDs, id)
 		}
-		rows.Close()
+		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("sqlitestore: prune rows err: %w", err)
 		}
