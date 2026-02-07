@@ -151,6 +151,13 @@ func (e Event) WithPayload(key string, value any) Event {
 // The runtime provides an emitter to nodes that need to emit intermediate events.
 type EventEmitter func(Event)
 
+// EventPublisher can publish events to external subscribers.
+// This interface is satisfied by bus.EventBus, allowing the runtime
+// to distribute events without importing the bus package directly.
+type EventPublisher interface {
+	Publish(event Event)
+}
+
 // EventHandler is a function type for handling events.
 // Implementations can log, store, or forward events as needed.
 type EventHandler func(Event)

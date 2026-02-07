@@ -54,6 +54,10 @@ type RunOptions struct {
 	// StepConfig provides additional step-through configuration.
 	// If nil but StepController is set, DefaultStepConfig() is used.
 	StepConfig *StepConfig
+
+	// EventBus distributes events to subscribers.
+	// If nil, events are only sent to EventHandler and eventCh.
+	EventBus EventPublisher
 }
 
 // DefaultRunOptions returns sensible default options.
@@ -111,6 +115,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	seq := newSeqGen()
 	emit := func(e Event) {
 		e.Seq = seq.Next()
+		if opts.EventBus != nil {
+			opts.EventBus.Publish(e)
+		}
 		if opts.EventHandler != nil {
 			opts.EventHandler(e)
 		}
@@ -684,8 +691,11 @@ func (r *BasicRuntime) executeNode(
 		WithNode(nodeID, nodeKind).
 		WithElapsed(nodeStart.Sub(runStart)))
 
+	// Inject emitter into context for node use
+	nodeCtx := ContextWithEmitter(ctx, emit)
+
 	// Execute node
-	result, err := node.Run(ctx, env)
+	result, err := node.Run(nodeCtx, env)
 
 	// Calculate elapsed time
 	nodeElapsed := opts.Now().Sub(nodeStart)
