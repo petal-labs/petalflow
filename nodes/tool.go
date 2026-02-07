@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // ToolNodeConfig configures a ToolNode.
@@ -105,11 +106,20 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 		return n.handleError(env, err)
 	}
 
+	// Get event emitter from context
+	emit := runtime.EmitterFromContext(ctx)
+
 	// Build arguments from envelope
 	args, err := n.buildArgs(env)
 	if err != nil {
 		return n.handleError(env, fmt.Errorf("failed to build args: %w", err))
 	}
+
+	// Emit tool.call event
+	emit(runtime.NewEvent(runtime.EventToolCall, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("tool_name", tool.Name()).
+		WithPayload("arguments", args))
 
 	// Execute with retries
 	var result map[string]any
@@ -135,6 +145,12 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 			}
 		}
 	}
+
+	// Emit tool.result event (always, even on failure)
+	emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("tool_name", tool.Name()).
+		WithPayload("is_error", lastErr != nil))
 
 	if lastErr != nil {
 		return n.handleError(env, fmt.Errorf("tool %q failed after %d attempts: %w",

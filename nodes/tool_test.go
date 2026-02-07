@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // mockPetalTool is a mock implementation of adapters.PetalTool for testing.
@@ -355,6 +356,49 @@ func TestToolNode_Run_Timeout(t *testing.T) {
 
 func TestToolNode_InterfaceCompliance(t *testing.T) {
 	var _ core.Node = (*ToolNode)(nil)
+}
+
+func TestToolNode_Run_EmitsToolEvents(t *testing.T) {
+	tool := &mockPetalTool{
+		name:   "search",
+		result: map[string]any{"found": true},
+	}
+
+	node := NewToolNode("my-tool", tool, ToolNodeConfig{
+		OutputKey:   "result",
+		RetryPolicy: core.RetryPolicy{MaxAttempts: 1, Backoff: time.Millisecond},
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	_, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have tool.call and tool.result events
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if events[0].Kind != runtime.EventToolCall {
+		t.Errorf("events[0].Kind = %v, want %v", events[0].Kind, runtime.EventToolCall)
+	}
+	if events[0].Payload["tool_name"] != "search" {
+		t.Errorf("tool_name = %v, want 'search'", events[0].Payload["tool_name"])
+	}
+	if events[1].Kind != runtime.EventToolResult {
+		t.Errorf("events[1].Kind = %v, want %v", events[1].Kind, runtime.EventToolResult)
+	}
+	if events[1].Payload["is_error"] != false {
+		t.Errorf("is_error = %v, want false", events[1].Payload["is_error"])
+	}
 }
 
 // countingMockTool fails a specified number of times before succeeding.
