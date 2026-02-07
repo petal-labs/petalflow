@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // LLMNodeConfig configures an LLMNode.
@@ -82,6 +83,8 @@ func NewLLMNode(id string, client core.LLMClient, config LLMNodeConfig) *LLMNode
 
 // Run executes the LLM call and stores the result in the envelope.
 func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
+	emit := runtime.EmitterFromContext(ctx)
+
 	// Apply timeout
 	if n.config.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -145,6 +148,11 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 			return nil, err
 		}
 	}
+
+	// Emit node.output.final event
+	emit(runtime.NewEvent(runtime.EventNodeOutputFinal, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("text", resp.Text))
 
 	// Store output in envelope
 	if n.config.JSONSchema != nil && resp.JSON != nil {

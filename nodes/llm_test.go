@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // mockLLMClient is a mock implementation of adapters.LLMClient for testing.
@@ -343,6 +344,46 @@ func TestLLMNode_Run_Temperature(t *testing.T) {
 
 func TestLLMNode_InterfaceCompliance(t *testing.T) {
 	var _ core.Node = (*LLMNode)(nil)
+}
+
+func TestLLMNode_Run_EmitsOutputFinalEvent(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{
+			Text:  "Hello!",
+			Model: "gpt-4",
+			Usage: core.LLMTokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		},
+	}
+
+	node := NewLLMNode("test-llm", client, LLMNodeConfig{
+		Model:     "gpt-4",
+		OutputKey: "answer",
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	_, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should emit node.output.final
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != runtime.EventNodeOutputFinal {
+		t.Errorf("kind = %v, want %v", events[0].Kind, runtime.EventNodeOutputFinal)
+	}
+	if events[0].Payload["text"] != "Hello!" {
+		t.Errorf("text = %v, want 'Hello!'", events[0].Payload["text"])
+	}
 }
 
 // countingMockLLMClient fails a specified number of times before succeeding.
