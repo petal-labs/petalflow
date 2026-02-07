@@ -12,12 +12,23 @@ func TestEventKind_String(t *testing.T) {
 		kind     EventKind
 		expected string
 	}{
-		{EventRunStarted, "run_started"},
-		{EventNodeStarted, "node_started"},
-		{EventNodeOutput, "node_output"},
-		{EventNodeFailed, "node_failed"},
-		{EventNodeFinished, "node_finished"},
-		{EventRunFinished, "run_finished"},
+		{EventRunStarted, "run.started"},
+		{EventNodeStarted, "node.started"},
+		{EventNodeOutput, "node.output"},
+		{EventNodeFailed, "node.failed"},
+		{EventNodeFinished, "node.finished"},
+		{EventRouteDecision, "route.decision"},
+		{EventRunFinished, "run.finished"},
+		{EventStepPaused, "step.paused"},
+		{EventStepResumed, "step.resumed"},
+		{EventStepSkipped, "step.skipped"},
+		{EventStepAborted, "step.aborted"},
+		{EventToolCall, "tool.call"},
+		{EventToolResult, "tool.result"},
+		{EventNodeOutputDelta, "node.output.delta"},
+		{EventNodeOutputFinal, "node.output.final"},
+		{EventNodeOutputPreview, "node.output.preview"},
+		{EventRunSnapshot, "run.snapshot"},
 	}
 
 	for _, tt := range tests {
@@ -105,6 +116,38 @@ func TestEvent_WithPayload_NilPayload(t *testing.T) {
 	if event.Payload["key"] != "value" {
 		t.Error("WithPayload should set value")
 	}
+}
+
+func TestEvent_CorrelationFields(t *testing.T) {
+	t.Run("zero values", func(t *testing.T) {
+		event := NewEvent(EventRunStarted, "run-456")
+		if event.Seq != 0 {
+			t.Errorf("Event.Seq = %d, want 0", event.Seq)
+		}
+		if event.TraceID != "" {
+			t.Errorf("Event.TraceID = %q, want empty", event.TraceID)
+		}
+		if event.SpanID != "" {
+			t.Errorf("Event.SpanID = %q, want empty", event.SpanID)
+		}
+	})
+
+	t.Run("assigned values", func(t *testing.T) {
+		event := NewEvent(EventNodeStarted, "run-789")
+		event.Seq = 42
+		event.TraceID = "0af7651916cd43dd8448eb211c80319c"
+		event.SpanID = "b7ad6b7169203331"
+
+		if event.Seq != 42 {
+			t.Errorf("Event.Seq = %d, want 42", event.Seq)
+		}
+		if event.TraceID != "0af7651916cd43dd8448eb211c80319c" {
+			t.Errorf("Event.TraceID = %q, want %q", event.TraceID, "0af7651916cd43dd8448eb211c80319c")
+		}
+		if event.SpanID != "b7ad6b7169203331" {
+			t.Errorf("Event.SpanID = %q, want %q", event.SpanID, "b7ad6b7169203331")
+		}
+	})
 }
 
 func TestEvent_Chaining(t *testing.T) {

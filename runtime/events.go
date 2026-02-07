@@ -12,38 +12,56 @@ type EventKind string
 
 const (
 	// EventRunStarted is emitted when a graph run begins.
-	EventRunStarted EventKind = "run_started"
+	EventRunStarted EventKind = "run.started"
 
 	// EventNodeStarted is emitted when a node begins execution.
-	EventNodeStarted EventKind = "node_started"
+	EventNodeStarted EventKind = "node.started"
 
 	// EventNodeOutput is emitted when a node produces output.
 	// This is optional and used for streaming intermediate results.
-	EventNodeOutput EventKind = "node_output"
+	EventNodeOutput EventKind = "node.output"
 
 	// EventNodeFailed is emitted when a node encounters an error.
-	EventNodeFailed EventKind = "node_failed"
+	EventNodeFailed EventKind = "node.failed"
 
 	// EventNodeFinished is emitted when a node completes successfully.
-	EventNodeFinished EventKind = "node_finished"
+	EventNodeFinished EventKind = "node.finished"
 
 	// EventRouteDecision is emitted when a router node makes a routing decision.
-	EventRouteDecision EventKind = "route_decision"
+	EventRouteDecision EventKind = "route.decision"
 
 	// EventRunFinished is emitted when a graph run completes.
-	EventRunFinished EventKind = "run_finished"
+	EventRunFinished EventKind = "run.finished"
 
 	// EventStepPaused is emitted when execution pauses at a step point.
-	EventStepPaused EventKind = "step_paused"
+	EventStepPaused EventKind = "step.paused"
 
 	// EventStepResumed is emitted when execution resumes after a step.
-	EventStepResumed EventKind = "step_resumed"
+	EventStepResumed EventKind = "step.resumed"
 
 	// EventStepSkipped is emitted when a node is skipped via StepActionSkipNode.
-	EventStepSkipped EventKind = "step_skipped"
+	EventStepSkipped EventKind = "step.skipped"
 
 	// EventStepAborted is emitted when execution is aborted via StepActionAbort.
-	EventStepAborted EventKind = "step_aborted"
+	EventStepAborted EventKind = "step.aborted"
+
+	// EventToolCall is emitted when a tool invocation begins.
+	EventToolCall EventKind = "tool.call"
+
+	// EventToolResult is emitted when a tool invocation completes.
+	EventToolResult EventKind = "tool.result"
+
+	// EventNodeOutputDelta is emitted for incremental streaming output from a node.
+	EventNodeOutputDelta EventKind = "node.output.delta"
+
+	// EventNodeOutputFinal is emitted for the final consolidated output from a node.
+	EventNodeOutputFinal EventKind = "node.output.final"
+
+	// EventNodeOutputPreview is emitted for a preview of node output before completion.
+	EventNodeOutputPreview EventKind = "node.output.preview"
+
+	// EventRunSnapshot is emitted to capture a point-in-time snapshot of run state.
+	EventRunSnapshot EventKind = "run.snapshot"
 )
 
 // String returns the string representation of the EventKind.
@@ -79,6 +97,15 @@ type Event struct {
 	// Payload contains event-specific data.
 	// Keep this small; prefer references to stored envelopes/records.
 	Payload map[string]any
+
+	// Seq is a monotonic sequence number per run (1-indexed).
+	Seq uint64
+
+	// TraceID is the OpenTelemetry trace ID (hex-encoded, empty when OTel inactive).
+	TraceID string
+
+	// SpanID is the OpenTelemetry span ID (hex-encoded, empty when OTel inactive).
+	SpanID string
 }
 
 // NewEvent creates a new event with the current timestamp.
