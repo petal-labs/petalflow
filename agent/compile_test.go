@@ -855,6 +855,59 @@ func TestCompileExtractTaskRefs(t *testing.T) {
 	}
 }
 
+func TestRewriteTemplate(t *testing.T) {
+	taskNodeIDs := map[string]string{
+		"research":     "research__analyst",
+		"write_report": "write_report__writer",
+	}
+
+	tests := []struct {
+		name string
+		tmpl string
+		want string
+	}{
+		{
+			"input ref",
+			"Research {{input.topic}} thoroughly.",
+			"Research {{.topic}} thoroughly.",
+		},
+		{
+			"nested input ref",
+			"Use {{input.config.model}} for this.",
+			"Use {{.config.model}} for this.",
+		},
+		{
+			"task output ref",
+			"Based on {{tasks.research.output}}, write a report.",
+			"Based on {{.research__analyst_output}}, write a report.",
+		},
+		{
+			"both refs",
+			"Topic: {{input.topic}}. Prior: {{tasks.research.output}}.",
+			"Topic: {{.topic}}. Prior: {{.research__analyst_output}}.",
+		},
+		{
+			"no refs",
+			"Plain description with no placeholders.",
+			"Plain description with no placeholders.",
+		},
+		{
+			"unknown task ref preserved",
+			"{{tasks.unknown.output}}",
+			"{{tasks.unknown.output}}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rewriteTemplate(tt.tmpl, taskNodeIDs)
+			if got != tt.want {
+				t.Errorf("rewriteTemplate() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCompile_SortedKeys(t *testing.T) {
 	m := map[string]int{"c": 3, "a": 1, "b": 2}
 	got := sortedKeys(m)
