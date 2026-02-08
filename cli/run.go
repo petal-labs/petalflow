@@ -90,7 +90,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Hydrate the graph (build executable graph from definition)
 	factory := hydrate.NewLiveNodeFactory(providers, func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 		return llmprovider.NewClient(name, cfg)
-	})
+	},
+		hydrate.WithToolRegistry(core.NewToolRegistry()),
+		hydrate.WithHumanHandler(&cliHumanHandler{w: cmd.ErrOrStderr()}),
+	)
 	execGraph, err := hydrate.HydrateGraph(gd, providers, factory)
 	if err != nil {
 		return exitError(exitProvider, "hydrating graph: %v", err)
@@ -119,12 +122,31 @@ func runRun(cmd *cobra.Command, args []string) error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
 
+	streaming, _ := cmd.Flags().GetBool("stream")
+	if streaming {
+		opts.EventHandler = func(e runtime.Event) {
+			switch e.Kind {
+			case runtime.EventNodeOutputDelta:
+				if delta, ok := e.Payload["delta"].(string); ok {
+					fmt.Fprint(cmd.OutOrStdout(), delta)
+				}
+			case runtime.EventNodeOutputFinal:
+				fmt.Fprintln(cmd.OutOrStdout())
+			}
+		}
+	}
+
 	result, err := rt.Run(ctx, execGraph, env, opts)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return exitError(exitTimeout, "execution timed out after %s", timeout)
 		}
 		return exitError(exitRuntime, "execution failed: %v", err)
+	}
+
+	// Skip writeOutput when streaming — output was already printed incrementally
+	if streaming {
+		return nil
 	}
 
 	// Format and write output
