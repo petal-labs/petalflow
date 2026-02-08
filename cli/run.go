@@ -8,24 +8,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/loader"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/server"
-	"github.com/spf13/cobra"
 )
 
 // Exit codes per FRD §3.2
 const (
-	exitSuccess        = 0
-	exitValidation     = 1
-	exitRuntime        = 2
-	exitFileNotFound   = 3
-	exitInputParse     = 4
-	exitProvider       = 5
-	exitWrongSchema    = 6
-	exitTimeout        = 10
+	exitSuccess      = 0
+	exitValidation   = 1
+	exitRuntime      = 2
+	exitFileNotFound = 3
+	exitInputParse   = 4
+	exitProvider     = 5
+	exitWrongSchema  = 6
+	exitTimeout      = 10
 )
 
 // NewRunCmd creates the "run" subcommand.
@@ -102,7 +103,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	for _, kv := range envVars {
 		parts := strings.SplitN(kv, "=", 2)
 		if len(parts) == 2 {
-			os.Setenv(parts[0], parts[1])
+			_ = os.Setenv(parts[0], parts[1])
 		}
 	}
 
@@ -144,7 +145,7 @@ func buildInputEnvelope(cmd *cobra.Command) (*core.Envelope, error) {
 		data = []byte(inputStr)
 	} else {
 		var err error
-		data, err = os.ReadFile(inputFile)
+		data, err = os.ReadFile(inputFile) // #nosec G304 -- path from user CLI flag
 		if err != nil {
 			return nil, exitError(exitFileNotFound, "reading input file: %v", err)
 		}
@@ -186,7 +187,7 @@ func writeOutput(cmd *cobra.Command, env *core.Envelope) error {
 	}
 
 	if outputPath != "" {
-		if err := os.WriteFile(outputPath, []byte(output+"\n"), 0644); err != nil {
+		if err := os.WriteFile(outputPath, []byte(output+"\n"), 0600); err != nil {
 			return exitError(exitRuntime, "writing output file: %v", err)
 		}
 		return nil
@@ -222,10 +223,9 @@ func formatPretty(env *core.Envelope) string {
 	}
 
 	if env.Trace.RunID != "" {
-		sb.WriteString(fmt.Sprintf("\n=== Trace ===\n"))
+		sb.WriteString("\n=== Trace ===\n")
 		sb.WriteString(fmt.Sprintf("  Run ID: %s\n", env.Trace.RunID))
 	}
 
 	return sb.String()
 }
-

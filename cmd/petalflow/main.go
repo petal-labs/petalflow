@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/petal-labs/petalflow/cli"
 	"github.com/spf13/cobra"
+
+	"github.com/petal-labs/petalflow/cli"
 )
 
 // Set via ldflags at build time.

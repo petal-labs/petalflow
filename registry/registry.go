@@ -8,13 +8,13 @@ import "sync"
 // NodeTypeDef describes a registered node type.
 type NodeTypeDef struct {
 	Type         string     `json:"type"`
-	Category     string     `json:"category"`       // "ai", "tool", "control", "data"
+	Category     string     `json:"category"` // "ai", "tool", "control", "data"
 	DisplayName  string     `json:"display_name"`
 	Description  string     `json:"description"`
 	Ports        PortSchema `json:"ports"`
-	ConfigSchema any        `json:"config_schema"`  // JSON Schema for config validation
-	IsTool       bool       `json:"is_tool"`         // usable as an agent tool
-	ToolMode     string     `json:"tool_mode"`       // "function_call" | "standalone" | ""
+	ConfigSchema any        `json:"config_schema"` // JSON Schema for config validation
+	IsTool       bool       `json:"is_tool"`       // usable as an agent tool
+	ToolMode     string     `json:"tool_mode"`     // "function_call" | "standalone" | ""
 }
 
 // PortSchema defines the input and output ports for a node type.
@@ -26,7 +26,7 @@ type PortSchema struct {
 // PortDef describes a single port on a node type.
 type PortDef struct {
 	Name     string `json:"name"`
-	Type     string `json:"type"`     // "string", "object", "array", "any"
+	Type     string `json:"type"` // "string", "object", "array", "any"
 	Required bool   `json:"required"`
 }
 

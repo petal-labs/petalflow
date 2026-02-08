@@ -9,11 +9,11 @@ import (
 // Diagnostic represents a validation error or warning produced by schema
 // or graph validation. Used by both graph and agent validators.
 type Diagnostic struct {
-	Code     string `json:"code"`               // e.g. "GR-001", "AT-003"
-	Severity string `json:"severity"`            // "error" or "warning"
-	Message  string `json:"message"`             // human-readable description
-	Path     string `json:"path,omitempty"`      // JSON path to offending field
-	Line     int    `json:"line,omitempty"`       // source line number (0 if unavailable)
+	Code     string `json:"code"`           // e.g. "GR-001", "AT-003"
+	Severity string `json:"severity"`       // "error" or "warning"
+	Message  string `json:"message"`        // human-readable description
+	Path     string `json:"path,omitempty"` // JSON path to offending field
+	Line     int    `json:"line,omitempty"` // source line number (0 if unavailable)
 }
 
 const (

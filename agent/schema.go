@@ -43,10 +43,10 @@ type Task struct {
 // ExecutionConfig controls how tasks are executed: sequentially, in parallel,
 // or via a manager agent.
 type ExecutionConfig struct {
-	Strategy      string                     `json:"strategy"`
-	TaskOrder     []string                   `json:"task_order,omitempty"`
-	MergeStrategy string                     `json:"merge_strategy,omitempty"`
-	ManagerAgent  string                     `json:"manager_agent,omitempty"`
+	Strategy      string                      `json:"strategy"`
+	TaskOrder     []string                    `json:"task_order,omitempty"`
+	MergeStrategy string                      `json:"merge_strategy,omitempty"`
+	ManagerAgent  string                      `json:"manager_agent,omitempty"`
 	Tasks         map[string]TaskDependencies `json:"tasks,omitempty"`
 }
 
@@ -58,7 +58,7 @@ type TaskDependencies struct {
 
 // LoadFromFile reads and parses an Agent/Task JSON file at the given path.
 func LoadFromFile(path string) (*AgentWorkflow, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path from caller
 	if err != nil {
 		return nil, fmt.Errorf("reading agent workflow file: %w", err)
 	}

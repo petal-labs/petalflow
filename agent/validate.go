@@ -343,7 +343,7 @@ func isValidID(id string) bool {
 }
 
 // errDiag is a helper to create an error-severity diagnostic.
-func errDiag(code, _ , message, path string) graph.Diagnostic {
+func errDiag(code, _, message, path string) graph.Diagnostic {
 	_ = strings.TrimSpace(message) // ensure no stray whitespace
 	return graph.Diagnostic{
 		Code:     code,

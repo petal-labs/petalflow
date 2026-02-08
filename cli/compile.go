@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/loader"
-	"github.com/spf13/cobra"
 )
 
 // NewCompileCmd creates the "compile" subcommand.
@@ -43,7 +44,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	outputPath, _ := cmd.Flags().GetString("output")
 
 	// Step 1: Read file
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath) // #nosec G304 -- path from user CLI arg
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return exitError(exitFileNotFound, "file not found: %s", filePath)
@@ -113,7 +114,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 
 	// Step 9: Write to --output or stdout
 	if outputPath != "" {
-		if err := os.WriteFile(outputPath, jsonOut, 0644); err != nil {
+		if err := os.WriteFile(outputPath, jsonOut, 0600); err != nil {
 			return fmt.Errorf("writing output file: %w", err)
 		}
 	} else {

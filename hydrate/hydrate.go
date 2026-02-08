@@ -91,7 +91,7 @@ func loadConfigFile() (*Config, error) {
 		path = filepath.Join(home, ".petalflow", "config.json")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path from well-known config location
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

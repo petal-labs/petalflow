@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/loader"
-	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 // NewValidateCmd creates the "validate" subcommand.
@@ -38,7 +39,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
 	// Read the file.
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath) // #nosec G304 -- path from user CLI arg
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return exitError(exitFileNotFound, "file not found: %s", filePath)

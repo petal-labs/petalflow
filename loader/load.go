@@ -12,7 +12,7 @@ import (
 // LoadWorkflow is the unified entry point that loads a workflow file,
 // auto-detects its schema kind, and returns the compiled GraphDefinition.
 func LoadWorkflow(path string) (*graph.GraphDefinition, SchemaKind, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path from caller
 	if err != nil {
 		return nil, "", fmt.Errorf("reading file %s: %w", path, err)
 	}
@@ -37,7 +37,7 @@ func LoadWorkflow(path string) (*graph.GraphDefinition, SchemaKind, error) {
 // LoadAgentWorkflow loads an Agent/Task workflow file, validates it,
 // compiles it to a GraphDefinition, and returns the result.
 func LoadAgentWorkflow(path string) (*graph.GraphDefinition, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path from caller
 	if err != nil {
 		return nil, fmt.Errorf("reading file %s: %w", path, err)
 	}
@@ -74,7 +74,7 @@ func loadAgentWorkflow(data []byte, path string) (*graph.GraphDefinition, error)
 // LoadGraphDefinition loads a Graph IR file, validates it, and returns
 // the GraphDefinition.
 func LoadGraphDefinition(path string) (*graph.GraphDefinition, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path from caller
 	if err != nil {
 		return nil, fmt.Errorf("reading file %s: %w", path, err)
 	}
