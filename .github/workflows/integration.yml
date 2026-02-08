@@ -1,0 +1,28 @@
+name: Integration Tests
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * *"
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    environment: CI
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+      - name: Verify required secrets
+        env:
+          HAS_OPENAI: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          if [ "$HAS_OPENAI" != "true" ]; then
+            echo "ERROR: Missing required secret OPENAI_API_KEY"
+            exit 1
+          fi
+      - name: Run integration tests
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: go test -tags=integration ./tests/integration/... -count=1 -v -timeout 120s
