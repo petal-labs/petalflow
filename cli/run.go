@@ -90,7 +90,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Hydrate the graph (build executable graph from definition)
 	factory := hydrate.NewLiveNodeFactory(providers, func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 		return llmprovider.NewClient(name, cfg)
-	})
+	},
+		hydrate.WithToolRegistry(core.NewToolRegistry()),
+		hydrate.WithHumanHandler(&cliHumanHandler{w: cmd.ErrOrStderr()}),
+	)
 	execGraph, err := hydrate.HydrateGraph(gd, providers, factory)
 	if err != nil {
 		return exitError(exitProvider, "hydrating graph: %v", err)

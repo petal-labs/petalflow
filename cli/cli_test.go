@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/petal-labs/petalflow/nodes"
 	"github.com/spf13/cobra"
 )
 
@@ -360,5 +362,68 @@ func TestRun_SubcommandHelp(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "--dry-run") {
 		t.Error("run help should show --dry-run flag")
+	}
+}
+
+// --- Stream flag tests ---
+
+func TestRun_StreamFlagAccepted(t *testing.T) {
+	path := writeTestFile(t, "workflow.json", validAgentJSON)
+	root := newTestRoot()
+	stdout, _, err := executeCommand(root, "run", path, "--stream", "--dry-run")
+	if err != nil {
+		t.Fatalf("--stream with --dry-run should not error, got: %v", err)
+	}
+	if !strings.Contains(stdout, "successful") {
+		t.Errorf("expected success message, got: %q", stdout)
+	}
+}
+
+// --- CLI human handler tests ---
+
+func TestCLIHumanHandler_AutoApproval(t *testing.T) {
+	var buf bytes.Buffer
+	h := &cliHumanHandler{w: &buf}
+
+	resp, err := h.Request(context.Background(), &nodes.HumanRequest{
+		ID:   "req-1",
+		Type: nodes.HumanRequestApproval,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !resp.Approved {
+		t.Error("expected Approved=true")
+	}
+	if resp.Choice != "approve" {
+		t.Errorf("expected Choice='approve', got %q", resp.Choice)
+	}
+	if !strings.Contains(buf.String(), "Auto-approving") {
+		t.Errorf("expected stderr warning, got: %q", buf.String())
+	}
+}
+
+func TestCLIHumanHandler_UnsupportedType(t *testing.T) {
+	var buf bytes.Buffer
+	h := &cliHumanHandler{w: &buf}
+
+	for _, typ := range []nodes.HumanRequestType{
+		nodes.HumanRequestInput,
+		nodes.HumanRequestChoice,
+		nodes.HumanRequestEdit,
+		nodes.HumanRequestReview,
+	} {
+		t.Run(string(typ), func(t *testing.T) {
+			_, err := h.Request(context.Background(), &nodes.HumanRequest{
+				ID:   "req-1",
+				Type: typ,
+			})
+			if err == nil {
+				t.Fatalf("expected error for type %q, got nil", typ)
+			}
+			if !strings.Contains(err.Error(), "not supported in CLI mode") {
+				t.Errorf("error should mention CLI mode, got: %q", err.Error())
+			}
+		})
 	}
 }
