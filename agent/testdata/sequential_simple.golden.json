@@ -34,13 +34,13 @@
       "source": "research__researcher",
       "sourceHandle": "output",
       "target": "write__writer",
-      "targetHandle": "research_data"
+      "targetHandle": "input"
     },
     {
       "source": "research__researcher",
       "sourceHandle": "output",
       "target": "write__writer",
-      "targetHandle": "input"
+      "targetHandle": "research_data"
     }
   ],
   "entry": "research__researcher"

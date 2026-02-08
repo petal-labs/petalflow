@@ -189,6 +189,20 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 		return nil, fmt.Errorf("unsupported execution strategy %q", wf.Execution.Strategy)
 	}
 
+	sort.Slice(gd.Edges, func(i, j int) bool {
+		ei, ej := gd.Edges[i], gd.Edges[j]
+		if ei.Source != ej.Source {
+			return ei.Source < ej.Source
+		}
+		if ei.Target != ej.Target {
+			return ei.Target < ej.Target
+		}
+		if ei.SourceHandle != ej.SourceHandle {
+			return ei.SourceHandle < ej.SourceHandle
+		}
+		return ei.TargetHandle < ej.TargetHandle
+	})
+
 	return gd, nil
 }
 
