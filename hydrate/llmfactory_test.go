@@ -130,8 +130,8 @@ func TestNewLiveNodeFactory_UnknownType(t *testing.T) {
 	nodeFactory := NewLiveNodeFactory(providers, factory)
 
 	nd := graph.NodeDef{
-		ID:   "merger",
-		Type: "merge",
+		ID:   "mystery",
+		Type: "some_unknown_type",
 	}
 
 	node, err := nodeFactory(nd)
@@ -272,5 +272,182 @@ func TestNewLiveNodeFactory_DefaultOutputKey(t *testing.T) {
 	llmNode := node.(*nodes.LLMNode)
 	if llmNode.Config().OutputKey != "mynode_output" {
 		t.Errorf("OutputKey = %q, want %q", llmNode.Config().OutputKey, "mynode_output")
+	}
+}
+
+// --- Merge node tests ---
+
+func TestNewLiveNodeFactory_MergeNode(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "merger",
+		Type: "merge",
+		Config: map[string]any{
+			"strategy":   "concat",
+			"var_name":   "text",
+			"separator":  "\n---\n",
+			"output_key": "merged",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mn, ok := node.(*nodes.MergeNode)
+	if !ok {
+		t.Fatalf("expected *nodes.MergeNode, got %T", node)
+	}
+
+	if mn.Kind() != "merge" {
+		t.Errorf("Kind = %q, want %q", mn.Kind(), "merge")
+	}
+}
+
+func TestNewLiveNodeFactory_MergeNode_DefaultStrategy(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:     "merger",
+		Type:   "merge",
+		Config: map[string]any{},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := node.(*nodes.MergeNode); !ok {
+		t.Fatalf("expected *nodes.MergeNode, got %T", node)
+	}
+}
+
+// --- Human node tests ---
+
+// mockHumanHandler implements nodes.HumanHandler for testing.
+type mockHumanHandler struct{}
+
+func (m *mockHumanHandler) Request(_ context.Context, _ *nodes.HumanRequest) (*nodes.HumanResponse, error) {
+	return &nodes.HumanResponse{}, nil
+}
+
+func TestNewLiveNodeFactory_HumanNode(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	handler := &mockHumanHandler{}
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory, WithHumanHandler(handler))
+
+	nd := graph.NodeDef{
+		ID:   "review",
+		Type: "human",
+		Config: map[string]any{
+			"mode":       "approval",
+			"prompt":     "Please approve this change.",
+			"output_var": "approved",
+			"timeout":    "30s",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	hn, ok := node.(*nodes.HumanNode)
+	if !ok {
+		t.Fatalf("expected *nodes.HumanNode, got %T", node)
+	}
+
+	if hn.Kind() != "human" {
+		t.Errorf("Kind = %q, want %q", hn.Kind(), "human")
+	}
+}
+
+func TestNewLiveNodeFactory_HumanNode_MissingHandler(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory) // no WithHumanHandler
+
+	nd := graph.NodeDef{
+		ID:   "review",
+		Type: "human",
+		Config: map[string]any{
+			"mode":   "approval",
+			"prompt": "Approve?",
+		},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for missing HumanHandler, got nil")
+	}
+}
+
+// --- Tool node tests ---
+
+// mockTool implements core.PetalTool for testing.
+type mockTool struct {
+	name string
+}
+
+func (m *mockTool) Name() string { return m.name }
+func (m *mockTool) Invoke(_ context.Context, _ map[string]any) (map[string]any, error) {
+	return nil, nil
+}
+
+func TestNewLiveNodeFactory_ToolNode(t *testing.T) {
+	registry := core.NewToolRegistry()
+	registry.Register(&mockTool{name: "web_search"})
+
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory, WithToolRegistry(registry))
+
+	nd := graph.NodeDef{
+		ID:   "search",
+		Type: "web_search",
+		Config: map[string]any{
+			"output_key": "results",
+			"timeout":    "10s",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	tn, ok := node.(*nodes.ToolNode)
+	if !ok {
+		t.Fatalf("expected *nodes.ToolNode, got %T", node)
+	}
+
+	if tn.Kind() != "tool" {
+		t.Errorf("Kind = %q, want %q", tn.Kind(), "tool")
+	}
+}
+
+func TestNewLiveNodeFactory_ToolNode_NotInRegistry(t *testing.T) {
+	registry := core.NewToolRegistry()
+	// Registry is empty — "web_search" not registered.
+
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory, WithToolRegistry(registry))
+
+	nd := graph.NodeDef{
+		ID:   "search",
+		Type: "web_search",
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Falls back to FuncNode placeholder.
+	if _, ok := node.(*core.FuncNode); !ok {
+		t.Errorf("expected *core.FuncNode placeholder, got %T", node)
 	}
 }
