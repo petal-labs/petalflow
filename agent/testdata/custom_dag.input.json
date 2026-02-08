@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "custom_dag",
+  "name": "Custom DAG",
+  "agents": {
+    "a1": { "role": "Agent 1", "goal": "Step 1", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "a2": { "role": "Agent 2", "goal": "Step 2", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "a3": { "role": "Agent 3", "goal": "Step 3", "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+  },
+  "tasks": {
+    "task_a": { "description": "First task", "agent": "a1", "expected_output": "Output A" },
+    "task_b": { "description": "Second task", "agent": "a2", "expected_output": "Output B" },
+    "task_c": { "description": "Third task", "agent": "a3", "expected_output": "Output C" }
+  },
+  "execution": {
+    "strategy": "custom",
+    "tasks": {
+      "task_a": { "depends_on": [] },
+      "task_b": { "depends_on": ["task_a"] },
+      "task_c": { "depends_on": ["task_a", "task_b"] }
+    }
+  }
+}

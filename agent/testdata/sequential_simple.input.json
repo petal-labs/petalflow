@@ -1,0 +1,39 @@
+{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "sequential_simple",
+  "name": "Sequential Simple",
+  "agents": {
+    "researcher": {
+      "role": "Senior Researcher",
+      "goal": "Find relevant information",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514"
+    },
+    "writer": {
+      "role": "Technical Writer",
+      "goal": "Write clear documentation",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514"
+    }
+  },
+  "tasks": {
+    "research": {
+      "description": "Research the topic thoroughly",
+      "agent": "researcher",
+      "expected_output": "A comprehensive summary of findings"
+    },
+    "write": {
+      "description": "Write a report based on research",
+      "agent": "writer",
+      "expected_output": "A well-structured report",
+      "inputs": {
+        "research_data": "{{tasks.research.output}}"
+      }
+    }
+  },
+  "execution": {
+    "strategy": "sequential",
+    "task_order": ["research", "write"]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "hitl_review",
+  "name": "HITL Review",
+  "agents": {
+    "drafter": {
+      "role": "Content Drafter",
+      "goal": "Draft content for review",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514"
+    }
+  },
+  "tasks": {
+    "draft": {
+      "description": "Draft the content",
+      "agent": "drafter",
+      "expected_output": "A draft document",
+      "review": "human"
+    }
+  },
+  "execution": {
+    "strategy": "sequential",
+    "task_order": ["draft"]
+  }
+}

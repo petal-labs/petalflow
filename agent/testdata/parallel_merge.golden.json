@@ -1,0 +1,53 @@
+{
+  "id": "parallel_merge",
+  "version": "1.0",
+  "metadata": {
+    "compiled_at": "NORMALIZED",
+    "compiler_version": "0.1.0",
+    "source_kind": "agent_workflow",
+    "source_version": "1.0"
+  },
+  "nodes": [
+    {
+      "id": "analyze__analyst",
+      "type": "llm_prompt",
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "Analyze the dataset",
+        "provider": "openai",
+        "system_prompt": "You are a Data Analyst.\n\nGoal: Analyze data\n\nExpected output: Analysis results"
+      }
+    },
+    {
+      "id": "review__reviewer",
+      "type": "llm_prompt",
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "Review data quality",
+        "provider": "openai",
+        "system_prompt": "You are a Quality Reviewer.\n\nGoal: Review quality\n\nExpected output: Quality report"
+      }
+    },
+    {
+      "id": "parallel_merge__merge",
+      "type": "merge",
+      "config": {
+        "strategy": "concat"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "analyze__analyst",
+      "sourceHandle": "output",
+      "target": "parallel_merge__merge",
+      "targetHandle": "input"
+    },
+    {
+      "source": "review__reviewer",
+      "sourceHandle": "output",
+      "target": "parallel_merge__merge",
+      "targetHandle": "input"
+    }
+  ]
+}

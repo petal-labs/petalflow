@@ -1,0 +1,25 @@
+{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "test_agent",
+  "name": "Test Agent Workflow",
+  "agents": {
+    "researcher": {
+      "role": "Researcher",
+      "goal": "Find information",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514"
+    }
+  },
+  "tasks": {
+    "research": {
+      "description": "Research the topic",
+      "agent": "researcher",
+      "expected_output": "Summary of findings"
+    }
+  },
+  "execution": {
+    "strategy": "sequential",
+    "task_order": ["research"]
+  }
+}

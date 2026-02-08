@@ -1,0 +1,13 @@
+id: test_graph_yaml
+version: "1.0"
+nodes:
+  - id: a
+    type: noop
+  - id: b
+    type: noop
+edges:
+  - source: a
+    sourceHandle: output
+    target: b
+    targetHandle: input
+entry: a

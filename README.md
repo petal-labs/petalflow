@@ -78,6 +78,68 @@ The data carrier that flows between nodes. Contains:
 ### Runtime
 Executes the graph. Handles node ordering, parallel branches, retries, and step-through debugging.
 
+## CLI
+
+PetalFlow includes a CLI for working with workflow files without writing Go code. It supports two schema formats:
+
+- **Agent/Task** (YAML or JSON) — a high-level format that defines agents, tasks, and execution strategy
+- **Graph IR** (JSON) — the low-level graph definition consumed by the runtime
+
+### Install
+
+```bash
+go install github.com/petal-labs/petalflow/cmd/petalflow@latest
+```
+
+### Commands
+
+```bash
+# Validate a workflow file
+petalflow validate workflow.yaml
+
+# Compile an agent workflow to graph IR
+petalflow compile workflow.yaml -o compiled.json
+
+# Run a workflow
+petalflow run workflow.yaml --input '{"topic": "AI agents"}'
+
+# Dry run (validate + compile only, no execution)
+petalflow run workflow.yaml --dry-run
+```
+
+### Agent/Task Schema
+
+Define agents and tasks in YAML — the CLI compiles them to a graph automatically:
+
+```yaml
+version: "1.0"
+kind: agent_workflow
+id: my_workflow
+name: My Workflow
+
+agents:
+  researcher:
+    role: Research Analyst
+    goal: Find information on a topic
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+
+tasks:
+  research:
+    description: Research {{input.topic}}
+    agent: researcher
+    expected_output: Summary of findings
+
+execution:
+  strategy: sequential
+  task_order:
+    - research
+```
+
+```bash
+petalflow run workflow.yaml --provider-key anthropic=sk-ant-... --input '{"topic": "Go"}'
+```
+
 ## Examples
 
 See the [`examples/`](./examples) directory:
@@ -89,6 +151,7 @@ See the [`examples/`](./examples) directory:
 | [03_sentiment_router](./examples/03_sentiment_router) | Conditional routing based on input |
 | [04_data_pipeline](./examples/04_data_pipeline) | Filter and transform data |
 | [05_rag_workflow](./examples/05_rag_workflow) | Retrieval-augmented generation pattern |
+| [06_cli_workflow](./examples/06_cli_workflow) | Using the CLI with workflow files |
 
 ## LLM Integration with Iris
 
