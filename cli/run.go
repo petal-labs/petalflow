@@ -12,6 +12,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
+	"github.com/petal-labs/petalflow/llmprovider"
 	"github.com/petal-labs/petalflow/loader"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/server"
@@ -87,7 +88,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	// Hydrate the graph (build executable graph from definition)
-	execGraph, err := hydrate.HydrateGraph(gd, providers, nil)
+	factory := hydrate.NewLiveNodeFactory(providers, func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+		return llmprovider.NewClient(name, cfg)
+	})
+	execGraph, err := hydrate.HydrateGraph(gd, providers, factory)
 	if err != nil {
 		return exitError(exitProvider, "hydrating graph: %v", err)
 	}

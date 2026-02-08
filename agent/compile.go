@@ -80,7 +80,7 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 		// Build config for the LLM node
 		config := map[string]any{
 			"system_prompt":   systemPrompt,
-			"prompt_template": task.Description,
+			"prompt_template": rewriteTemplate(task.Description, taskNodeIDs),
 			"provider":        ag.Provider,
 			"model":           ag.Model,
 		}
@@ -368,6 +368,39 @@ func buildSystemPrompt(ag Agent, task Task) string {
 	sb.WriteString(fmt.Sprintf("\n\nExpected output: %s", task.ExpectedOutput))
 	return sb.String()
 }
+
+// rewriteTemplate converts agent-schema template placeholders into valid
+// Go text/template syntax that matches the runtime envelope data layout.
+//
+// Rewrites:
+//
+//	{{input.X}}            → {{.X}}               (input vars are in the flat Vars map)
+//	{{tasks.TASK.output}}  → {{.NODEID_output}}   (using the compiled node ID)
+func rewriteTemplate(tmpl string, taskNodeIDs map[string]string) string {
+	// {{input.FIELD}} → {{.FIELD}}
+	s := inputRefPattern.ReplaceAllString(tmpl, "{{.${1}}}")
+
+	// {{tasks.TASKID.output}} → {{.NODEID_output}}
+	s = taskRefPattern.ReplaceAllStringFunc(s, func(match string) string {
+		sub := taskRefPattern.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		taskID := sub[1]
+		nodeID, ok := taskNodeIDs[taskID]
+		if !ok {
+			return match // leave unresolved; validation catches it
+		}
+		return "{{." + nodeID + "_output}}"
+	})
+
+	return s
+}
+
+var (
+	inputRefPattern = regexp.MustCompile(`\{\{input\.([a-zA-Z0-9_.]+)\}\}`)
+	taskRefPattern  = regexp.MustCompile(`\{\{tasks\.([a-zA-Z0-9_]+)\.output\}\}`)
+)
 
 // compileExtractTaskRefs finds all {{tasks.X.output}} references in a template string.
 var compileRefPattern = regexp.MustCompile(`\{\{tasks\.([a-zA-Z0-9_]+)\.[^}]+\}\}`)
