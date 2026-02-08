@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	iriscore "github.com/petal-labs/iris/core"
 
@@ -172,5 +173,88 @@ func toIrisRole(role string) iriscore.Role {
 	}
 }
 
+// CompleteStream sends a streaming completion request via the iris provider.
+// It calls provider.StreamChat() and converts Iris ChatChunks into core.StreamChunks
+// on a channel. The channel is closed when streaming is complete. The final chunk
+// has Done=true and includes Usage if available from the provider.
+func (a *irisAdapter) CompleteStream(ctx context.Context, req core.LLMRequest) (<-chan core.StreamChunk, error) {
+	chatReq := a.toRequest(req)
+
+	stream, err := a.provider.StreamChat(ctx, chatReq)
+	if err != nil {
+		return nil, fmt.Errorf("provider stream chat failed: %w", err)
+	}
+
+	out := make(chan core.StreamChunk, 1)
+
+	go func() {
+		defer close(out)
+
+		var accumulated strings.Builder
+		index := 0
+
+		for chunk := range stream.Ch {
+			accumulated.WriteString(chunk.Delta)
+			sc := core.StreamChunk{
+				Delta:       chunk.Delta,
+				Index:       index,
+				Accumulated: accumulated.String(),
+			}
+			select {
+			case out <- sc:
+			case <-ctx.Done():
+				out <- core.StreamChunk{
+					Error: ctx.Err(),
+					Done:  true,
+				}
+				return
+			}
+			index++
+		}
+
+		if ctx.Err() != nil {
+			out <- core.StreamChunk{
+				Error: ctx.Err(),
+				Done:  true,
+			}
+			return
+		}
+
+		select {
+		case err, ok := <-stream.Err:
+			if ok && err != nil {
+				out <- core.StreamChunk{
+					Error: err,
+					Done:  true,
+				}
+				return
+			}
+		default:
+		}
+
+		var finalChunk core.StreamChunk
+		finalChunk.Done = true
+		finalChunk.Index = index
+		finalChunk.Accumulated = accumulated.String()
+
+		select {
+		case resp, ok := <-stream.Final:
+			if ok && resp != nil {
+				finalChunk.Usage = &core.LLMTokenUsage{
+					InputTokens:  resp.Usage.PromptTokens,
+					OutputTokens: resp.Usage.CompletionTokens,
+					TotalTokens:  resp.Usage.TotalTokens,
+				}
+			}
+		case <-ctx.Done():
+			finalChunk.Error = ctx.Err()
+		}
+
+		out <- finalChunk
+	}()
+
+	return out, nil
+}
+
 // Compile-time interface check.
-var _ core.LLMClient = (*irisAdapter)(nil)
+var _ core.StreamingLLMClient = (*irisAdapter)(nil)
