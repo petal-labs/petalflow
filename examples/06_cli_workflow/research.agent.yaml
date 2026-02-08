@@ -1,0 +1,38 @@
+version: "1.0"
+kind: agent_workflow
+id: research_workflow
+name: Research Assistant
+
+agents:
+  researcher:
+    role: Research Analyst
+    goal: Gather and summarize information on a given topic
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+
+  writer:
+    role: Technical Writer
+    goal: Produce a clear, concise report from research findings
+    provider: anthropic
+    model: claude-sonnet-4-20250514
+
+tasks:
+  research:
+    description: >
+      Research the topic provided in {{input.topic}}.
+      Identify key facts, recent developments, and relevant context.
+    agent: researcher
+    expected_output: A structured summary of findings with key points
+
+  write_report:
+    description: >
+      Using the research from {{tasks.research.output}}, write a short
+      report suitable for a technical audience.
+    agent: writer
+    expected_output: A polished report of 2-3 paragraphs
+
+execution:
+  strategy: sequential
+  task_order:
+    - research
+    - write_report

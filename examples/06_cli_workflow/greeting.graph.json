@@ -1,0 +1,16 @@
+{
+  "id": "greeting_graph",
+  "version": "1.0",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "transform",
+      "config": {
+        "template": "Hello, {{.name}}! Welcome to PetalFlow.",
+        "output_key": "greeting"
+      }
+    }
+  ],
+  "edges": [],
+  "entry": "greet"
+}

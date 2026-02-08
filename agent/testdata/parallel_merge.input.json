@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "parallel_merge",
+  "name": "Parallel Merge",
+  "agents": {
+    "analyst": {
+      "role": "Data Analyst",
+      "goal": "Analyze data",
+      "provider": "openai",
+      "model": "gpt-4o"
+    },
+    "reviewer": {
+      "role": "Quality Reviewer",
+      "goal": "Review quality",
+      "provider": "openai",
+      "model": "gpt-4o"
+    }
+  },
+  "tasks": {
+    "analyze": {
+      "description": "Analyze the dataset",
+      "agent": "analyst",
+      "expected_output": "Analysis results"
+    },
+    "review": {
+      "description": "Review data quality",
+      "agent": "reviewer",
+      "expected_output": "Quality report"
+    }
+  },
+  "execution": {
+    "strategy": "parallel",
+    "merge_strategy": "concat"
+  }
+}

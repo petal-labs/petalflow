@@ -1,0 +1,47 @@
+{
+  "id": "sequential_simple",
+  "version": "1.0",
+  "metadata": {
+    "compiled_at": "NORMALIZED",
+    "compiler_version": "0.1.0",
+    "source_kind": "agent_workflow",
+    "source_version": "1.0"
+  },
+  "nodes": [
+    {
+      "id": "research__researcher",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Research the topic thoroughly",
+        "provider": "anthropic",
+        "system_prompt": "You are a Senior Researcher.\n\nGoal: Find relevant information\n\nExpected output: A comprehensive summary of findings"
+      }
+    },
+    {
+      "id": "write__writer",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Write a report based on research",
+        "provider": "anthropic",
+        "system_prompt": "You are a Technical Writer.\n\nGoal: Write clear documentation\n\nExpected output: A well-structured report"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "research__researcher",
+      "sourceHandle": "output",
+      "target": "write__writer",
+      "targetHandle": "research_data"
+    },
+    {
+      "source": "research__researcher",
+      "sourceHandle": "output",
+      "target": "write__writer",
+      "targetHandle": "input"
+    }
+  ],
+  "entry": "research__researcher"
+}

@@ -1,0 +1,306 @@
+package graph
+
+import (
+	"fmt"
+
+	"github.com/petal-labs/petalflow/core"
+)
+
+// Diagnostic represents a validation error or warning produced by schema
+// or graph validation. Used by both graph and agent validators.
+type Diagnostic struct {
+	Code     string `json:"code"`               // e.g. "GR-001", "AT-003"
+	Severity string `json:"severity"`            // "error" or "warning"
+	Message  string `json:"message"`             // human-readable description
+	Path     string `json:"path,omitempty"`      // JSON path to offending field
+	Line     int    `json:"line,omitempty"`       // source line number (0 if unavailable)
+}
+
+const (
+	SeverityError   = "error"
+	SeverityWarning = "warning"
+)
+
+// HasErrors returns true if any diagnostic has error severity.
+func HasErrors(diags []Diagnostic) bool {
+	for _, d := range diags {
+		if d.Severity == SeverityError {
+			return true
+		}
+	}
+	return false
+}
+
+// Errors returns only the error-severity diagnostics.
+func Errors(diags []Diagnostic) []Diagnostic {
+	var errs []Diagnostic
+	for _, d := range diags {
+		if d.Severity == SeverityError {
+			errs = append(errs, d)
+		}
+	}
+	return errs
+}
+
+// Warnings returns only the warning-severity diagnostics.
+func Warnings(diags []Diagnostic) []Diagnostic {
+	var warns []Diagnostic
+	for _, d := range diags {
+		if d.Severity == SeverityWarning {
+			warns = append(warns, d)
+		}
+	}
+	return warns
+}
+
+// GraphDefinition is the serializable intermediate representation of a workflow.
+// Both the Agent/Task compiler and direct JSON/YAML loading produce this type.
+// The Runtime consumes it to build an executable Graph.
+type GraphDefinition struct {
+	ID       string            `json:"id"`
+	Version  string            `json:"version"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+	Nodes    []NodeDef         `json:"nodes"`
+	Edges    []EdgeDef         `json:"edges"`
+	Entry    string            `json:"entry,omitempty"`
+}
+
+// NodeDef is a serializable node within a GraphDefinition.
+type NodeDef struct {
+	ID     string         `json:"id"`
+	Type   string         `json:"type"`
+	Config map[string]any `json:"config,omitempty"`
+}
+
+// EdgeDef is a serializable edge within a GraphDefinition.
+type EdgeDef struct {
+	Source       string `json:"source"`
+	SourceHandle string `json:"sourceHandle"`
+	Target       string `json:"target"`
+	TargetHandle string `json:"targetHandle"`
+}
+
+// Validate checks structural integrity of the GraphDefinition.
+// It checks rules that can be verified without a node registry:
+//   - GR-001: edge source/target reference existing nodes
+//   - GR-002: orphan nodes (warning)
+//   - GR-004: topological sort (cycle detection)
+//   - GR-005: duplicate node IDs
+//   - GR-007: entry references existing node
+//
+// Registry-dependent rules (GR-003, GR-006, GR-008) require a registry
+// and are checked via ValidateWithRegistry.
+func (gd *GraphDefinition) Validate() []Diagnostic {
+	var diags []Diagnostic
+
+	nodeIDs := make(map[string]bool, len(gd.Nodes))
+
+	// GR-005: duplicate node IDs
+	for i, node := range gd.Nodes {
+		if nodeIDs[node.ID] {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-005",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Duplicate node ID %q", node.ID),
+				Path:     fmt.Sprintf("nodes[%d].id", i),
+			})
+		}
+		nodeIDs[node.ID] = true
+	}
+
+	// GR-001: edge source/target must reference existing nodes
+	for i, edge := range gd.Edges {
+		if !nodeIDs[edge.Source] {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-001",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Edge source %q references unknown node", edge.Source),
+				Path:     fmt.Sprintf("edges[%d].source", i),
+			})
+		}
+		if !nodeIDs[edge.Target] {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-001",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Edge target %q references unknown node", edge.Target),
+				Path:     fmt.Sprintf("edges[%d].target", i),
+			})
+		}
+	}
+
+	// GR-007: entry must reference an existing node
+	if gd.Entry != "" && !nodeIDs[gd.Entry] {
+		diags = append(diags, Diagnostic{
+			Code:     "GR-007",
+			Severity: SeverityError,
+			Message:  fmt.Sprintf("Entry node %q does not exist", gd.Entry),
+			Path:     "entry",
+		})
+	}
+
+	// GR-002: orphan nodes — nodes with no inbound and no outbound edges
+	if len(gd.Nodes) > 1 {
+		hasInbound := make(map[string]bool)
+		hasOutbound := make(map[string]bool)
+		for _, edge := range gd.Edges {
+			hasOutbound[edge.Source] = true
+			hasInbound[edge.Target] = true
+		}
+		for i, node := range gd.Nodes {
+			if !hasInbound[node.ID] && !hasOutbound[node.ID] {
+				diags = append(diags, Diagnostic{
+					Code:     "GR-002",
+					Severity: SeverityWarning,
+					Message:  fmt.Sprintf("Node %q has no inbound or outbound edges", node.ID),
+					Path:     fmt.Sprintf("nodes[%d]", i),
+				})
+			}
+		}
+	}
+
+	// GR-004: cycle detection via topological sort (Kahn's algorithm)
+	// Only run if edges reference valid nodes to avoid confusion.
+	if !hasEdgeRefErrors(diags) {
+		if cycle := gd.detectCycle(); cycle != "" {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-004",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Graph contains a cycle: %s", cycle),
+			})
+		}
+	}
+
+	return diags
+}
+
+// hasEdgeRefErrors returns true if diagnostics contain GR-001 errors.
+func hasEdgeRefErrors(diags []Diagnostic) bool {
+	for _, d := range diags {
+		if d.Code == "GR-001" {
+			return true
+		}
+	}
+	return false
+}
+
+// detectCycle uses Kahn's algorithm to find cycles. Returns a description
+// of the cycle if found, or empty string if the graph is acyclic.
+func (gd *GraphDefinition) detectCycle() string {
+	// Build adjacency and in-degree from edges
+	inDegree := make(map[string]int)
+	successors := make(map[string][]string)
+	for _, node := range gd.Nodes {
+		inDegree[node.ID] = 0
+	}
+	for _, edge := range gd.Edges {
+		successors[edge.Source] = append(successors[edge.Source], edge.Target)
+		inDegree[edge.Target]++
+	}
+
+	// Collect nodes with zero in-degree
+	queue := make([]string, 0)
+	for _, node := range gd.Nodes {
+		if inDegree[node.ID] == 0 {
+			queue = append(queue, node.ID)
+		}
+	}
+
+	visited := 0
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		visited++
+		for _, succ := range successors[current] {
+			inDegree[succ]--
+			if inDegree[succ] == 0 {
+				queue = append(queue, succ)
+			}
+		}
+	}
+
+	if visited < len(gd.Nodes) {
+		// Collect nodes still in cycle
+		var cycleNodes []string
+		for _, node := range gd.Nodes {
+			if inDegree[node.ID] > 0 {
+				cycleNodes = append(cycleNodes, node.ID)
+			}
+		}
+		return fmt.Sprintf("nodes involved: %v", cycleNodes)
+	}
+	return ""
+}
+
+// BuildOption configures how a GraphDefinition is converted to an executable Graph.
+type BuildOption func(*buildConfig)
+
+type buildConfig struct {
+	nodeFactory func(NodeDef) (core.Node, error)
+}
+
+// WithNodeFactory sets the function used to instantiate live Node objects
+// from NodeDef descriptors. Typically provided by the registry or hydrate package.
+func WithNodeFactory(factory func(NodeDef) (core.Node, error)) BuildOption {
+	return func(c *buildConfig) {
+		c.nodeFactory = factory
+	}
+}
+
+// ToGraph converts a GraphDefinition into an executable Graph by resolving
+// node types via the provided node factory and wiring edges.
+func (gd *GraphDefinition) ToGraph(opts ...BuildOption) (*BasicGraph, error) {
+	cfg := &buildConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	if cfg.nodeFactory == nil {
+		return nil, fmt.Errorf("node factory is required: use WithNodeFactory")
+	}
+
+	g := NewGraph(gd.ID)
+
+	// Instantiate nodes
+	for _, nd := range gd.Nodes {
+		node, err := cfg.nodeFactory(nd)
+		if err != nil {
+			return nil, fmt.Errorf("creating node %q (type %q): %w", nd.ID, nd.Type, err)
+		}
+		if err := g.AddNode(node); err != nil {
+			return nil, fmt.Errorf("adding node %q: %w", nd.ID, err)
+		}
+	}
+
+	// Wire edges (EdgeDef carries port handles; BasicGraph edges are node-to-node)
+	for _, ed := range gd.Edges {
+		if err := g.AddEdge(ed.Source, ed.Target); err != nil {
+			return nil, fmt.Errorf("adding edge %s -> %s: %w", ed.Source, ed.Target, err)
+		}
+	}
+
+	// Resolve entry node
+	entry := gd.Entry
+	if entry == "" && len(gd.Nodes) > 0 {
+		// Default: first node with no inbound edges
+		hasInbound := make(map[string]bool)
+		for _, ed := range gd.Edges {
+			hasInbound[ed.Target] = true
+		}
+		for _, nd := range gd.Nodes {
+			if !hasInbound[nd.ID] {
+				entry = nd.ID
+				break
+			}
+		}
+		// Fallback: first node
+		if entry == "" {
+			entry = gd.Nodes[0].ID
+		}
+	}
+	if entry != "" {
+		if err := g.SetEntry(entry); err != nil {
+			return nil, fmt.Errorf("setting entry node %q: %w", entry, err)
+		}
+	}
+
+	return g, nil
+}

@@ -1,0 +1,63 @@
+{
+  "id": "custom_dag",
+  "version": "1.0",
+  "metadata": {
+    "compiled_at": "NORMALIZED",
+    "compiler_version": "0.1.0",
+    "source_kind": "agent_workflow",
+    "source_version": "1.0"
+  },
+  "nodes": [
+    {
+      "id": "task_a__a1",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "First task",
+        "provider": "anthropic",
+        "system_prompt": "You are a Agent 1.\n\nGoal: Step 1\n\nExpected output: Output A"
+      }
+    },
+    {
+      "id": "task_b__a2",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Second task",
+        "provider": "anthropic",
+        "system_prompt": "You are a Agent 2.\n\nGoal: Step 2\n\nExpected output: Output B"
+      }
+    },
+    {
+      "id": "task_c__a3",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Third task",
+        "provider": "anthropic",
+        "system_prompt": "You are a Agent 3.\n\nGoal: Step 3\n\nExpected output: Output C"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "task_a__a1",
+      "sourceHandle": "output",
+      "target": "task_b__a2",
+      "targetHandle": "input"
+    },
+    {
+      "source": "task_a__a1",
+      "sourceHandle": "output",
+      "target": "task_c__a3",
+      "targetHandle": "input"
+    },
+    {
+      "source": "task_b__a2",
+      "sourceHandle": "output",
+      "target": "task_c__a3",
+      "targetHandle": "input"
+    }
+  ],
+  "entry": "task_a__a1"
+}

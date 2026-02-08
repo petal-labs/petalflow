@@ -1,0 +1,39 @@
+{
+  "id": "hitl_review",
+  "version": "1.0",
+  "metadata": {
+    "compiled_at": "NORMALIZED",
+    "compiler_version": "0.1.0",
+    "source_kind": "agent_workflow",
+    "source_version": "1.0"
+  },
+  "nodes": [
+    {
+      "id": "draft__drafter",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Draft the content",
+        "provider": "anthropic",
+        "system_prompt": "You are a Content Drafter.\n\nGoal: Draft content for review\n\nExpected output: A draft document"
+      }
+    },
+    {
+      "id": "draft__drafter__hitl",
+      "type": "human",
+      "config": {
+        "mode": "approval",
+        "task_id": "draft"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "draft__drafter",
+      "sourceHandle": "output",
+      "target": "draft__drafter__hitl",
+      "targetHandle": "input"
+    }
+  ],
+  "entry": "draft__drafter__hitl"
+}

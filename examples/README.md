@@ -81,3 +81,16 @@ Demonstrates:
 - Full RAG pipeline: Query → Retrieve → Generate
 
 Requires: Ollama running locally with `llama3.2` model.
+
+---
+
+### 06_cli_workflow
+**Using the CLI with workflow files.**
+
+Demonstrates:
+- Agent/Task YAML schema for defining multi-agent workflows
+- Graph IR JSON for low-level graph definitions
+- CLI commands: `validate`, `compile`, `run`
+- Passing input data and provider credentials via flags
+
+No Go code required — just workflow definition files and the `petalflow` CLI.
