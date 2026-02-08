@@ -3,6 +3,7 @@ package hydrate
 import (
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
@@ -14,10 +15,36 @@ import (
 // the caller supplies an implementation backed by llmprovider.
 type ClientFactory func(providerName string, cfg ProviderConfig) (core.LLMClient, error)
 
-// NewLiveNodeFactory returns a NodeFactory that creates real LLMNode and
-// LLMRouter instances wired to live LLM providers. Non-LLM node types fall
-// back to FuncNode placeholders.
-func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory) NodeFactory {
+// liveFactoryOptions holds optional dependencies for non-LLM node types.
+type liveFactoryOptions struct {
+	toolRegistry *core.ToolRegistry
+	humanHandler nodes.HumanHandler
+}
+
+// LiveNodeOption configures optional dependencies for NewLiveNodeFactory.
+type LiveNodeOption func(*liveFactoryOptions)
+
+// WithToolRegistry provides a ToolRegistry so that tool-type nodes resolve to
+// real ToolNode instances instead of FuncNode placeholders.
+func WithToolRegistry(r *core.ToolRegistry) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.toolRegistry = r }
+}
+
+// WithHumanHandler provides a HumanHandler so that human-type nodes resolve to
+// real HumanNode instances instead of FuncNode placeholders.
+func WithHumanHandler(h nodes.HumanHandler) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.humanHandler = h }
+}
+
+// NewLiveNodeFactory returns a NodeFactory that creates real LLMNode,
+// LLMRouter, MergeNode, HumanNode, and ToolNode instances. Node types
+// without the required dependencies fall back to FuncNode placeholders.
+func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts ...LiveNodeOption) NodeFactory {
+	var options liveFactoryOptions
+	for _, o := range opts {
+		o(&options)
+	}
+
 	// Cache one client per provider name so multiple nodes sharing a provider reuse it.
 	clients := make(map[string]core.LLMClient)
 
@@ -43,7 +70,17 @@ func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory) Node
 			return buildLLMNode(nd, getClient)
 		case "llm_router":
 			return buildLLMRouter(nd, getClient)
+		case "merge":
+			return buildMergeNode(nd)
+		case "human":
+			return buildHumanNode(nd, options.humanHandler)
 		default:
+			// Check if the type matches a registered tool.
+			if options.toolRegistry != nil {
+				if tool, ok := options.toolRegistry.Get(nd.Type); ok {
+					return buildToolNode(nd, tool), nil
+				}
+			}
 			return core.NewFuncNode(nd.ID, nil), nil
 		}
 	}
@@ -137,4 +174,78 @@ func configInt(m map[string]any, key string) (int, bool) {
 		return 0, false
 	}
 	return int(v), true
+}
+
+// configDuration extracts a time.Duration from config.
+// Accepts a string (e.g. "30s", "5m") or a float64 interpreted as seconds.
+func configDuration(m map[string]any, key string) time.Duration {
+	switch v := m[key].(type) {
+	case string:
+		d, _ := time.ParseDuration(v)
+		return d
+	case float64:
+		return time.Duration(v * float64(time.Second))
+	}
+	return 0
+}
+
+// --- merge / human / tool builders ---
+
+// buildMergeNode creates a MergeNode from a NodeDef.
+func buildMergeNode(nd graph.NodeDef) (core.Node, error) {
+	cfg := nodes.MergeNodeConfig{
+		OutputKey: configString(nd.Config, "output_key"),
+	}
+
+	strategy := configString(nd.Config, "strategy")
+	switch strategy {
+	case "concat":
+		cfg.Strategy = nodes.NewConcatMergeStrategy(nodes.ConcatMergeConfig{
+			VarName:   configString(nd.Config, "var_name"),
+			Separator: configString(nd.Config, "separator"),
+		})
+	case "best_score":
+		higherIsBetter := true
+		if v, ok := nd.Config["higher_is_better"].(bool); ok {
+			higherIsBetter = v
+		}
+		cfg.Strategy = nodes.NewBestScoreMergeStrategy(nodes.BestScoreMergeConfig{
+			ScoreVar:       configString(nd.Config, "score_var"),
+			HigherIsBetter: higherIsBetter,
+		})
+	default:
+		// "json" or empty → JSON merge (the node default)
+		cfg.Strategy = nodes.NewJSONMergeStrategy(nodes.JSONMergeConfig{})
+	}
+
+	return nodes.NewMergeNode(nd.ID, cfg), nil
+}
+
+// buildHumanNode creates a HumanNode from a NodeDef.
+// Returns an error if no HumanHandler was provided.
+func buildHumanNode(nd graph.NodeDef, handler nodes.HumanHandler) (core.Node, error) {
+	if handler == nil {
+		return nil, fmt.Errorf("node %q: human node requires a HumanHandler (use WithHumanHandler)", nd.ID)
+	}
+
+	cfg := nodes.HumanNodeConfig{
+		RequestType: nodes.HumanRequestType(configString(nd.Config, "mode")),
+		Prompt:      configString(nd.Config, "prompt"),
+		OutputVar:   configString(nd.Config, "output_var"),
+		Timeout:     configDuration(nd.Config, "timeout"),
+		Handler:     handler,
+	}
+
+	return nodes.NewHumanNode(nd.ID, cfg), nil
+}
+
+// buildToolNode creates a ToolNode from a NodeDef and a resolved tool.
+func buildToolNode(nd graph.NodeDef, tool core.PetalTool) *nodes.ToolNode {
+	cfg := nodes.ToolNodeConfig{
+		ToolName:  nd.Type,
+		OutputKey: configString(nd.Config, "output_key"),
+		Timeout:   configDuration(nd.Config, "timeout"),
+	}
+
+	return nodes.NewToolNode(nd.ID, tool, cfg)
 }
