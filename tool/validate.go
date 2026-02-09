@@ -10,10 +10,14 @@ const (
 
 // Diagnostic is a structured validation finding.
 type Diagnostic struct {
-	Field    string   `json:"field,omitempty"`
-	Code     string   `json:"code,omitempty"`
-	Severity Severity `json:"severity"`
-	Message  string   `json:"message"`
+	Field       string   `json:"field,omitempty"`
+	SourceField string   `json:"source_field,omitempty"`
+	TargetField string   `json:"target_field,omitempty"`
+	SourceType  string   `json:"source_type,omitempty"`
+	TargetType  string   `json:"target_type,omitempty"`
+	Code        string   `json:"code,omitempty"`
+	Severity    Severity `json:"severity"`
+	Message     string   `json:"message"`
 }
 
 // ManifestValidator validates a tool manifest.
