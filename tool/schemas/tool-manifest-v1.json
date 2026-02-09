@@ -59,6 +59,7 @@
         "type": {
           "type": "string",
           "enum": [
+            "native",
             "http",
             "stdio",
             "mcp"

@@ -7,6 +7,6 @@
 //   - validate: validation diagnostics and pipelines
 //   - health: health check status models and probing contracts
 //
-// This package currently provides skeleton interfaces and data models that
-// subsequent implementation tasks will fill in.
+// The package is intentionally transport-agnostic so CLI, daemon, and runtime
+// paths can share one manifest/registration contract.
 package tool

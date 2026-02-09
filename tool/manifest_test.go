@@ -53,6 +53,10 @@ func TestToolManifestJSONRoundTrip(t *testing.T) {
 		transport TransportSpec
 	}{
 		{
+			name:      "native",
+			transport: NewNativeTransport(),
+		},
+		{
 			name: "http",
 			transport: NewHTTPTransport(HTTPTransport{
 				Endpoint:  "http://localhost:9801",

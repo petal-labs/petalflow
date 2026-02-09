@@ -52,6 +52,11 @@ func (V1TypeSystemValidator) ValidateManifestTypes(manifest Manifest) []Diagnost
 	return diags
 }
 
+// ValidateManifest satisfies ManifestValidator.
+func (v V1TypeSystemValidator) ValidateManifest(manifest Manifest) []Diagnostic {
+	return v.ValidateManifestTypes(manifest)
+}
+
 // ValidateCompatibility validates a source output field against a target input field.
 //
 // When either side is typed as "any", compatibility is allowed but returns a warning.

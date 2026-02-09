@@ -157,9 +157,9 @@ func (v *manifestSchemaValidator) validateTransport(obj map[string]any) {
 	}
 
 	switch TransportType(transportType) {
-	case TransportTypeHTTP, TransportTypeStdio, TransportTypeMCP:
+	case TransportTypeNative, TransportTypeHTTP, TransportTypeStdio, TransportTypeMCP:
 	default:
-		v.add("transport.type", "ENUM", "must be one of: http, stdio, mcp")
+		v.add("transport.type", "ENUM", "must be one of: native, http, stdio, mcp")
 	}
 
 	if timeoutRaw, ok := obj["timeout_ms"]; ok {
@@ -216,6 +216,8 @@ func (v *manifestSchemaValidator) validateTransport(obj map[string]any) {
 	}
 
 	switch TransportType(transportType) {
+	case TransportTypeNative:
+		// Native tools are invoked in-process and require no transport endpoint fields.
 	case TransportTypeHTTP:
 		endpoint, ok := v.requireString(obj, "endpoint", "transport.endpoint")
 		if ok && strings.TrimSpace(endpoint) == "" {

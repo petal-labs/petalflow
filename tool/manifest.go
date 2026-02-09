@@ -12,9 +12,10 @@ const (
 type TransportType string
 
 const (
-	TransportTypeHTTP  TransportType = "http"
-	TransportTypeStdio TransportType = "stdio"
-	TransportTypeMCP   TransportType = "mcp"
+	TransportTypeNative TransportType = "native"
+	TransportTypeHTTP   TransportType = "http"
+	TransportTypeStdio  TransportType = "stdio"
+	TransportTypeMCP    TransportType = "mcp"
 )
 
 // MCPMode defines how an MCP server is connected.
@@ -147,6 +148,13 @@ func NewHTTPTransport(cfg HTTPTransport) TransportSpec {
 		Endpoint:  cfg.Endpoint,
 		TimeoutMS: cfg.TimeoutMS,
 		Retry:     cfg.Retry,
+	}
+}
+
+// NewNativeTransport creates a transport specification for in-process tools.
+func NewNativeTransport() TransportSpec {
+	return TransportSpec{
+		Type: TransportTypeNative,
 	}
 }
 

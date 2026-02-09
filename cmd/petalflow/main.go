@@ -43,4 +43,5 @@ func init() {
 	rootCmd.AddCommand(cli.NewCompileCmd())
 	rootCmd.AddCommand(cli.NewValidateCmd())
 	rootCmd.AddCommand(cli.NewServeCmd())
+	rootCmd.AddCommand(cli.NewToolsCmd())
 }
