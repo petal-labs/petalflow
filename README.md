@@ -105,7 +105,14 @@ petalflow run workflow.yaml --input '{"topic": "AI agents"}'
 
 # Dry run (validate + compile only, no execution)
 petalflow run workflow.yaml --dry-run
+
+# Register and inspect tools
+petalflow tools register echo_http --type http --manifest ./tools/echo_http.tool.json
+petalflow tools list
+petalflow tools inspect echo_http
 ```
+
+Tooling quickstart and troubleshooting: [`docs/tools-cli.md`](./docs/tools-cli.md)
 
 ### Agent/Task Schema
 
