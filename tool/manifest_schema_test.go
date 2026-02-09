@@ -3,6 +3,7 @@ package tool
 import (
 	"encoding/json"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -123,6 +124,23 @@ func TestValidateManifestJSONRequiredFieldErrors(t *testing.T) {
 
 func TestSchemaManifestValidatorImplementsInterface(t *testing.T) {
 	var _ ManifestValidator = SchemaManifestValidator{}
+}
+
+func TestAsIntegerOverflowGuards(t *testing.T) {
+	if got, ok := asInteger(uint(1)); !ok || got != 1 {
+		t.Fatalf("asInteger(uint(1)) = (%d, %t), want (1, true)", got, ok)
+	}
+
+	if strconv.IntSize == 64 {
+		maxUint := ^uint(0)
+		if _, ok := asInteger(maxUint); ok {
+			t.Fatal("asInteger(max uint) should fail on 64-bit when value exceeds int64")
+		}
+	}
+
+	if _, ok := asInteger(maxInt64AsUint64 + 1); ok {
+		t.Fatal("asInteger(uint64(maxInt64+1)) should fail")
+	}
 }
 
 func diagnosticFields(diags []Diagnostic) []string {

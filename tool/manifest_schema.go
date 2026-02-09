@@ -10,7 +10,10 @@ import (
 	"strings"
 )
 
-const manifestSchemaV1Path = "schemas/tool-manifest-v1.json"
+const (
+	manifestSchemaV1Path = "schemas/tool-manifest-v1.json"
+	maxInt64AsUint64     = ^uint64(0) >> 1
+)
 
 var (
 	//go:embed schemas/tool-manifest-v1.json
@@ -499,7 +502,7 @@ func asInteger(value any) (int64, bool) {
 	case int64:
 		return n, true
 	case uint:
-		return int64(n), true
+		return asInteger(uint64(n))
 	case uint8:
 		return int64(n), true
 	case uint16:
@@ -507,7 +510,7 @@ func asInteger(value any) (int64, bool) {
 	case uint32:
 		return int64(n), true
 	case uint64:
-		if n > ^uint64(0)>>1 {
+		if n > maxInt64AsUint64 {
 			return 0, false
 		}
 		return int64(n), true
