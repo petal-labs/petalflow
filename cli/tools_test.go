@@ -1,10 +1,15 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/petal-labs/petalflow/tool"
+	mcpclient "github.com/petal-labs/petalflow/tool/mcp"
 )
 
 func TestToolsRegisterListInspectUnregister(t *testing.T) {
@@ -170,6 +175,180 @@ func TestToolsRegisterDuplicateNameShowsValidationCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NAME_NOT_UNIQUE") {
 		t.Fatalf("duplicate register error = %q, want NAME_NOT_UNIQUE", err.Error())
+	}
+}
+
+func TestToolsRegisterMCPRefreshOverlayAndHealth(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "tools.json")
+	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+
+	overlayPath := writeTestFile(t, "overlay.yaml", `
+overlay_version: "1.0"
+group_actions:
+  list: list_s3_objects
+output_schemas:
+  list:
+    keys:
+      type: array
+      items:
+        type: string
+health:
+  strategy: ping
+`)
+
+	root := newTestRoot()
+	stdout, _, err := executeCommand(
+		root,
+		"tools",
+		"register",
+		"s3_fetch",
+		"--type", "mcp",
+		"--transport-mode", "stdio",
+		"--command", os.Args[0],
+		"--arg", "-test.run=TestToolsMCPHelperProcess",
+		"--arg", "--",
+		"--env", "GO_WANT_TOOLS_MCP_HELPER=1",
+		"--overlay", overlayPath,
+	)
+	if err != nil {
+		t.Fatalf("mcp register error = %v", err)
+	}
+	if !strings.Contains(stdout, "Registered tool: s3_fetch (mcp") {
+		t.Fatalf("register output = %q, want mcp success message", stdout)
+	}
+
+	root = newTestRoot()
+	stdout, _, err = executeCommand(root, "tools", "refresh", "s3_fetch")
+	if err != nil {
+		t.Fatalf("refresh error = %v", err)
+	}
+	if !strings.Contains(stdout, "Refreshed MCP tool: s3_fetch") {
+		t.Fatalf("refresh output = %q", stdout)
+	}
+
+	root = newTestRoot()
+	stdout, _, err = executeCommand(root, "tools", "health", "s3_fetch")
+	if err != nil {
+		t.Fatalf("health error = %v", err)
+	}
+	if !strings.Contains(stdout, "s3_fetch") {
+		t.Fatalf("health output missing tool name: %q", stdout)
+	}
+
+	root = newTestRoot()
+	stdout, _, err = executeCommand(root, "tools", "overlay", "s3_fetch", "--set="+overlayPath)
+	if err != nil {
+		t.Fatalf("overlay update error = %v", err)
+	}
+	if !strings.Contains(stdout, "Updated overlay for MCP tool: s3_fetch") {
+		t.Fatalf("overlay output = %q", stdout)
+	}
+
+	root = newTestRoot()
+	stdout, _, err = executeCommand(root, "tools", "test", "s3_fetch", "list", "--input", "bucket=reports")
+	if err != nil {
+		t.Fatalf("mcp tools test error = %v", err)
+	}
+	if !strings.Contains(stdout, `"success": true`) {
+		t.Fatalf("tools test output missing success: %q", stdout)
+	}
+}
+
+func TestToolsMCPHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_TOOLS_MCP_HELPER") != "1" {
+		return
+	}
+
+	decoder := json.NewDecoder(os.Stdin)
+	encoder := json.NewEncoder(os.Stdout)
+
+	for {
+		var req mcpclient.Message
+		if err := decoder.Decode(&req); err != nil {
+			os.Exit(0)
+		}
+
+		switch req.Method {
+		case "initialize":
+			_ = encoder.Encode(mcpclient.Message{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  mustRawJSONForCLI(t, mcpclient.InitializeResult{ProtocolVersion: "2025-06-18", ServerInfo: mcpclient.ServerInfo{Name: "cli-helper"}}),
+			})
+		case "tools/list":
+			_ = encoder.Encode(mcpclient.Message{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: mustRawJSONForCLI(t, mcpclient.ToolsListResult{
+					Tools: []mcpclient.Tool{
+						{
+							Name: "list_s3_objects",
+							InputSchema: map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"bucket": map[string]any{"type": "string"},
+								},
+							},
+						},
+					},
+				}),
+			})
+		case "tools/call":
+			var params map[string]any
+			_ = json.Unmarshal(req.Params, &params)
+			name, _ := params["name"].(string)
+			if name != "list_s3_objects" {
+				_ = encoder.Encode(mcpclient.Message{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error:   &mcpclient.RPCError{Code: -32001, Message: "unknown tool"},
+				})
+				continue
+			}
+			_ = encoder.Encode(mcpclient.Message{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result: mustRawJSONForCLI(t, mcpclient.ToolsCallResult{
+					Content: []mcpclient.ContentBlock{
+						{Type: "text", Text: `{"keys":["a.pdf","b.pdf"]}`},
+					},
+				}),
+			})
+		default:
+			// Notifications are ignored.
+		}
+	}
+}
+
+func mustRawJSONForCLI(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	return data
+}
+
+func TestResolveStoredRegistration(t *testing.T) {
+	store := tool.NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	ctx := context.Background()
+	reg := tool.ToolRegistration{
+		Name:     "x",
+		Manifest: tool.NewManifest("x"),
+		Origin:   tool.OriginNative,
+		Status:   tool.StatusReady,
+	}
+	reg.Manifest.Transport = tool.NewNativeTransport()
+	reg.Manifest.Actions["run"] = tool.ActionSpec{}
+	if err := store.Upsert(ctx, reg); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	got, found, err := resolveStoredRegistration(ctx, store, "x")
+	if err != nil {
+		t.Fatalf("resolveStoredRegistration error = %v", err)
+	}
+	if !found || got.Name != "x" {
+		t.Fatalf("resolveStoredRegistration got=%#v found=%v", got, found)
 	}
 }
 

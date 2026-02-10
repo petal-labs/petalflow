@@ -113,6 +113,7 @@ petalflow tools inspect echo_http
 ```
 
 Tooling quickstart and troubleshooting: [`docs/tools-cli.md`](./docs/tools-cli.md)
+MCP adapter and overlay workflow: [`docs/mcp-overlay.md`](./docs/mcp-overlay.md)
 
 ### Agent/Task Schema
 
@@ -159,6 +160,7 @@ See the [`examples/`](./examples) directory:
 | [04_data_pipeline](./examples/04_data_pipeline) | Filter and transform data |
 | [05_rag_workflow](./examples/05_rag_workflow) | Retrieval-augmented generation pattern |
 | [06_cli_workflow](./examples/06_cli_workflow) | Using the CLI with workflow files |
+| [07_mcp_overlay](./examples/07_mcp_overlay) | MCP discovery, overlay merge, and tool registration |
 
 ## LLM Integration with Iris
 

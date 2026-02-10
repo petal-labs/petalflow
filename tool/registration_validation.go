@@ -65,7 +65,23 @@ func (DefaultReachabilityChecker) CheckStdio(ctx context.Context, command string
 }
 
 func (DefaultReachabilityChecker) CheckMCP(ctx context.Context, reg Registration) error {
-	return errors.New("mcp reachability check is not implemented")
+	transport, ok := reg.Manifest.Transport.AsMCP()
+	if !ok {
+		return errors.New("registration transport is not mcp")
+	}
+
+	overlay, err := loadOverlayForRegistration(reg)
+	if err != nil {
+		return err
+	}
+	client, cleanup, err := newMCPClientFromConfig(ctx, reg.Name, transport, reg.Config, overlay)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	_, err = client.Initialize(ctx)
+	return err
 }
 
 // RegistrationValidationOptions configures validation behavior.

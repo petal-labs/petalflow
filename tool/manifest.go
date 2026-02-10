@@ -57,6 +57,7 @@ type ToolInfo = ToolMetadata
 
 // ActionSpec defines callable behavior on a tool.
 type ActionSpec struct {
+	MCPToolName string               `json:"mcp_tool_name,omitempty"`
 	Description string               `json:"description,omitempty"`
 	Inputs      map[string]FieldSpec `json:"inputs,omitempty"`
 	Outputs     map[string]FieldSpec `json:"outputs,omitempty"`

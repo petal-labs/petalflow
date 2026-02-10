@@ -1,0 +1,57 @@
+overlay_version: "1.0"
+
+group_actions:
+  list: list_s3_objects
+  download: download_s3_object
+
+output_schemas:
+  list:
+    keys:
+      type: array
+      items:
+        type: string
+      description: Matching object keys
+    count:
+      type: integer
+      description: Number of keys returned
+  download:
+    content:
+      type: string
+      description: Object content payload
+    key:
+      type: string
+
+config:
+  token:
+    type: string
+    required: true
+    sensitive: true
+    env_var: MCP_TOKEN
+  region:
+    type: string
+    required: false
+    default: us-east-1
+    env_var: AWS_REGION
+
+health:
+  strategy: ping
+  interval_seconds: 30
+  timeout_ms: 5000
+  unhealthy_threshold: 3
+
+description_overrides:
+  list: List S3 objects by bucket and prefix.
+  download: Download an object by key.
+
+input_overrides:
+  list:
+    max_keys:
+      type: integer
+      required: false
+      default: 100
+
+metadata:
+  author: petal-labs
+  version: "0.1.0"
+  homepage: https://github.com/petal-labs/petalflow
+  tags: [storage, mcp, example]

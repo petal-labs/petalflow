@@ -109,6 +109,52 @@ func TestDefaultAdapterFactoryStdio(t *testing.T) {
 	}
 }
 
+func TestDefaultAdapterFactoryMCP(t *testing.T) {
+	reg := ToolRegistration{
+		Name:   "s3_fetch",
+		Origin: OriginMCP,
+		Manifest: Manifest{
+			Schema:          SchemaToolV1,
+			ManifestVersion: ManifestVersionV1,
+			Tool:            ToolMetadata{Name: "s3_fetch"},
+			Transport: NewMCPTransport(MCPTransport{
+				Mode:    MCPModeStdio,
+				Command: os.Args[0],
+				Args:    []string{"-test.run=TestToolMCPHelperProcess", "--"},
+				Env: map[string]string{
+					"GO_WANT_TOOL_MCP_HELPER": "1",
+				},
+			}),
+			Actions: map[string]ActionSpec{
+				"list": {
+					MCPToolName: "list_s3_objects",
+					Outputs: map[string]FieldSpec{
+						"keys": {Type: TypeArray, Items: &FieldSpec{Type: TypeString}},
+					},
+				},
+			},
+		},
+		Status: StatusReady,
+	}
+
+	factory := DefaultAdapterFactory{NativeLookup: LookupBuiltinNativeTool}
+	adapter, err := factory.New(reg)
+	if err != nil {
+		t.Fatalf("factory.New() error = %v", err)
+	}
+
+	resp, err := invokeViaAdapter(context.Background(), adapter, InvokeRequest{
+		Action: "list",
+		Inputs: map[string]any{"bucket": "reports"},
+	})
+	if err != nil {
+		t.Fatalf("invokeViaAdapter() error = %v", err)
+	}
+	if _, ok := resp.Outputs["keys"]; !ok {
+		t.Fatalf("expected keys output, got %#v", resp.Outputs)
+	}
+}
+
 func invokeViaAdapter(ctx context.Context, adapter Adapter, req InvokeRequest) (InvokeResponse, error) {
 	defer adapter.Close(ctx)
 	return adapter.Invoke(ctx, req)

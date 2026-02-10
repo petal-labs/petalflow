@@ -31,6 +31,9 @@ func NewToolsCmd() *cobra.Command {
 	cmd.AddCommand(newToolsUnregisterCmd())
 	cmd.AddCommand(newToolsConfigCmd())
 	cmd.AddCommand(newToolsTestCmd())
+	cmd.AddCommand(newToolsRefreshCmd())
+	cmd.AddCommand(newToolsOverlayCmd())
+	cmd.AddCommand(newToolsHealthCmd())
 
 	return cmd
 }
@@ -48,6 +51,8 @@ func newToolsRegisterCmd() *cobra.Command {
 	cmd.Flags().String("command", "", "Transport command override")
 	cmd.Flags().StringArray("arg", nil, "Transport argument override (repeatable)")
 	cmd.Flags().StringArray("env", nil, "Transport environment override KEY=VALUE (repeatable)")
+	cmd.Flags().String("transport-mode", "", "MCP transport mode: stdio | sse")
+	cmd.Flags().String("overlay", "", "Path to MCP overlay YAML")
 	return cmd
 }
 
@@ -60,19 +65,33 @@ func runToolsRegister(cmd *cobra.Command, args []string) error {
 
 	manifestPath, _ := cmd.Flags().GetString("manifest")
 	originValue, _ := cmd.Flags().GetString("type")
+	overlayPath, _ := cmd.Flags().GetString("overlay")
 	origin, err := parseToolOrigin(originValue)
 	if err != nil {
 		return exitError(exitValidation, "%s", err.Error())
 	}
 
 	var registration tool.ToolRegistration
-	if manifestPath == "" && origin == tool.OriginNative {
+	switch {
+	case manifestPath == "" && origin == tool.OriginNative:
 		builtin, ok := tool.BuiltinRegistration(name)
 		if !ok {
 			return exitError(exitValidation, "native tool %q requires --manifest (built-in not found)", name)
 		}
 		registration = builtin
-	} else {
+
+	case manifestPath == "" && origin == tool.OriginMCP:
+		mcpTransport, err := buildMCPTransportFromFlags(cmd)
+		if err != nil {
+			return exitError(exitValidation, "invalid mcp transport: %v", err)
+		}
+		reg, err := tool.BuildMCPRegistration(cmd.Context(), name, mcpTransport, map[string]string{}, overlayPath)
+		if err != nil {
+			return formatRegistrationValidationError(err)
+		}
+		registration = reg
+
+	default:
 		if manifestPath == "" {
 			return exitError(exitValidation, "--manifest is required for non-native registrations")
 		}
@@ -102,16 +121,19 @@ func runToolsRegister(cmd *cobra.Command, args []string) error {
 			Enabled:  true,
 			Config:   map[string]string{},
 		}
-	}
 
-	if err := applyTransportOverrides(cmd, &registration.Manifest); err != nil {
-		return exitError(exitValidation, "%s", err.Error())
-	}
-	if registration.Origin == "" {
-		registration.Origin = originFromTransport(registration.Manifest.Transport.Type)
-	}
-	if registration.Origin == "" {
-		return exitError(exitValidation, "tool origin must be set via --type or manifest transport")
+		if err := applyTransportOverrides(cmd, &registration.Manifest); err != nil {
+			return exitError(exitValidation, "%s", err.Error())
+		}
+		if registration.Origin == "" {
+			registration.Origin = originFromTransport(registration.Manifest.Transport.Type)
+		}
+		if registration.Origin == "" {
+			return exitError(exitValidation, "tool origin must be set via --type or manifest transport")
+		}
+		if registration.Origin == tool.OriginMCP && strings.TrimSpace(overlayPath) != "" {
+			registration.Overlay = &tool.ToolOverlay{Path: overlayPath}
+		}
 	}
 
 	if registration.Status == "" {
@@ -131,7 +153,7 @@ func runToolsRegister(cmd *cobra.Command, args []string) error {
 		return exitError(exitRuntime, "saving registration: %v", err)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Registered tool: %s (%s)\n", registration.Name, registration.Origin)
+	fmt.Fprintf(cmd.OutOrStdout(), "Registered tool: %s (%s, status=%s)\n", registration.Name, registration.Origin, registration.Status)
 	return nil
 }
 
@@ -408,6 +430,186 @@ func runToolsTest(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func newToolsRefreshCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "refresh <name>",
+		Short: "Re-discover MCP actions and refresh the stored manifest",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runToolsRefresh,
+	}
+}
+
+func runToolsRefresh(cmd *cobra.Command, args []string) error {
+	store, err := resolveToolStore(cmd)
+	if err != nil {
+		return err
+	}
+
+	reg, found, err := resolveStoredRegistration(cmd.Context(), store, args[0])
+	if err != nil {
+		return exitError(exitRuntime, "loading tool: %v", err)
+	}
+	if !found {
+		return exitError(exitValidation, "tool %q is not registered", args[0])
+	}
+	if reg.Origin != tool.OriginMCP {
+		return exitError(exitValidation, "tool %q is not an mcp registration", args[0])
+	}
+
+	refreshed, err := tool.RefreshMCPRegistration(cmd.Context(), reg)
+	if err != nil {
+		return formatRegistrationValidationError(err)
+	}
+	if err := tool.ValidateNewRegistration(cmd.Context(), refreshed, tool.RegistrationValidationOptions{
+		Store:             store,
+		AllowExistingName: true,
+	}); err != nil {
+		return formatRegistrationValidationError(err)
+	}
+	if err := store.Upsert(cmd.Context(), refreshed); err != nil {
+		return exitError(exitRuntime, "saving refreshed registration: %v", err)
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "Refreshed MCP tool: %s (%d actions, status=%s)\n", refreshed.Name, len(refreshed.Manifest.Actions), refreshed.Status)
+	return nil
+}
+
+func newToolsOverlayCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "overlay <name>",
+		Short: "Set or clear overlay for an MCP registration",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runToolsOverlay,
+	}
+	cmd.Flags().String("set", "", "Path to overlay YAML (empty to clear)")
+	return cmd
+}
+
+func runToolsOverlay(cmd *cobra.Command, args []string) error {
+	store, err := resolveToolStore(cmd)
+	if err != nil {
+		return err
+	}
+	if !cmd.Flags().Changed("set") {
+		return exitError(exitInputParse, "--set is required (use empty value to clear)")
+	}
+	overlayPath, _ := cmd.Flags().GetString("set")
+
+	reg, found, err := resolveStoredRegistration(cmd.Context(), store, args[0])
+	if err != nil {
+		return exitError(exitRuntime, "loading tool: %v", err)
+	}
+	if !found {
+		return exitError(exitValidation, "tool %q is not registered", args[0])
+	}
+	if reg.Origin != tool.OriginMCP {
+		return exitError(exitValidation, "tool %q is not an mcp registration", args[0])
+	}
+
+	if strings.TrimSpace(overlayPath) == "" {
+		reg.Overlay = nil
+	} else {
+		reg.Overlay = &tool.ToolOverlay{Path: overlayPath}
+	}
+
+	refreshed, err := tool.RefreshMCPRegistration(cmd.Context(), reg)
+	if err != nil {
+		return formatRegistrationValidationError(err)
+	}
+	if err := tool.ValidateNewRegistration(cmd.Context(), refreshed, tool.RegistrationValidationOptions{
+		Store:             store,
+		AllowExistingName: true,
+	}); err != nil {
+		return formatRegistrationValidationError(err)
+	}
+	if err := store.Upsert(cmd.Context(), refreshed); err != nil {
+		return exitError(exitRuntime, "saving overlay update: %v", err)
+	}
+
+	if refreshed.Overlay == nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "Cleared overlay for MCP tool: %s\n", refreshed.Name)
+		return nil
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Updated overlay for MCP tool: %s (%s)\n", refreshed.Name, refreshed.Overlay.Path)
+	return nil
+}
+
+func newToolsHealthCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "health [name]",
+		Short: "Run health checks for MCP registrations",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runToolsHealth,
+	}
+	cmd.Flags().Bool("all", false, "Check all registered MCP tools")
+	return cmd
+}
+
+func runToolsHealth(cmd *cobra.Command, args []string) error {
+	store, err := resolveToolStore(cmd)
+	if err != nil {
+		return err
+	}
+	all, _ := cmd.Flags().GetBool("all")
+
+	regs, err := store.List(cmd.Context())
+	if err != nil {
+		return exitError(exitRuntime, "listing tools: %v", err)
+	}
+
+	targets := make([]tool.ToolRegistration, 0)
+	if all {
+		for _, reg := range regs {
+			if reg.Origin == tool.OriginMCP {
+				targets = append(targets, reg)
+			}
+		}
+	} else {
+		if len(args) != 1 {
+			return exitError(exitInputParse, "provide <name> or use --all")
+		}
+		reg, found, err := resolveStoredRegistration(cmd.Context(), store, args[0])
+		if err != nil {
+			return exitError(exitRuntime, "loading tool: %v", err)
+		}
+		if !found {
+			return exitError(exitValidation, "tool %q is not registered", args[0])
+		}
+		targets = append(targets, reg)
+	}
+
+	writer := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
+	fmt.Fprintln(writer, "NAME\tSTATUS\tLATENCY_MS\tERROR")
+
+	for _, reg := range targets {
+		report := tool.EvaluateMCPHealth(cmd.Context(), reg)
+		switch report.State {
+		case tool.HealthHealthy:
+			reg.Status = tool.StatusReady
+		case tool.HealthUnhealthy:
+			reg.Status = tool.StatusUnhealthy
+		default:
+			reg.Status = tool.StatusUnverified
+		}
+		reg.LastHealthCheck = report.CheckedAt
+		if err := store.Upsert(cmd.Context(), reg); err != nil {
+			return exitError(exitRuntime, "saving health status for %q: %v", reg.Name, err)
+		}
+
+		latency := "-"
+		if report.LatencyMS > 0 {
+			latency = strconv.FormatInt(report.LatencyMS, 10)
+		}
+		errText := "-"
+		if strings.TrimSpace(report.ErrorMessage) != "" {
+			errText = report.ErrorMessage
+		}
+		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", reg.Name, reg.Status, latency, errText)
+	}
+
+	return writer.Flush()
+}
+
 func resolveToolStore(cmd *cobra.Command) (tool.Store, error) {
 	storePath, _ := cmd.Flags().GetString("store-path")
 	if strings.TrimSpace(storePath) == "" {
@@ -430,6 +632,14 @@ func resolveRegistration(ctx context.Context, store tool.Store, name string) (to
 	}
 	builtin, ok := tool.BuiltinRegistration(name)
 	return builtin, ok, nil
+}
+
+func resolveStoredRegistration(ctx context.Context, store tool.Store, name string) (tool.ToolRegistration, bool, error) {
+	reg, found, err := store.Get(ctx, name)
+	if err != nil {
+		return tool.ToolRegistration{}, false, err
+	}
+	return reg, found, nil
 }
 
 func loadManifestFile(path string) (tool.Manifest, error) {
@@ -513,6 +723,60 @@ func applyTransportOverrides(cmd *cobra.Command, manifest *tool.Manifest) error 
 	}
 
 	return nil
+}
+
+func buildMCPTransportFromFlags(cmd *cobra.Command) (tool.MCPTransport, error) {
+	transportMode, _ := cmd.Flags().GetString("transport-mode")
+	endpoint, _ := cmd.Flags().GetString("endpoint")
+	command, _ := cmd.Flags().GetString("command")
+	args, _ := cmd.Flags().GetStringArray("arg")
+	envPairs, _ := cmd.Flags().GetStringArray("env")
+
+	mode := strings.ToLower(strings.TrimSpace(transportMode))
+	if mode == "" {
+		switch {
+		case strings.TrimSpace(endpoint) != "":
+			mode = string(tool.MCPModeSSE)
+		case strings.TrimSpace(command) != "":
+			mode = string(tool.MCPModeStdio)
+		default:
+			return tool.MCPTransport{}, fmt.Errorf("--transport-mode is required for mcp tools")
+		}
+	}
+
+	env := map[string]string{}
+	for _, pair := range envPairs {
+		key, value, err := parseKeyValue(pair, true)
+		if err != nil {
+			return tool.MCPTransport{}, fmt.Errorf("invalid --env %q: %w", pair, err)
+		}
+		env[key] = value
+	}
+
+	switch tool.MCPMode(mode) {
+	case tool.MCPModeStdio:
+		if strings.TrimSpace(command) == "" {
+			return tool.MCPTransport{}, fmt.Errorf("--command is required for mcp stdio mode")
+		}
+		return tool.MCPTransport{
+			Mode:    tool.MCPModeStdio,
+			Command: command,
+			Args:    slices.Clone(args),
+			Env:     env,
+		}, nil
+	case tool.MCPModeSSE:
+		if strings.TrimSpace(endpoint) == "" {
+			return tool.MCPTransport{}, fmt.Errorf("--endpoint is required for mcp sse mode")
+		}
+		return tool.MCPTransport{
+			Mode:     tool.MCPModeSSE,
+			Endpoint: endpoint,
+			Args:     slices.Clone(args),
+			Env:      env,
+		}, nil
+	default:
+		return tool.MCPTransport{}, fmt.Errorf("unsupported mcp transport mode %q", mode)
+	}
 }
 
 func displayOrigin(reg tool.ToolRegistration) tool.ToolOrigin {

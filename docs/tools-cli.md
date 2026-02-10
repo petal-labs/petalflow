@@ -57,6 +57,18 @@ petalflow tools inspect echo_http
 petalflow tools inspect echo_http --actions
 ```
 
+MCP discovery registration (no manifest file required):
+
+```bash
+petalflow tools register s3_fetch \
+  --type mcp \
+  --transport-mode stdio \
+  --command go \
+  --arg run \
+  --arg ./examples/07_mcp_overlay/mock_mcp_server.go \
+  --overlay ./examples/07_mcp_overlay/s3_fetch.overlay.yaml
+```
+
 ## 3. Configure Values (Sensitive Masking)
 
 ```bash
@@ -101,6 +113,15 @@ petalflow tools test template_render render \
 
 ```bash
 petalflow tools unregister echo_http
+```
+
+MCP lifecycle commands:
+
+```bash
+petalflow tools refresh s3_fetch
+petalflow tools overlay s3_fetch --set ./examples/07_mcp_overlay/s3_fetch.overlay.yaml
+petalflow tools health s3_fetch
+petalflow tools health --all
 ```
 
 ## Troubleshooting
