@@ -91,6 +91,8 @@ Config:
   region: us-west-2
 ```
 
+Sensitive values are encrypted at rest in file-backed tool stores and always masked in CLI/API output.
+
 ## 4. Invoke Actions with `tools test`
 
 ```bash

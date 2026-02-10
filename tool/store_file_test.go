@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -141,5 +142,59 @@ func TestFileStoreEmptyPathError(t *testing.T) {
 	store := NewFileStore("")
 	if err := store.Upsert(context.Background(), ToolRegistration{Name: "x", Manifest: NewManifest("x")}); err == nil {
 		t.Fatal("Upsert() error = nil, want non-nil for empty path")
+	}
+}
+
+func TestFileStoreEncryptsSensitiveConfigAtRest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tools.json")
+	store := NewFileStore(path)
+	ctx := context.Background()
+
+	manifest := NewManifest("secure_tool")
+	manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://localhost:9901"})
+	manifest.Actions["run"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"ok": {Type: TypeBoolean},
+		},
+	}
+	manifest.Config = map[string]FieldSpec{
+		"api_key": {Type: TypeString, Sensitive: true},
+	}
+
+	reg := ToolRegistration{
+		Name:     "secure_tool",
+		Origin:   OriginHTTP,
+		Manifest: manifest,
+		Status:   StatusReady,
+		Enabled:  true,
+		Config: map[string]string{
+			"api_key": "super-secret-value",
+		},
+	}
+
+	if err := store.Upsert(ctx, reg); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(raw), "super-secret-value") {
+		t.Fatalf("store file leaked plaintext secret: %s", string(raw))
+	}
+	if !strings.Contains(string(raw), encryptedValuePrefix) {
+		t.Fatalf("store file missing encrypted value prefix %q", encryptedValuePrefix)
+	}
+
+	got, ok, err := store.Get(ctx, "secure_tool")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Get() ok = false, want true")
+	}
+	if got.Config["api_key"] != "super-secret-value" {
+		t.Fatalf("decrypted api_key = %q, want super-secret-value", got.Config["api_key"])
 	}
 }

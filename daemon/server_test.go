@@ -197,6 +197,133 @@ func TestServer_ActionEndpointsAndCatalog(t *testing.T) {
 	}
 }
 
+func TestServer_MasksSensitiveConfigInResponses(t *testing.T) {
+	server := newTestServer(t)
+
+	manifest := tool.NewManifest("secure_http")
+	manifest.Transport = tool.NewHTTPTransport(tool.HTTPTransport{Endpoint: "http://example.invalid"})
+	manifest.Actions["run"] = tool.ActionSpec{
+		Outputs: map[string]tool.FieldSpec{
+			"ok": {Type: tool.TypeBoolean},
+		},
+	}
+	manifest.Config = map[string]tool.FieldSpec{
+		"region": {Type: tool.TypeString},
+		"token":  {Type: tool.TypeString, Sensitive: true},
+	}
+
+	createResp := requestJSON(t, server.Handler(), http.MethodPost, "/api/tools", map[string]any{
+		"name":     "secure_http",
+		"type":     "http",
+		"manifest": manifest,
+		"config": map[string]string{
+			"region": "us-east-1",
+			"token":  "plain-secret-token",
+		},
+	})
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/tools status = %d, want 201; body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	var created tool.ToolRegistration
+	if err := json.Unmarshal(createResp.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if got := created.Config["token"]; got != tool.MaskedSecretValue {
+		t.Fatalf("create response token = %q, want masked", got)
+	}
+
+	getResp := requestJSON(t, server.Handler(), http.MethodGet, "/api/tools/secure_http?include_builtins=false", nil)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/tools/{name} status = %d, want 200; body=%s", getResp.Code, getResp.Body.String())
+	}
+	var fetched tool.ToolRegistration
+	if err := json.Unmarshal(getResp.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("unmarshal fetch response: %v", err)
+	}
+	if got := fetched.Config["token"]; got != tool.MaskedSecretValue {
+		t.Fatalf("get response token = %q, want masked", got)
+	}
+
+	listResp := requestJSON(t, server.Handler(), http.MethodGet, "/api/tools", nil)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/tools status = %d, want 200; body=%s", listResp.Code, listResp.Body.String())
+	}
+	var listed struct {
+		Tools []tool.ToolRegistration `json:"tools"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("unmarshal list response: %v", err)
+	}
+	if len(listed.Tools) == 0 {
+		t.Fatal("list response should include secure_http")
+	}
+	for _, reg := range listed.Tools {
+		if reg.Name != "secure_http" {
+			continue
+		}
+		if got := reg.Config["token"]; got != tool.MaskedSecretValue {
+			t.Fatalf("list response token = %q, want masked", got)
+		}
+		return
+	}
+	t.Fatal("secure_http not found in list response")
+}
+
+func TestServer_ReturnsStructuredToolErrors(t *testing.T) {
+	server := newTestServer(t)
+
+	manifest := tool.NewManifest("unstable_http")
+	manifest.Transport = tool.NewHTTPTransport(tool.HTTPTransport{
+		Endpoint: "http://127.0.0.1:1",
+		Retry: tool.RetryPolicy{
+			MaxAttempts: 2,
+			BackoffMS:   0,
+		},
+	})
+	manifest.Actions["run"] = tool.ActionSpec{
+		Outputs: map[string]tool.FieldSpec{
+			"ok": {Type: tool.TypeBoolean},
+		},
+	}
+
+	createResp := requestJSON(t, server.Handler(), http.MethodPost, "/api/tools", map[string]any{
+		"name":     "unstable_http",
+		"type":     "http",
+		"manifest": manifest,
+	})
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/tools status = %d, want 201; body=%s", createResp.Code, createResp.Body.String())
+	}
+
+	testResp := requestJSON(t, server.Handler(), http.MethodPost, "/api/tools/unstable_http/test", map[string]any{
+		"action": "run",
+	})
+	if testResp.Code != http.StatusBadGateway && testResp.Code != http.StatusGatewayTimeout {
+		t.Fatalf("test endpoint status = %d, want 502 or 504; body=%s", testResp.Code, testResp.Body.String())
+	}
+
+	var payload struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(testResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal structured error response: %v", err)
+	}
+	if payload.Error.Code == "" {
+		t.Fatalf("error.code should be set, payload=%s", testResp.Body.String())
+	}
+	if payload.Error.Message == "" {
+		t.Fatalf("error.message should be set, payload=%s", testResp.Body.String())
+	}
+	if _, ok := payload.Error.Details["retryable"]; !ok {
+		t.Fatalf("error.details.retryable missing, payload=%s", testResp.Body.String())
+	}
+}
+
 func TestEndToEnd_ConfigToRegistryAPIAndAgentCompile(t *testing.T) {
 	baseDir := t.TempDir()
 	manifestPath := filepath.Join(baseDir, "pdf.tool.json")

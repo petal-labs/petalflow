@@ -52,6 +52,34 @@ Example registration:
 }
 ```
 
+## Security and Error Semantics
+
+- Sensitive tool config values are always masked in API responses (`**********`).
+- File-backed stores persist sensitive config values encrypted at rest.
+- Invocation/adapter failures are returned as structured error payloads:
+
+```json
+{
+  "error": {
+    "code": "UPSTREAM_FAILURE",
+    "message": "tool: HTTP invoke returned status 503: busy",
+    "details": {
+      "retryable": true,
+      "details": {
+        "http_status": 503
+      }
+    }
+  }
+}
+```
+
+## Background Health Loop
+
+- `petalflow serve` runs a background health scheduler.
+- Check cadence is controlled per tool by `manifest.health.interval_seconds`.
+- Unhealthy transitions respect `manifest.health.unhealthy_threshold`.
+- `GET /api/tools/{name}/health` still triggers an explicit on-demand check.
+
 ## Unified Catalog Endpoint
 
 `GET /api/node-types` returns:

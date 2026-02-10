@@ -358,9 +358,10 @@ func (s *DaemonToolService) Health(ctx context.Context, name string) (ToolRegist
 	}
 
 	report := HealthReport{
-		ToolName:  reg.Name,
-		State:     HealthUnknown,
-		CheckedAt: time.Now().UTC(),
+		ToolName:     reg.Name,
+		State:        HealthUnknown,
+		CheckedAt:    time.Now().UTC(),
+		FailureCount: reg.HealthFailures,
 	}
 
 	switch {
@@ -368,18 +369,13 @@ func (s *DaemonToolService) Health(ctx context.Context, name string) (ToolRegist
 		reg.Status = StatusDisabled
 	case reg.Origin != OriginMCP:
 		reg.Status = StatusReady
+		reg.HealthFailures = 0
 		report.State = HealthHealthy
+		report.FailureCount = 0
 	default:
 		report = s.mcpHealthEvaluator(ctx, reg)
 		reg.LastHealthCheck = report.CheckedAt
-		switch report.State {
-		case HealthHealthy:
-			reg.Status = StatusReady
-		case HealthUnhealthy:
-			reg.Status = StatusUnhealthy
-		default:
-			reg.Status = StatusUnverified
-		}
+		s.applyHealthOutcome(&reg, &report)
 	}
 
 	if err := s.store.Upsert(ctx, reg); err != nil {
@@ -701,14 +697,36 @@ func (s *DaemonToolService) restoreStatusForEnabled(ctx context.Context, reg *To
 
 	report := s.mcpHealthEvaluator(ctx, *reg)
 	reg.LastHealthCheck = report.CheckedAt
+	s.applyHealthOutcome(reg, &report)
+}
+
+func (s *DaemonToolService) applyHealthOutcome(reg *ToolRegistration, report *HealthReport) {
+	if reg == nil || report == nil {
+		return
+	}
+
 	switch report.State {
 	case HealthHealthy:
+		reg.HealthFailures = 0
 		reg.Status = StatusReady
 	case HealthUnhealthy:
-		reg.Status = StatusUnhealthy
+		reg.HealthFailures++
+		if reg.HealthFailures >= unhealthyThresholdForRegistration(*reg) {
+			reg.Status = StatusUnhealthy
+		} else {
+			reg.Status = StatusUnverified
+		}
 	default:
 		reg.Status = StatusUnverified
 	}
+	report.FailureCount = reg.HealthFailures
+}
+
+func unhealthyThresholdForRegistration(reg Registration) int {
+	if reg.Manifest.Health == nil || reg.Manifest.Health.UnhealthyThreshold <= 0 {
+		return 1
+	}
+	return reg.Manifest.Health.UnhealthyThreshold
 }
 
 func inferToolOrigin(transport TransportType) ToolOrigin {

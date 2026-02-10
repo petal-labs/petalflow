@@ -199,6 +199,9 @@ func (s *FileStore) load() ([]ToolRegistration, error) {
 
 	var doc fileStoreDocument
 	if err := json.Unmarshal(data, &doc); err == nil && doc.Tools != nil {
+		if err := s.decryptSensitiveRegistrations(doc.Tools); err != nil {
+			return nil, err
+		}
 		sortRegistrations(doc.Tools)
 		return doc.Tools, nil
 	}
@@ -207,6 +210,9 @@ func (s *FileStore) load() ([]ToolRegistration, error) {
 	var regs []ToolRegistration
 	if err := json.Unmarshal(data, &regs); err != nil {
 		return nil, fmt.Errorf("tool: decode registrations: %w", err)
+	}
+	if err := s.decryptSensitiveRegistrations(regs); err != nil {
+		return nil, err
 	}
 	sortRegistrations(regs)
 	return regs, nil
@@ -218,6 +224,9 @@ func (s *FileStore) save(regs []ToolRegistration) error {
 	}
 
 	regs = cloneRegistrations(regs)
+	if err := s.encryptSensitiveRegistrations(regs); err != nil {
+		return err
+	}
 	sortRegistrations(regs)
 
 	doc := fileStoreDocument{
@@ -241,6 +250,62 @@ func (s *FileStore) save(regs []ToolRegistration) error {
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		return fmt.Errorf("tool: replace store file: %w", err)
+	}
+	return nil
+}
+
+func (s *FileStore) encryptSensitiveRegistrations(regs []ToolRegistration) error {
+	codec, err := newSecretCodec(s.path)
+	if err != nil {
+		return fmt.Errorf("tool: initialize secret codec: %w", err)
+	}
+
+	for i := range regs {
+		if len(regs[i].Config) == 0 || len(regs[i].Manifest.Config) == 0 {
+			continue
+		}
+		for key, spec := range regs[i].Manifest.Config {
+			if !spec.Sensitive {
+				continue
+			}
+			value := regs[i].Config[key]
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			encrypted, err := codec.Encrypt(value)
+			if err != nil {
+				return fmt.Errorf("tool: encrypt config %q for %s: %w", key, regs[i].Name, err)
+			}
+			regs[i].Config[key] = encrypted
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) decryptSensitiveRegistrations(regs []ToolRegistration) error {
+	codec, err := newSecretCodec(s.path)
+	if err != nil {
+		return fmt.Errorf("tool: initialize secret codec: %w", err)
+	}
+
+	for i := range regs {
+		if len(regs[i].Config) == 0 || len(regs[i].Manifest.Config) == 0 {
+			continue
+		}
+		for key, spec := range regs[i].Manifest.Config {
+			if !spec.Sensitive {
+				continue
+			}
+			value := regs[i].Config[key]
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			plain, err := codec.Decrypt(value)
+			if err != nil {
+				return fmt.Errorf("tool: decrypt config %q for %s: %w", key, regs[i].Name, err)
+			}
+			regs[i].Config[key] = plain
+		}
 	}
 	return nil
 }
