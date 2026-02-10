@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/petal-labs/petalflow/daemon"
 	"github.com/petal-labs/petalflow/tool"
-	"github.com/spf13/cobra"
 )
 
 // NewServeCmd creates the "serve" subcommand.

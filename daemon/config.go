@@ -10,8 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/petal-labs/petalflow/tool"
 	"gopkg.in/yaml.v3"
+
+	"github.com/petal-labs/petalflow/tool"
 )
 
 const (

@@ -566,8 +566,6 @@ func parseOrigin(originValue, typeValue string) (tool.ToolOrigin, error) {
 		return "", nil
 	case origin == "":
 		origin = declType
-	case declType == "":
-		declType = origin
 	case !strings.EqualFold(origin, declType):
 		return "", fmt.Errorf("origin %q does not match type %q", origin, declType)
 	}
