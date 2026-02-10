@@ -341,6 +341,21 @@ func validateCustom(wf *AgentWorkflow) []graph.Diagnostic {
 			"execution.tasks"))
 	}
 
+	// AT-013: Validate condition expressions parse successfully
+	exprValidator := graph.GetExprValidator()
+	for id, deps := range wf.Execution.Tasks {
+		if deps.Condition == "" {
+			continue
+		}
+		if exprValidator != nil {
+			if err := exprValidator(deps.Condition); err != nil {
+				diags = append(diags, errDiag("AT-013", "INVALID_CONDITION",
+					fmt.Sprintf("Task %q has invalid condition expression: %v", id, err),
+					fmt.Sprintf("execution.tasks.%s.condition", id)))
+			}
+		}
+	}
+
 	return diags
 }
 

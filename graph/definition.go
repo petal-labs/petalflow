@@ -170,6 +170,141 @@ func (gd *GraphDefinition) Validate() []Diagnostic {
 		}
 	}
 
+	// CN-*: conditional node validation
+	diags = append(diags, gd.validateConditionalNodes(nodeIDs)...)
+
+	return diags
+}
+
+// ExprValidator is a function that checks expression syntax.
+// Returns nil if valid, error describing the syntax problem otherwise.
+// Set via SetExprValidator to avoid import cycles with the expr package.
+type ExprValidator func(expression string) error
+
+var registeredExprValidator ExprValidator
+
+// SetExprValidator registers the expression syntax checker. Called once at init
+// time by the conditional/expr package or a wiring package.
+func SetExprValidator(v ExprValidator) {
+	registeredExprValidator = v
+}
+
+// GetExprValidator returns the registered expression validator, or nil.
+func GetExprValidator() ExprValidator {
+	return registeredExprValidator
+}
+
+// validateConditionalNodes runs conditional-specific validation rules.
+func (gd *GraphDefinition) validateConditionalNodes(nodeIDs map[string]bool) []Diagnostic {
+	var diags []Diagnostic
+
+	// Build edge lookup: source -> set of targets
+	outEdges := make(map[string]map[string]bool)
+	for _, edge := range gd.Edges {
+		if outEdges[edge.Source] == nil {
+			outEdges[edge.Source] = make(map[string]bool)
+		}
+		outEdges[edge.Source][edge.Target] = true
+	}
+
+	reservedPorts := map[string]bool{"error": true, "_metadata": true}
+
+	for i, node := range gd.Nodes {
+		if node.Type != "conditional" {
+			continue
+		}
+		prefix := fmt.Sprintf("nodes[%d]", i)
+
+		conditionsRaw, ok := node.Config["conditions"]
+		if !ok {
+			diags = append(diags, Diagnostic{
+				Code:     "CN-006",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Conditional node %q must have at least one condition", node.ID),
+				Path:     prefix + ".config.conditions",
+			})
+			continue
+		}
+
+		conditions, ok := conditionsRaw.([]any)
+		if !ok {
+			diags = append(diags, Diagnostic{
+				Code:     "CN-006",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Conditional node %q: conditions must be an array", node.ID),
+				Path:     prefix + ".config.conditions",
+			})
+			continue
+		}
+
+		if len(conditions) == 0 {
+			diags = append(diags, Diagnostic{
+				Code:     "CN-006",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Conditional node %q must have at least one condition", node.ID),
+				Path:     prefix + ".config.conditions",
+			})
+			continue
+		}
+
+		for j, condRaw := range conditions {
+			cond, ok := condRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			condPath := fmt.Sprintf("%s.config.conditions[%d]", prefix, j)
+
+			name, _ := cond["name"].(string)
+
+			// CN-005: reserved port names
+			if reservedPorts[name] {
+				diags = append(diags, Diagnostic{
+					Code:     "CN-005",
+					Severity: SeverityError,
+					Message:  fmt.Sprintf("Conditional node %q: condition name %q is reserved", node.ID, name),
+					Path:     condPath + ".name",
+				})
+			}
+
+			// CN-004: expression syntax check
+			expression, _ := cond["expression"].(string)
+			if expression != "" && registeredExprValidator != nil {
+				if err := registeredExprValidator(expression); err != nil {
+					diags = append(diags, Diagnostic{
+						Code:     "CN-004",
+						Severity: SeverityError,
+						Message:  fmt.Sprintf("Conditional node %q: condition %q has invalid expression: %v", node.ID, name, err),
+						Path:     condPath + ".expression",
+					})
+				}
+			}
+
+			// CN-001: condition name has no downstream edge (warning)
+			if name != "" {
+				edges := outEdges[node.ID]
+				if len(edges) == 0 {
+					diags = append(diags, Diagnostic{
+						Code:     "CN-001",
+						Severity: SeverityWarning,
+						Message:  fmt.Sprintf("Conditional node %q: condition %q has no downstream edges", node.ID, name),
+						Path:     condPath,
+					})
+				}
+			}
+		}
+
+		// CN-003: no default branch warning
+		defaultBranch, _ := node.Config["default"].(string)
+		if defaultBranch == "" {
+			diags = append(diags, Diagnostic{
+				Code:     "CN-003",
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("Conditional node %q has no default branch — execution will error if no conditions match", node.ID),
+				Path:     prefix + ".config",
+			})
+		}
+	}
+
 	return diags
 }
 

@@ -234,4 +234,20 @@ func registerBuiltins(r *Registry) {
 			},
 		},
 	})
+
+	r.Register(NodeTypeDef{
+		Type:        "conditional",
+		Category:    "control",
+		DisplayName: "Conditional",
+		Description: "Route data to different branches based on expression evaluation",
+		Ports: PortSchema{
+			Inputs: []PortDef{
+				{Name: "input", Type: "any", Required: true},
+			},
+			Outputs: []PortDef{
+				{Name: "output", Type: "any"},
+				{Name: "decision", Type: "object"},
+			},
+		},
+	})
 }

@@ -337,10 +337,35 @@ func compileHierarchical(gd *graph.GraphDefinition, wf *AgentWorkflow, taskNodeI
 }
 
 // compileCustom wires edges based on depends_on declarations.
+// When a task dependency has a condition expression, a conditional node is
+// inserted between the source and destination to enable branching.
 func compileCustom(gd *graph.GraphDefinition, wf *AgentWorkflow, taskNodeIDs map[string]string) error {
 	if wf.Execution.Tasks == nil {
 		// No explicit dependencies — all tasks are independent entry points
 		return nil
+	}
+
+	// Group tasks by their dependencies to detect when multiple tasks share
+	// a source and use conditions — these produce a single conditional node.
+	// condKey -> list of (taskID, condition)
+	type condTarget struct {
+		taskID    string
+		condition string
+	}
+	condGroups := make(map[string][]condTarget) // key: sorted depIDs
+
+	for taskID, deps := range wf.Execution.Tasks {
+		if deps.Condition == "" {
+			continue
+		}
+		// Build a key from the dependency set
+		for _, depID := range deps.DependsOn {
+			key := depID + "__cond__" + taskID
+			condGroups[key] = append(condGroups[key], condTarget{
+				taskID:    taskID,
+				condition: deps.Condition,
+			})
+		}
 	}
 
 	for taskID, deps := range wf.Execution.Tasks {
@@ -351,44 +376,119 @@ func compileCustom(gd *graph.GraphDefinition, wf *AgentWorkflow, taskNodeIDs map
 		dstTask := wf.Tasks[taskID]
 		dstLLMNode := taskID + "__" + dstTask.Agent
 
-		for _, depID := range deps.DependsOn {
-			srcNode, ok := taskNodeIDs[depID]
-			if !ok {
-				continue
+		if deps.Condition != "" {
+			// Wire through conditional nodes
+			for _, depID := range deps.DependsOn {
+				srcNode, ok := taskNodeIDs[depID]
+				if !ok {
+					continue
+				}
+
+				condNodeID := depID + "__cond__" + taskID
+
+				// Check if this conditional node already exists
+				condExists := false
+				for _, n := range gd.Nodes {
+					if n.ID == condNodeID {
+						condExists = true
+						break
+					}
+				}
+
+				if !condExists {
+					// Rewrite condition expression to use envelope var names
+					rewrittenExpr := rewriteConditionExpr(deps.Condition, taskNodeIDs)
+
+					gd.Nodes = append(gd.Nodes, graph.NodeDef{
+						ID:   condNodeID,
+						Type: "conditional",
+						Config: map[string]any{
+							"conditions": []any{
+								map[string]any{
+									"name":       taskID,
+									"expression": rewrittenExpr,
+								},
+							},
+							"default":          "_skip",
+							"evaluation_order": "first_match",
+							"pass_through":     true,
+						},
+					})
+				}
+
+				// Wire: src -> conditional
+				gd.Edges = append(gd.Edges, graph.EdgeDef{
+					Source:       srcNode,
+					SourceHandle: "output",
+					Target:       condNodeID,
+					TargetHandle: "input",
+				})
+
+				// Wire: conditional -> dst
+				gd.Edges = append(gd.Edges, graph.EdgeDef{
+					Source:       condNodeID,
+					SourceHandle: taskID,
+					Target:       dstLLMNode,
+					TargetHandle: "input",
+				})
 			}
-			gd.Edges = append(gd.Edges, graph.EdgeDef{
-				Source:       srcNode,
-				SourceHandle: "output",
-				Target:       dstLLMNode,
-				TargetHandle: "input",
-			})
+		} else {
+			// Direct wiring (no condition)
+			for _, depID := range deps.DependsOn {
+				srcNode, ok := taskNodeIDs[depID]
+				if !ok {
+					continue
+				}
+				gd.Edges = append(gd.Edges, graph.EdgeDef{
+					Source:       srcNode,
+					SourceHandle: "output",
+					Target:       dstLLMNode,
+					TargetHandle: "input",
+				})
+			}
 		}
 		_ = dstNode // used for HITL-aware node lookup
 	}
 
-	// Set entry to nodes with no inbound strategy edges
-	hasInbound := make(map[string]bool)
-	for _, deps := range wf.Execution.Tasks {
-		for _, dep := range deps.DependsOn {
-			if nodeID, ok := taskNodeIDs[dep]; ok {
-				_ = nodeID
-			}
-		}
-	}
-	// Find entry: first task with no depends_on
+	// Set entry to the first task with no depends_on (i.e. a root in the DAG).
 	taskIDs := sortedKeys(wf.Tasks)
 	for _, taskID := range taskIDs {
 		deps, hasDeps := wf.Execution.Tasks[taskID]
 		if !hasDeps || len(deps.DependsOn) == 0 {
-			if !hasInbound[taskID] {
-				gd.Entry = taskNodeIDs[taskID]
-				break
-			}
+			gd.Entry = taskNodeIDs[taskID]
+			break
 		}
 	}
 
+	_ = condGroups // reserved for future multi-branch merging
+
 	return nil
 }
+
+// rewriteConditionExpr rewrites agent-schema condition expressions into
+// expressions that reference envelope variable names.
+//
+// Rewrites:
+//
+//	tasks.TASK.output.FIELD → NODEID_output.FIELD
+//	tasks.TASK.output       → NODEID_output
+func rewriteConditionExpr(expr string, taskNodeIDs map[string]string) string {
+	return condExprPattern.ReplaceAllStringFunc(expr, func(match string) string {
+		sub := condExprPattern.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		taskID := sub[1]
+		nodeID, ok := taskNodeIDs[taskID]
+		if !ok {
+			return match
+		}
+		rest := sub[2] // e.g. ".confidence" or ""
+		return nodeID + "_output" + rest
+	})
+}
+
+var condExprPattern = regexp.MustCompile(`tasks\.([a-zA-Z0-9_]+)\.output(\.[a-zA-Z0-9_.]*)?`)
 
 // buildSystemPrompt constructs the system prompt for an LLM node from agent and task fields.
 func buildSystemPrompt(ag Agent, task Task) string {
