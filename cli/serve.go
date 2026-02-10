@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,8 +10,10 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	otelapi "go.opentelemetry.io/otel"
 
 	"github.com/petal-labs/petalflow/daemon"
+	petalotel "github.com/petal-labs/petalflow/otel"
 	"github.com/petal-labs/petalflow/tool"
 )
 
@@ -39,6 +42,16 @@ func NewServeCmd() *cobra.Command {
 				return fmt.Errorf("creating daemon server: %w", err)
 			}
 
+			toolObserver, err := petalotel.NewToolObserver(
+				otelapi.GetMeterProvider().Meter("petalflow/tool"),
+				otelapi.GetTracerProvider().Tracer("petalflow/tool"),
+			)
+			if err != nil {
+				return fmt.Errorf("initializing tool observability: %w", err)
+			}
+			tool.SetObserver(toolObserver)
+			defer tool.SetObserver(nil)
+
 			configPath, found, err := daemon.DiscoverToolConfigPath(explicitConfigPath)
 			if err != nil {
 				return err
@@ -53,6 +66,19 @@ func NewServeCmd() *cobra.Command {
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Loaded %d tool declaration(s) from %s\n", len(registered), configPath)
 			}
+
+			healthScheduler, err := tool.NewHealthScheduler(tool.HealthSchedulerConfig{
+				Service: daemonServer.Service(),
+			})
+			if err != nil {
+				return fmt.Errorf("creating health scheduler: %w", err)
+			}
+			if err := healthScheduler.Start(cmd.Context()); err != nil {
+				return fmt.Errorf("starting health scheduler: %w", err)
+			}
+			defer func() {
+				_ = healthScheduler.Stop(context.Background())
+			}()
 
 			addr := fmt.Sprintf("%s:%d", host, port)
 			handler := withCORS(daemonServer.Handler(), corsOrigin)

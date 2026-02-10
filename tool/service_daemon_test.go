@@ -416,3 +416,75 @@ func TestDaemonToolServiceHealthMCPPersistsStatus(t *testing.T) {
 		t.Fatalf("report.State = %q, want unhealthy", report.State)
 	}
 }
+
+func TestDaemonToolServiceHealthAppliesUnhealthyThreshold(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+	manifest := NewManifest("threshold_mcp")
+	manifest.Transport = NewMCPTransport(MCPTransport{
+		Mode:    MCPModeStdio,
+		Command: "threshold-mcp",
+	})
+	manifest.Health = &HealthConfig{
+		UnhealthyThreshold: 2,
+	}
+	manifest.Actions["list"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"count": {Type: TypeInteger},
+		},
+	}
+	seed := ToolRegistration{
+		Name:     "threshold_mcp",
+		Origin:   OriginMCP,
+		Manifest: manifest,
+		Status:   StatusReady,
+		Enabled:  true,
+	}
+	if err := store.Upsert(context.Background(), seed); err != nil {
+		t.Fatalf("store.Upsert() error = %v", err)
+	}
+
+	call := 0
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+		MCPHealthEvaluator: func(ctx context.Context, reg Registration) HealthReport {
+			call++
+			return HealthReport{
+				ToolName:  reg.Name,
+				State:     HealthUnhealthy,
+				CheckedAt: time.Date(2026, 2, 10, 6, call, 0, 0, time.UTC),
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	first, report, err := service.Health(context.Background(), "threshold_mcp")
+	if err != nil {
+		t.Fatalf("Health() first error = %v", err)
+	}
+	if first.Status != StatusUnverified {
+		t.Fatalf("first status = %q, want unverified", first.Status)
+	}
+	if first.HealthFailures != 1 {
+		t.Fatalf("first failures = %d, want 1", first.HealthFailures)
+	}
+	if report.FailureCount != 1 {
+		t.Fatalf("first report failure_count = %d, want 1", report.FailureCount)
+	}
+
+	second, report, err := service.Health(context.Background(), "threshold_mcp")
+	if err != nil {
+		t.Fatalf("Health() second error = %v", err)
+	}
+	if second.Status != StatusUnhealthy {
+		t.Fatalf("second status = %q, want unhealthy", second.Status)
+	}
+	if second.HealthFailures != 2 {
+		t.Fatalf("second failures = %d, want 2", second.HealthFailures)
+	}
+	if report.FailureCount != 2 {
+		t.Fatalf("second report failure_count = %d, want 2", report.FailureCount)
+	}
+}

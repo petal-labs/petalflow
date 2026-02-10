@@ -30,10 +30,28 @@ func decodeInvokeResponse(raw []byte, fallbackDuration int64) (InvokeResponse, e
 		DurationMS: fallbackDuration,
 	}
 
+	if errorRaw, hasError := obj["error"]; hasError {
+		errorObj, ok := errorRaw.(map[string]any)
+		if !ok {
+			return InvokeResponse{}, newToolError(
+				ToolErrorCodeDecodeFailure,
+				"tool: invoke response error must be an object",
+				false,
+				nil,
+			)
+		}
+		return InvokeResponse{}, decodeToolError(errorObj)
+	}
+
 	if outputsRaw, hasOutputs := obj["outputs"]; hasOutputs {
 		outputs, ok := outputsRaw.(map[string]any)
 		if !ok {
-			return InvokeResponse{}, fmt.Errorf("tool: invoke response outputs must be an object")
+			return InvokeResponse{}, newToolError(
+				ToolErrorCodeDecodeFailure,
+				"tool: invoke response outputs must be an object",
+				false,
+				nil,
+			)
 		}
 		resp.Outputs = outputs
 	} else {
@@ -43,7 +61,12 @@ func decodeInvokeResponse(raw []byte, fallbackDuration int64) (InvokeResponse, e
 	if metadataRaw, ok := obj["metadata"]; ok {
 		metadata, ok := metadataRaw.(map[string]any)
 		if !ok {
-			return InvokeResponse{}, fmt.Errorf("tool: invoke response metadata must be an object")
+			return InvokeResponse{}, newToolError(
+				ToolErrorCodeDecodeFailure,
+				"tool: invoke response metadata must be an object",
+				false,
+				nil,
+			)
 		}
 		resp.Metadata = metadata
 	}
@@ -51,10 +74,38 @@ func decodeInvokeResponse(raw []byte, fallbackDuration int64) (InvokeResponse, e
 	if durationRaw, ok := obj["duration_ms"]; ok {
 		duration, ok := asInteger(durationRaw)
 		if !ok || duration < 0 {
-			return InvokeResponse{}, fmt.Errorf("tool: invoke response duration_ms must be a non-negative integer")
+			return InvokeResponse{}, newToolError(
+				ToolErrorCodeDecodeFailure,
+				"tool: invoke response duration_ms must be a non-negative integer",
+				false,
+				nil,
+			)
 		}
 		resp.DurationMS = duration
 	}
 
 	return resp, nil
+}
+
+func decodeToolError(obj map[string]any) error {
+	code, _ := obj["code"].(string)
+	message, _ := obj["message"].(string)
+	retryable, _ := obj["retryable"].(bool)
+
+	details := map[string]any{}
+	if rawDetails, ok := obj["details"]; ok {
+		if cast, ok := rawDetails.(map[string]any); ok {
+			for key, value := range cast {
+				details[key] = value
+			}
+		} else {
+			details["details"] = rawDetails
+		}
+	}
+
+	err := newToolError(code, message, retryable, nil)
+	if len(details) > 0 {
+		err.Details = details
+	}
+	return err
 }

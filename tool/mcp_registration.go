@@ -50,8 +50,14 @@ func BuildMCPRegistration(ctx context.Context, name string, transport MCPTranspo
 	switch health.State {
 	case HealthHealthy:
 		reg.Status = StatusReady
+		reg.HealthFailures = 0
 	case HealthUnhealthy:
-		reg.Status = StatusUnhealthy
+		reg.HealthFailures = 1
+		if reg.HealthFailures >= unhealthyThresholdForRegistration(reg) {
+			reg.Status = StatusUnhealthy
+		} else {
+			reg.Status = StatusUnverified
+		}
 	default:
 		reg.Status = StatusUnverified
 	}

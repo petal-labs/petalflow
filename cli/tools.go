@@ -820,16 +820,7 @@ func mergeTools(builtins []tool.ToolRegistration, stored []tool.ToolRegistration
 }
 
 func maskSensitiveConfig(specs map[string]tool.FieldSpec, values map[string]string) map[string]string {
-	masked := make(map[string]string, len(values))
-	for key, value := range values {
-		spec, ok := specs[key]
-		if ok && spec.Sensitive && strings.TrimSpace(value) != "" {
-			masked[key] = "**********"
-			continue
-		}
-		masked[key] = value
-	}
-	return masked
+	return tool.MaskSensitiveConfig(specs, values)
 }
 
 func printToolConfig(cmd *cobra.Command, reg tool.ToolRegistration) {
@@ -859,7 +850,7 @@ func printToolConfig(cmd *cobra.Command, reg tool.ToolRegistration) {
 			display = "(unset)"
 		}
 		if spec.Sensitive && strings.TrimSpace(value) != "" {
-			display = "**********"
+			display = tool.MaskedSecretValue
 			suffix = " (sensitive)"
 		} else if spec.Sensitive {
 			suffix = " (sensitive)"

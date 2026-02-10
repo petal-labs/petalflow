@@ -40,6 +40,7 @@ type ToolRegistration struct {
 	Status          Status            `json:"status"`
 	RegisteredAt    time.Time         `json:"registered_at,omitempty"`
 	LastHealthCheck time.Time         `json:"last_health_check,omitempty"`
+	HealthFailures  int               `json:"health_failures,omitempty"`
 	Overlay         *ToolOverlay      `json:"overlay,omitempty"`
 	Enabled         bool              `json:"enabled,omitempty"`
 }

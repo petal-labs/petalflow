@@ -172,7 +172,7 @@ func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tools": regs,
+		"tools": tool.RedactRegistrations(regs),
 	})
 }
 
@@ -197,7 +197,7 @@ func (s *Server) handleGetTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("tool %q not found", name), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, reg)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(reg))
 }
 
 func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +232,7 @@ func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusCreated, registered)
+	writeJSON(w, http.StatusCreated, tool.RedactRegistration(registered))
 }
 
 func (s *Server) handleUpdateTool(w http.ResponseWriter, r *http.Request) {
@@ -265,7 +265,7 @@ func (s *Server) handleUpdateTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(updated))
 }
 
 func (s *Server) handleDeleteTool(w http.ResponseWriter, r *http.Request) {
@@ -299,7 +299,7 @@ func (s *Server) handleUpdateToolConfig(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, updated)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(updated))
 }
 
 func (s *Server) handleTestTool(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +324,7 @@ func (s *Server) handleToolHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tool":   reg,
+		"tool":   tool.RedactRegistration(reg),
 		"health": report,
 	})
 }
@@ -339,7 +339,7 @@ func (s *Server) handleRefreshTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, reg)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(reg))
 }
 
 func (s *Server) handleOverlayTool(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +362,7 @@ func (s *Server) handleOverlayTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, reg)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(reg))
 }
 
 func (s *Server) handleDisableTool(w http.ResponseWriter, r *http.Request) {
@@ -375,7 +375,7 @@ func (s *Server) handleDisableTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, reg)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(reg))
 }
 
 func (s *Server) handleEnableTool(w http.ResponseWriter, r *http.Request) {
@@ -388,7 +388,7 @@ func (s *Server) handleEnableTool(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, "REGISTRY_SYNC_FAILED", err.Error(), nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, reg)
+	writeJSON(w, http.StatusOK, tool.RedactRegistration(reg))
 }
 
 func (s *Server) handleNodeTypes(w http.ResponseWriter, r *http.Request) {
@@ -418,10 +418,19 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	var validationErr *tool.RegistrationValidationError
+	var (
+		validationErr *tool.RegistrationValidationError
+		toolErr       *tool.ToolError
+	)
 	switch {
 	case errors.As(err, &validationErr):
 		writeJSONError(w, http.StatusBadRequest, validationErr.Code, validationErr.Message, validationErr.Details)
+	case errors.As(err, &toolErr):
+		status := statusFromToolError(toolErr)
+		writeJSONError(w, status, toolErr.Code, toolErr.Message, map[string]any{
+			"retryable": toolErr.Retryable,
+			"details":   toolErr.Details,
+		})
 	case errors.Is(err, tool.ErrToolNotFound):
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, tool.ErrToolNotMCP):
@@ -430,6 +439,29 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusConflict, "TOOL_DISABLED", err.Error(), nil)
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+	}
+}
+
+func statusFromToolError(err *tool.ToolError) int {
+	if err == nil {
+		return http.StatusInternalServerError
+	}
+	if err.Code == "" {
+		return http.StatusBadGateway
+	}
+	switch err.Code {
+	case tool.ToolErrorCodeActionNotFound:
+		return http.StatusNotFound
+	case tool.ToolErrorCodeInvalidRequest:
+		return http.StatusBadRequest
+	case tool.ToolErrorCodeTimeout:
+		return http.StatusGatewayTimeout
+	case tool.ToolErrorCodeInvocationFailed:
+		return http.StatusBadGateway
+	case tool.ToolErrorCodeUpstreamFailure, tool.ToolErrorCodeTransportFailure, tool.ToolErrorCodeMCPFailure:
+		return http.StatusBadGateway
+	default:
+		return http.StatusInternalServerError
 	}
 }
 

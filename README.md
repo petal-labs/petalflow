@@ -115,6 +115,7 @@ petalflow tools inspect echo_http
 Tooling quickstart and troubleshooting: [`docs/tools-cli.md`](./docs/tools-cli.md)
 MCP adapter and overlay workflow: [`docs/mcp-overlay.md`](./docs/mcp-overlay.md)
 Daemon API and migration notes: [`docs/daemon-api.md`](./docs/daemon-api.md)
+Phase 4 hardening behaviors (health/retries/secrets/observability): [`docs/phase4-hardening.md`](./docs/phase4-hardening.md)
 
 ### Agent/Task Schema
 
