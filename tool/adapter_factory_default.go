@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -29,7 +30,7 @@ func (f DefaultAdapterFactory) New(reg Registration) (Adapter, error) {
 	case OriginStdio:
 		return NewStdioAdapter(reg), nil
 	case OriginMCP:
-		return nil, fmt.Errorf("tool: mcp adapter is not implemented yet")
+		return NewMCPAdapter(context.Background(), reg)
 	}
 
 	// Fallback to transport type when origin was not persisted.
@@ -48,7 +49,7 @@ func (f DefaultAdapterFactory) New(reg Registration) (Adapter, error) {
 	case TransportTypeStdio:
 		return NewStdioAdapter(reg), nil
 	case TransportTypeMCP:
-		return nil, fmt.Errorf("tool: mcp adapter is not implemented yet")
+		return NewMCPAdapter(context.Background(), reg)
 	default:
 		return nil, fmt.Errorf("tool: unsupported transport %q for %q", reg.Manifest.Transport.Type, reg.Name)
 	}
