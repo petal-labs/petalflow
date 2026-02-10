@@ -7,6 +7,7 @@ import (
 
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 // validStrategies lists the valid execution strategies.
@@ -61,6 +62,7 @@ func Validate(wf *AgentWorkflow) []graph.Diagnostic {
 	}
 
 	// AT-010: Check required fields on agents
+	reg := registry.Global()
 	for id, ag := range wf.Agents {
 		path := fmt.Sprintf("agents.%s", id)
 		if ag.Role == "" {
@@ -89,13 +91,81 @@ func Validate(wf *AgentWorkflow) []graph.Diagnostic {
 		// AT-003: Validate model (non-empty, already checked by AT-010)
 		// This rule exists for completeness but AT-010 covers the empty case.
 
-		// AT-004: Validate tools exist in registry
-		reg := registry.Global()
+		// AT-004: Validate tools exist in registry.
+		toolRefsByName := make(map[string][]string)
 		for i, toolID := range ag.Tools {
-			if !reg.HasTool(toolID) {
+			toolRef := strings.TrimSpace(toolID)
+			toolName, actionName, hasAction, valid := parseToolReference(toolRef)
+
+			if hasAction && !valid {
+				diags = append(diags, errDiag("AT-004", "INVALID_TOOL_REFERENCE",
+					fmt.Sprintf("Agent %q tool reference %q must use tool_name.action_name", id, toolID),
+					fmt.Sprintf("%s.tools[%d]", path, i)))
+				continue
+			}
+
+			if hasAction {
+				def, ok := reg.Get(toolRef)
+				if !ok || !def.IsTool {
+					if hasAnyActionForTool(reg, toolName) {
+						diags = append(diags, errDiag("AT-004", "UNKNOWN_ACTION",
+							fmt.Sprintf("Agent %q references unknown action %q on tool %q", id, actionName, toolName),
+							fmt.Sprintf("%s.tools[%d]", path, i)))
+					} else {
+						diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
+							fmt.Sprintf("Agent %q references unknown tool %q", id, toolName),
+							fmt.Sprintf("%s.tools[%d]", path, i)))
+					}
+					continue
+				}
+				toolRefsByName[toolName] = append(toolRefsByName[toolName], toolRef)
+				continue
+			}
+
+			if !reg.HasTool(toolRef) {
 				diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
 					fmt.Sprintf("Agent %q references unknown tool %q", id, toolID),
 					fmt.Sprintf("%s.tools[%d]", path, i)))
+				continue
+			}
+			toolRefsByName[toolRef] = append(toolRefsByName[toolRef], toolRef)
+		}
+
+		// AT-004: Validate agent-level tool_config overrides against declared fields.
+		for toolName, overrides := range ag.ToolConfig {
+			if len(overrides) == 0 {
+				continue
+			}
+
+			referenced := toolRefsByName[toolName]
+			if len(referenced) == 0 && reg.HasTool(toolName) {
+				referenced = []string{toolName}
+			}
+			if len(referenced) == 0 {
+				diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
+					fmt.Sprintf("Agent %q tool_config references unknown tool %q", id, toolName),
+					fmt.Sprintf("%s.tool_config.%s", path, toolName)))
+				continue
+			}
+
+			allowedKeys := make(map[string]struct{})
+			for _, ref := range referenced {
+				def, ok := reg.Get(ref)
+				if !ok {
+					continue
+				}
+				for key := range extractToolConfigFieldNames(def.ConfigSchema) {
+					allowedKeys[key] = struct{}{}
+				}
+			}
+
+			for key := range overrides {
+				if _, ok := allowedKeys[key]; ok {
+					continue
+				}
+				diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL_CONFIG_FIELD",
+					fmt.Sprintf("Agent %q tool_config field %q is not declared for tool %q", id, key, toolName),
+					fmt.Sprintf("%s.tool_config.%s.%s", path, toolName, key)))
 			}
 		}
 	}
@@ -351,4 +421,58 @@ func errDiag(code, _, message, path string) graph.Diagnostic {
 		Message:  message,
 		Path:     path,
 	}
+}
+
+func parseToolReference(ref string) (toolName string, actionName string, hasAction bool, valid bool) {
+	if !strings.Contains(ref, ".") {
+		return strings.TrimSpace(ref), "", false, true
+	}
+
+	parts := strings.SplitN(ref, ".", 2)
+	toolName = strings.TrimSpace(parts[0])
+	actionName = strings.TrimSpace(parts[1])
+	if toolName == "" || actionName == "" {
+		return toolName, actionName, true, false
+	}
+	return toolName, actionName, true, true
+}
+
+func hasAnyActionForTool(reg *registry.Registry, toolName string) bool {
+	prefix := strings.TrimSpace(toolName) + "."
+	for _, def := range reg.All() {
+		if !def.IsTool {
+			continue
+		}
+		if strings.HasPrefix(def.Type, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractToolConfigFieldNames(schema any) map[string]struct{} {
+	out := make(map[string]struct{})
+	switch typed := schema.(type) {
+	case map[string]tool.FieldSpec:
+		for key := range typed {
+			out[key] = struct{}{}
+		}
+	case map[string]any:
+		configRaw, ok := typed["tool_config"]
+		if !ok {
+			return out
+		}
+
+		switch config := configRaw.(type) {
+		case map[string]tool.FieldSpec:
+			for key := range config {
+				out[key] = struct{}{}
+			}
+		case map[string]any:
+			for key := range config {
+				out[key] = struct{}{}
+			}
+		}
+	}
+	return out
 }

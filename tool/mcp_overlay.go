@@ -17,6 +17,7 @@ const (
 type MCPOverlay struct {
 	OverlayVersion       string                           `yaml:"overlay_version" json:"overlay_version"`
 	GroupActions         map[string]string                `yaml:"group_actions,omitempty" json:"group_actions,omitempty"`
+	ActionModes          map[string]string                `yaml:"action_modes,omitempty" json:"action_modes,omitempty"`
 	OutputSchemas        map[string]map[string]FieldSpec  `yaml:"output_schemas,omitempty" json:"output_schemas,omitempty"`
 	Config               map[string]MCPOverlayConfigField `yaml:"config,omitempty" json:"config,omitempty"`
 	Health               MCPOverlayHealth                 `yaml:"health,omitempty" json:"health,omitempty"`
@@ -105,6 +106,21 @@ func ValidateMCPOverlay(overlay MCPOverlay) []Diagnostic {
 				Code:     "REQUIRED_FIELD",
 				Severity: SeverityError,
 				Message:  "group_actions value must map to an MCP tool name",
+			})
+		}
+	}
+
+	for action, mode := range overlay.ActionModes {
+		trimmedMode := strings.TrimSpace(strings.ToLower(mode))
+		switch trimmedMode {
+		case "llm_callable", "standalone":
+			// valid
+		default:
+			diags = append(diags, Diagnostic{
+				Field:    "action_modes." + action,
+				Code:     "ENUM",
+				Severity: SeverityError,
+				Message:  `action mode must be "llm_callable" or "standalone"`,
 			})
 		}
 	}

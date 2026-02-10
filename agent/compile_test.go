@@ -438,10 +438,10 @@ func TestCompile_ToolDuality_FunctionCall(t *testing.T) {
 	_ = reg // tools are registered via builtins; we need a function_call one
 	// The global registry has "tool" as standalone. Let's register a function_call tool.
 	registry.Global().Register(registry.NodeTypeDef{
-		Type:     "web_search",
-		IsTool:   true,
-		ToolMode: "function_call",
-		Category: "tool",
+		Type:        "web_search",
+		IsTool:      true,
+		ToolMode:    "function_call",
+		Category:    "tool",
 		DisplayName: "Web Search",
 		Description: "Search the web",
 		Ports: registry.PortSchema{
@@ -481,10 +481,10 @@ func TestCompile_ToolDuality_FunctionCall(t *testing.T) {
 func TestCompile_ToolDuality_Standalone(t *testing.T) {
 	// Register a standalone tool
 	registry.Global().Register(registry.NodeTypeDef{
-		Type:     "pdf_extract",
-		IsTool:   true,
-		ToolMode: "standalone",
-		Category: "tool",
+		Type:        "pdf_extract",
+		IsTool:      true,
+		ToolMode:    "standalone",
+		Category:    "tool",
 		DisplayName: "PDF Extract",
 		Description: "Extract text from PDF",
 		Ports: registry.PortSchema{
@@ -825,6 +825,135 @@ func TestCompile_MixedTools(t *testing.T) {
 	}
 	if standaloneNode.ID != "research__data_loader" {
 		t.Errorf("standalone node ID = %q, want %q", standaloneNode.ID, "research__data_loader")
+	}
+}
+
+func TestCompile_ToolActionReferencesAndToolConfig(t *testing.T) {
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     "s3_fetch.list",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "function_call",
+		ConfigSchema: map[string]any{
+			"tool_config": map[string]any{
+				"region": map[string]any{"type": "string"},
+			},
+		},
+	})
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     "s3_fetch.download",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "standalone",
+		ConfigSchema: map[string]any{
+			"tool_config": map[string]any{
+				"region": map[string]any{"type": "string"},
+			},
+		},
+	})
+
+	wf := minimalWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "Researcher",
+		Goal:     "Research",
+		Provider: "anthropic",
+		Model:    "claude-sonnet-4-20250514",
+		Tools:    []string{"s3_fetch.list", "s3_fetch.download"},
+		ToolConfig: map[string]map[string]any{
+			"s3_fetch": {
+				"region": "us-west-2",
+			},
+		},
+	}
+
+	gd, err := Compile(wf)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(gd.Nodes) != 2 {
+		t.Fatalf("Nodes count = %d, want 2", len(gd.Nodes))
+	}
+
+	var llmNode graph.NodeDef
+	var standalone graph.NodeDef
+	for _, node := range gd.Nodes {
+		switch node.Type {
+		case "llm_prompt":
+			llmNode = node
+		case "s3_fetch.download":
+			standalone = node
+		}
+	}
+
+	tools, ok := llmNode.Config["tools"].([]string)
+	if !ok {
+		t.Fatalf("LLM tools config type = %T, want []string", llmNode.Config["tools"])
+	}
+	if len(tools) != 1 || tools[0] != "s3_fetch.list" {
+		t.Fatalf("LLM tools = %#v, want [s3_fetch.list]", tools)
+	}
+	if _, ok := llmNode.Config["tool_config"].(map[string]map[string]any); !ok {
+		t.Fatalf("LLM tool_config type = %T, want map[string]map[string]any", llmNode.Config["tool_config"])
+	}
+
+	if standalone.ID != "research__s3_fetch.download" {
+		t.Fatalf("standalone ID = %q, want research__s3_fetch.download", standalone.ID)
+	}
+	if standalone.Config["tool_name"] != "s3_fetch" {
+		t.Fatalf("standalone tool_name = %v, want s3_fetch", standalone.Config["tool_name"])
+	}
+	if standalone.Config["action_name"] != "download" {
+		t.Fatalf("standalone action_name = %v, want download", standalone.Config["action_name"])
+	}
+	toolCfg, ok := standalone.Config["tool_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("standalone tool_config type = %T, want map[string]any", standalone.Config["tool_config"])
+	}
+	if toolCfg["region"] != "us-west-2" {
+		t.Fatalf("standalone tool_config.region = %v, want us-west-2", toolCfg["region"])
+	}
+}
+
+func TestCompile_ToolModeInferredFromBytesPorts(t *testing.T) {
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     "pdf_extract.extract",
+		Category: "tool",
+		IsTool:   true,
+		Ports: registry.PortSchema{
+			Inputs: []registry.PortDef{
+				{Name: "path", Type: "string", Required: true},
+			},
+			Outputs: []registry.PortDef{
+				{Name: "blob", Type: "bytes"},
+			},
+		},
+	})
+
+	wf := minimalWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "Researcher",
+		Goal:     "Research",
+		Provider: "anthropic",
+		Model:    "claude-sonnet-4-20250514",
+		Tools:    []string{"pdf_extract.extract"},
+	}
+
+	gd, err := Compile(wf)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(gd.Nodes) != 2 {
+		t.Fatalf("Nodes count = %d, want 2", len(gd.Nodes))
+	}
+
+	foundStandalone := false
+	for _, node := range gd.Nodes {
+		if node.Type == "pdf_extract.extract" {
+			foundStandalone = true
+		}
+	}
+	if !foundStandalone {
+		t.Fatal("expected standalone node for bytes-typed tool action")
 	}
 }
 

@@ -221,6 +221,9 @@ func TestMergeMCPOverlay(t *testing.T) {
 		GroupActions: map[string]string{
 			"list": "list_s3_objects",
 		},
+		ActionModes: map[string]string{
+			"list": "standalone",
+		},
 		OutputSchemas: map[string]map[string]FieldSpec{
 			"list": {
 				"keys": {Type: TypeArray, Items: &FieldSpec{Type: TypeString}},
@@ -237,6 +240,23 @@ func TestMergeMCPOverlay(t *testing.T) {
 	}
 	if merged.Actions["list"].MCPToolName != "list_s3_objects" {
 		t.Fatalf("MCPToolName = %q, want list_s3_objects", merged.Actions["list"].MCPToolName)
+	}
+	if merged.Actions["list"].LLMCallable == nil || *merged.Actions["list"].LLMCallable {
+		t.Fatalf("list llm_callable = %#v, want false", merged.Actions["list"].LLMCallable)
+	}
+}
+
+func TestParseMCPOverlayYAML_ActionModesValidation(t *testing.T) {
+	_, diags, err := ParseMCPOverlayYAML([]byte(`
+overlay_version: "1.0"
+action_modes:
+  list: unknown
+`))
+	if err != nil {
+		t.Fatalf("ParseMCPOverlayYAML() error = %v", err)
+	}
+	if len(diags) == 0 {
+		t.Fatal("expected diagnostics for invalid action_modes value")
 	}
 }
 

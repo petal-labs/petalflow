@@ -91,6 +91,22 @@ func MergeMCPOverlay(base Manifest, overlay MCPOverlay) (Manifest, []Diagnostic,
 		merged.Actions[action] = spec
 	}
 
+	for action, mode := range overlay.ActionModes {
+		spec, ok := merged.Actions[action]
+		if !ok {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(mode)) {
+		case "llm_callable":
+			value := true
+			spec.LLMCallable = &value
+		case "standalone":
+			value := false
+			spec.LLMCallable = &value
+		}
+		merged.Actions[action] = spec
+	}
+
 	if merged.Config == nil {
 		merged.Config = map[string]FieldSpec{}
 	}
@@ -167,6 +183,10 @@ func cloneActionSpec(in ActionSpec) ActionSpec {
 	out := in
 	out.Inputs = cloneFieldMap(in.Inputs)
 	out.Outputs = cloneFieldMap(in.Outputs)
+	if in.LLMCallable != nil {
+		value := *in.LLMCallable
+		out.LLMCallable = &value
+	}
 	return out
 }
 

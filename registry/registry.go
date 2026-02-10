@@ -69,6 +69,28 @@ func (r *Registry) Register(def NodeTypeDef) {
 	r.types[def.Type] = def
 }
 
+// Delete removes a node type definition by name.
+// It returns true when a type existed and was removed.
+func (r *Registry) Delete(typeName string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, ok := r.types[typeName]; !ok {
+		return false
+	}
+	delete(r.types, typeName)
+
+	for i, name := range r.order {
+		if name != typeName {
+			continue
+		}
+		r.order = append(r.order[:i], r.order[i+1:]...)
+		break
+	}
+
+	return true
+}
+
 // Get returns a node type definition by type name.
 func (r *Registry) Get(typeName string) (NodeTypeDef, bool) {
 	r.mu.RLock()
