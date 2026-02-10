@@ -517,7 +517,7 @@ func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, cur
 
 	// MCP updates default to fresh discovery unless a full manifest override is supplied.
 	if origin == OriginMCP && input.Manifest == nil {
-		transport := MCPTransport{}
+		var transport MCPTransport
 		if input.MCPTransport != nil {
 			transport = *input.MCPTransport
 		} else {
