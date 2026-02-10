@@ -1,0 +1,99 @@
+{
+  "id": "custom_conditional",
+  "version": "1.0",
+  "metadata": {
+    "compiled_at": "NORMALIZED",
+    "compiler_version": "0.1.0",
+    "source_kind": "agent_workflow",
+    "source_version": "1.0"
+  },
+  "nodes": [
+    {
+      "id": "analyze__analyzer",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Analyze the data",
+        "provider": "anthropic",
+        "system_prompt": "You are a Analyzer.\n\nGoal: Analyze input\n\nExpected output: Analysis with confidence score"
+      }
+    },
+    {
+      "id": "deep_dive__deep_diver",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Deep dive when confidence is low",
+        "provider": "anthropic",
+        "system_prompt": "You are a Deep Diver.\n\nGoal: Deep analysis\n\nExpected output: Detailed analysis"
+      }
+    },
+    {
+      "id": "write_report__reporter",
+      "type": "llm_prompt",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt_template": "Write final report",
+        "provider": "anthropic",
+        "system_prompt": "You are a Reporter.\n\nGoal: Write report\n\nExpected output: Final report"
+      }
+    },
+    {
+      "id": "analyze__cond__deep_dive",
+      "type": "conditional",
+      "config": {
+        "conditions": [
+          {
+            "expression": "analyze__analyzer_output.confidence \u003c 0.7",
+            "name": "deep_dive"
+          }
+        ],
+        "default": "_skip",
+        "evaluation_order": "first_match",
+        "pass_through": true
+      }
+    },
+    {
+      "id": "analyze__cond__write_report",
+      "type": "conditional",
+      "config": {
+        "conditions": [
+          {
+            "expression": "analyze__analyzer_output.confidence \u003e= 0.7",
+            "name": "write_report"
+          }
+        ],
+        "default": "_skip",
+        "evaluation_order": "first_match",
+        "pass_through": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "analyze__analyzer",
+      "sourceHandle": "output",
+      "target": "analyze__cond__deep_dive",
+      "targetHandle": "input"
+    },
+    {
+      "source": "analyze__analyzer",
+      "sourceHandle": "output",
+      "target": "analyze__cond__write_report",
+      "targetHandle": "input"
+    },
+    {
+      "source": "analyze__cond__deep_dive",
+      "sourceHandle": "deep_dive",
+      "target": "deep_dive__deep_diver",
+      "targetHandle": "input"
+    },
+    {
+      "source": "analyze__cond__write_report",
+      "sourceHandle": "write_report",
+      "target": "write_report__reporter",
+      "targetHandle": "input"
+    }
+  ],
+  "entry": "analyze__analyzer"
+}

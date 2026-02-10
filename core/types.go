@@ -16,19 +16,20 @@ import (
 type NodeKind string
 
 const (
-	NodeKindLLM       NodeKind = "llm"
-	NodeKindTool      NodeKind = "tool"
-	NodeKindRouter    NodeKind = "router"
-	NodeKindMerge     NodeKind = "merge"
-	NodeKindMap       NodeKind = "map"
-	NodeKindGate      NodeKind = "gate"
-	NodeKindNoop      NodeKind = "noop"
-	NodeKindFilter    NodeKind = "filter"
-	NodeKindTransform NodeKind = "transform"
-	NodeKindGuardian  NodeKind = "guardian"
-	NodeKindCache     NodeKind = "cache"
-	NodeKindSink      NodeKind = "sink"
-	NodeKindHuman     NodeKind = "human"
+	NodeKindLLM         NodeKind = "llm"
+	NodeKindTool        NodeKind = "tool"
+	NodeKindRouter      NodeKind = "router"
+	NodeKindMerge       NodeKind = "merge"
+	NodeKindMap         NodeKind = "map"
+	NodeKindGate        NodeKind = "gate"
+	NodeKindNoop        NodeKind = "noop"
+	NodeKindFilter      NodeKind = "filter"
+	NodeKindTransform   NodeKind = "transform"
+	NodeKindGuardian    NodeKind = "guardian"
+	NodeKindCache       NodeKind = "cache"
+	NodeKindSink        NodeKind = "sink"
+	NodeKindHuman       NodeKind = "human"
+	NodeKindConditional NodeKind = "conditional"
 )
 
 // String returns the string representation of the NodeKind.

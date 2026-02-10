@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "custom_conditional",
+  "name": "Custom with Conditional Branching",
+  "agents": {
+    "analyzer": { "role": "Analyzer", "goal": "Analyze input", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "deep_diver": { "role": "Deep Diver", "goal": "Deep analysis", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
+    "reporter": { "role": "Reporter", "goal": "Write report", "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+  },
+  "tasks": {
+    "analyze": { "description": "Analyze the data", "agent": "analyzer", "expected_output": "Analysis with confidence score" },
+    "deep_dive": { "description": "Deep dive when confidence is low", "agent": "deep_diver", "expected_output": "Detailed analysis" },
+    "write_report": { "description": "Write final report", "agent": "reporter", "expected_output": "Final report" }
+  },
+  "execution": {
+    "strategy": "custom",
+    "tasks": {
+      "analyze": { "depends_on": [] },
+      "deep_dive": { "depends_on": ["analyze"], "condition": "tasks.analyze.output.confidence < 0.7" },
+      "write_report": { "depends_on": ["analyze"], "condition": "tasks.analyze.output.confidence >= 0.7" }
+    }
+  }
+}

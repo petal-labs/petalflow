@@ -52,9 +52,10 @@ type ExecutionConfig struct {
 }
 
 // TaskDependencies declares the tasks that must complete before a given task
-// can start.
+// can start, with an optional condition expression for conditional branching.
 type TaskDependencies struct {
 	DependsOn []string `json:"depends_on"`
+	Condition string   `json:"condition,omitempty"`
 }
 
 // LoadFromFile reads and parses an Agent/Task JSON file at the given path.

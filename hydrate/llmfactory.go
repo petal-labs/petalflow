@@ -8,7 +8,14 @@ import (
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/nodes"
+	"github.com/petal-labs/petalflow/nodes/conditional"
+	"github.com/petal-labs/petalflow/nodes/conditional/expr"
 )
+
+func init() {
+	// Register expression validator for graph-level conditional node validation.
+	graph.SetExprValidator(expr.ValidateSyntax)
+}
 
 // ClientFactory creates a core.LLMClient for a named provider.
 // The hydrate package defines this type but never imports iris directly —
@@ -74,6 +81,8 @@ func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts
 			return buildMergeNode(nd)
 		case "human":
 			return buildHumanNode(nd, options.humanHandler)
+		case "conditional":
+			return buildConditionalNode(nd)
 		default:
 			// Check if the type matches a registered tool.
 			if options.toolRegistry != nil {
@@ -237,6 +246,45 @@ func buildHumanNode(nd graph.NodeDef, handler nodes.HumanHandler) (core.Node, er
 	}
 
 	return nodes.NewHumanNode(nd.ID, cfg), nil
+}
+
+// buildConditionalNode creates a ConditionalNode from a NodeDef.
+func buildConditionalNode(nd graph.NodeDef) (core.Node, error) {
+	cfg := conditional.Config{
+		Default:     configString(nd.Config, "default"),
+		PassThrough: true,
+		OutputKey:   configString(nd.Config, "output_key"),
+	}
+
+	if order := configString(nd.Config, "evaluation_order"); order != "" {
+		cfg.EvaluationOrder = order
+	}
+
+	if v, ok := nd.Config["pass_through"].(bool); ok {
+		cfg.PassThrough = v
+	}
+
+	// Parse conditions array from config
+	conditionsRaw, _ := nd.Config["conditions"].([]any)
+	for _, raw := range conditionsRaw {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		cond := conditional.Condition{
+			Name:        configMapString(m, "name"),
+			Expression:  configMapString(m, "expression"),
+			Description: configMapString(m, "description"),
+		}
+		cfg.Conditions = append(cfg.Conditions, cond)
+	}
+
+	return conditional.NewConditionalNode(nd.ID, cfg)
+}
+
+func configMapString(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
 }
 
 // buildToolNode creates a ToolNode from a NodeDef and a resolved tool.
