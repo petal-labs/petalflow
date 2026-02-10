@@ -29,6 +29,7 @@ type StdioTransport struct {
 	stdin  io.WriteCloser
 	recvCh chan Message
 	errCh  chan error
+	waitCh chan struct{}
 	closed bool
 }
 
@@ -42,6 +43,7 @@ func NewStdioTransport(ctx context.Context, cfg StdioTransportConfig) (*StdioTra
 		cfg:    cfg,
 		recvCh: make(chan Message, 64),
 		errCh:  make(chan error, 1),
+		waitCh: make(chan struct{}),
 	}
 	if err := t.start(ctx); err != nil {
 		return nil, err
@@ -101,17 +103,24 @@ func (t *StdioTransport) readLoop(stdout io.Reader) {
 }
 
 func (t *StdioTransport) waitLoop(stderr io.Reader) {
+	defer close(t.waitCh)
+
 	_, _ = io.Copy(io.Discard, stderr)
 
 	t.mu.Lock()
 	cmd := t.cmd
-	closed := t.closed
 	t.mu.Unlock()
 
 	if cmd == nil {
 		return
 	}
-	if err := cmd.Wait(); err != nil && !closed {
+	err := cmd.Wait()
+
+	t.mu.Lock()
+	closed := t.closed
+	t.mu.Unlock()
+
+	if err != nil && !closed {
 		t.sendErr(fmt.Errorf("mcp: stdio process exited: %w", err))
 	}
 }
@@ -161,6 +170,7 @@ func (t *StdioTransport) Close(ctx context.Context) error {
 	t.closed = true
 	stdin := t.stdin
 	cmd := t.cmd
+	waitCh := t.waitCh
 	t.mu.Unlock()
 
 	if stdin != nil {
@@ -168,7 +178,13 @@ func (t *StdioTransport) Close(ctx context.Context) error {
 	}
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+	}
+	if waitCh != nil {
+		select {
+		case <-waitCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return nil
 }
