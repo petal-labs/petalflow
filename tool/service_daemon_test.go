@@ -342,3 +342,77 @@ func TestDaemonToolServiceDeleteNotFound(t *testing.T) {
 		t.Fatalf("Delete() error = %v, want ErrToolNotFound", err)
 	}
 }
+
+func TestDaemonToolServiceHealthBuiltin(t *testing.T) {
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store: NewDaemonStore(newFakeDaemonBackend()),
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	reg, report, err := service.Health(context.Background(), "template_render")
+	if err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if reg.Name != "template_render" {
+		t.Fatalf("reg.Name = %q, want template_render", reg.Name)
+	}
+	if report.State != HealthHealthy {
+		t.Fatalf("report.State = %q, want healthy", report.State)
+	}
+}
+
+func TestDaemonToolServiceHealthMCPPersistsStatus(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+	manifest := NewManifest("s3_fetch")
+	manifest.Transport = NewMCPTransport(MCPTransport{
+		Mode:    MCPModeStdio,
+		Command: "s3-mcp",
+	})
+	manifest.Actions["list"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"count": {Type: TypeInteger},
+		},
+	}
+	seed := ToolRegistration{
+		Name:     "s3_fetch",
+		Origin:   OriginMCP,
+		Manifest: manifest,
+		Status:   StatusReady,
+		Enabled:  true,
+	}
+	if err := store.Upsert(context.Background(), seed); err != nil {
+		t.Fatalf("store.Upsert() error = %v", err)
+	}
+
+	checkedAt := time.Date(2026, 2, 10, 4, 0, 0, 0, time.UTC)
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+		MCPHealthEvaluator: func(ctx context.Context, reg Registration) HealthReport {
+			return HealthReport{
+				ToolName:  reg.Name,
+				State:     HealthUnhealthy,
+				CheckedAt: checkedAt,
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	reg, report, err := service.Health(context.Background(), "s3_fetch")
+	if err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if reg.Status != StatusUnhealthy {
+		t.Fatalf("status = %q, want unhealthy", reg.Status)
+	}
+	if !reg.LastHealthCheck.Equal(checkedAt) {
+		t.Fatalf("last health check = %v, want %v", reg.LastHealthCheck, checkedAt)
+	}
+	if report.State != HealthUnhealthy {
+		t.Fatalf("report.State = %q, want unhealthy", report.State)
+	}
+}

@@ -20,13 +20,14 @@ type AgentWorkflow struct {
 
 // Agent describes an AI agent with its role, provider, model, and optional tools.
 type Agent struct {
-	Role      string         `json:"role"`
-	Goal      string         `json:"goal"`
-	Backstory string         `json:"backstory,omitempty"`
-	Provider  string         `json:"provider"`
-	Model     string         `json:"model"`
-	Tools     []string       `json:"tools,omitempty"`
-	Config    map[string]any `json:"config,omitempty"`
+	Role       string                    `json:"role"`
+	Goal       string                    `json:"goal"`
+	Backstory  string                    `json:"backstory,omitempty"`
+	Provider   string                    `json:"provider"`
+	Model      string                    `json:"model"`
+	Tools      []string                  `json:"tools,omitempty"`
+	ToolConfig map[string]map[string]any `json:"tool_config,omitempty"`
+	Config     map[string]any            `json:"config,omitempty"`
 }
 
 // Task describes a unit of work assigned to an agent.

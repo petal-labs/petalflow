@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 // validWorkflow returns a minimal valid AgentWorkflow for testing.
@@ -141,6 +143,106 @@ func TestValidate_AT004_KnownTool(t *testing.T) {
 	found := findDiagCode(diags, "AT-004")
 	if found != nil {
 		t.Errorf("built-in tool should be valid, got AT-004: %s", found.Message)
+	}
+}
+
+func TestValidate_AT004_ToolActionAndToolConfig(t *testing.T) {
+	const toolName = "phase3_tool_cfg_ok"
+
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     toolName + ".list",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "function_call",
+		ConfigSchema: map[string]any{
+			"tool_config": map[string]tool.FieldSpec{
+				"region": {Type: tool.TypeString},
+			},
+		},
+	})
+
+	wf := validWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "R",
+		Goal:     "G",
+		Provider: "openai",
+		Model:    "gpt-4",
+		Tools:    []string{toolName + ".list"},
+		ToolConfig: map[string]map[string]any{
+			toolName: {
+				"region": "us-west-2",
+			},
+		},
+	}
+
+	diags := Validate(wf)
+	if found := findDiagCode(diags, "AT-004"); found != nil {
+		t.Fatalf("expected no AT-004 diagnostics, got: %v", diags)
+	}
+}
+
+func TestValidate_AT004_UnknownAction(t *testing.T) {
+	const toolName = "phase3_tool_missing_action"
+
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     toolName + ".list",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "function_call",
+		ConfigSchema: map[string]any{
+			"tool_config": map[string]tool.FieldSpec{
+				"region": {Type: tool.TypeString},
+			},
+		},
+	})
+
+	wf := validWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "R",
+		Goal:     "G",
+		Provider: "openai",
+		Model:    "gpt-4",
+		Tools:    []string{toolName + ".download"},
+	}
+
+	diags := Validate(wf)
+	if findDiagCode(diags, "AT-004") == nil {
+		t.Fatalf("expected AT-004 diagnostic for unknown action, got: %v", diags)
+	}
+}
+
+func TestValidate_AT004_UnknownToolConfigField(t *testing.T) {
+	const toolName = "phase3_tool_bad_config"
+
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     toolName + ".list",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "function_call",
+		ConfigSchema: map[string]any{
+			"tool_config": map[string]tool.FieldSpec{
+				"region": {Type: tool.TypeString},
+			},
+		},
+	})
+
+	wf := validWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "R",
+		Goal:     "G",
+		Provider: "openai",
+		Model:    "gpt-4",
+		Tools:    []string{toolName + ".list"},
+		ToolConfig: map[string]map[string]any{
+			toolName: {
+				"invalid_key": "x",
+			},
+		},
+	}
+
+	diags := Validate(wf)
+	if findDiagCode(diags, "AT-004") == nil {
+		t.Fatalf("expected AT-004 diagnostic for unknown tool_config field, got: %v", diags)
 	}
 }
 

@@ -57,16 +57,32 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 		// Separate tools by mode
 		var fcTools []string
 		for _, toolID := range ag.Tools {
-			mode := reg.ToolMode(toolID)
+			toolRef := strings.TrimSpace(toolID)
+			mode := reg.ToolMode(toolRef)
+			if mode == "" {
+				if def, ok := reg.Get(toolRef); ok && def.IsTool {
+					mode = inferredToolMode(def)
+				}
+			}
+
 			switch mode {
 			case "function_call":
-				fcTools = append(fcTools, toolID)
+				fcTools = append(fcTools, toolRef)
 			case "standalone":
 				// Create a standalone tool node wired before the agent node
-				toolNodeID := taskID + "__" + toolID
+				toolNodeID := taskID + "__" + toolRef
+				toolNodeConfig := map[string]any{}
+				if toolName, actionName, hasAction, valid := parseToolReference(toolRef); hasAction && valid {
+					toolNodeConfig["tool_name"] = toolName
+					toolNodeConfig["action_name"] = actionName
+					if overrides, ok := ag.ToolConfig[toolName]; ok && len(overrides) > 0 {
+						toolNodeConfig["tool_config"] = cloneAnyMap(overrides)
+					}
+				}
 				gd.Nodes = append(gd.Nodes, graph.NodeDef{
-					ID:   toolNodeID,
-					Type: toolID,
+					ID:     toolNodeID,
+					Type:   toolRef,
+					Config: toolNodeConfig,
 				})
 				gd.Edges = append(gd.Edges, graph.EdgeDef{
 					Source:       toolNodeID,
@@ -86,6 +102,9 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 		}
 		if len(fcTools) > 0 {
 			config["tools"] = fcTools
+		}
+		if len(ag.ToolConfig) > 0 {
+			config["tool_config"] = cloneToolConfig(ag.ToolConfig)
 		}
 		if ag.Config != nil {
 			if temp, ok := ag.Config["temperature"]; ok {
@@ -430,6 +449,47 @@ func compileExtractTaskRefs(tmpl string) []string {
 		}
 	}
 	return refs
+}
+
+func inferredToolMode(def registry.NodeTypeDef) string {
+	if strings.TrimSpace(def.ToolMode) != "" {
+		return def.ToolMode
+	}
+	if hasBytesPort(def.Ports.Inputs) || hasBytesPort(def.Ports.Outputs) {
+		return "standalone"
+	}
+	return "function_call"
+}
+
+func hasBytesPort(ports []registry.PortDef) bool {
+	for _, port := range ports {
+		if port.Type == "bytes" {
+			return true
+		}
+	}
+	return false
+}
+
+func cloneToolConfig(in map[string]map[string]any) map[string]map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(in))
+	for toolName, fields := range in {
+		out[toolName] = cloneAnyMap(fields)
+	}
+	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 // sortedKeys returns the keys of a map in sorted order.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 )
 
 var (
@@ -330,6 +331,65 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		DurationMS: response.DurationMS,
 		Metadata:   response.Metadata,
 	}, nil
+}
+
+// Health reports current health for a registration and persists status updates.
+func (s *DaemonToolService) Health(ctx context.Context, name string) (ToolRegistration, HealthReport, error) {
+	regName := strings.TrimSpace(name)
+	if regName == "" {
+		return ToolRegistration{}, HealthReport{}, fmt.Errorf("%w: %q", ErrToolNotFound, name)
+	}
+
+	reg, found, err := s.store.Get(ctx, regName)
+	if err != nil {
+		return ToolRegistration{}, HealthReport{}, err
+	}
+	if !found {
+		builtin, ok := BuiltinRegistration(regName)
+		if !ok {
+			return ToolRegistration{}, HealthReport{}, fmt.Errorf("%w: %s", ErrToolNotFound, regName)
+		}
+		report := HealthReport{
+			ToolName:  builtin.Name,
+			State:     HealthHealthy,
+			CheckedAt: time.Now().UTC(),
+		}
+		return builtin, report, nil
+	}
+
+	report := HealthReport{
+		ToolName:  reg.Name,
+		State:     HealthUnknown,
+		CheckedAt: time.Now().UTC(),
+	}
+
+	switch {
+	case !reg.Enabled:
+		reg.Status = StatusDisabled
+	case reg.Origin != OriginMCP:
+		reg.Status = StatusReady
+		report.State = HealthHealthy
+	default:
+		report = s.mcpHealthEvaluator(ctx, reg)
+		reg.LastHealthCheck = report.CheckedAt
+		switch report.State {
+		case HealthHealthy:
+			reg.Status = StatusReady
+		case HealthUnhealthy:
+			reg.Status = StatusUnhealthy
+		default:
+			reg.Status = StatusUnverified
+		}
+	}
+
+	if err := s.store.Upsert(ctx, reg); err != nil {
+		return ToolRegistration{}, HealthReport{}, err
+	}
+	updated, err := s.mustGetStored(ctx, regName)
+	if err != nil {
+		return ToolRegistration{}, HealthReport{}, err
+	}
+	return updated, report, nil
 }
 
 // Refresh re-discovers MCP capabilities and updates stored registration.

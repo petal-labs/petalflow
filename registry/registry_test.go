@@ -145,6 +145,29 @@ func TestRegistry_RegisterOverwrite(t *testing.T) {
 	}
 }
 
+func TestRegistry_Delete(t *testing.T) {
+	r := newRegistry()
+	r.Register(NodeTypeDef{Type: "alpha"})
+	r.Register(NodeTypeDef{Type: "beta"})
+
+	if !r.Delete("alpha") {
+		t.Fatal("Delete(alpha) = false, want true")
+	}
+	if r.Has("alpha") {
+		t.Fatal("alpha should not exist after Delete")
+	}
+	if r.Len() != 1 {
+		t.Fatalf("Len = %d, want 1", r.Len())
+	}
+	all := r.All()
+	if len(all) != 1 || all[0].Type != "beta" {
+		t.Fatalf("All() = %#v, want only beta", all)
+	}
+	if r.Delete("alpha") {
+		t.Fatal("Delete(alpha) for missing type = true, want false")
+	}
+}
+
 func TestRegistry_Len(t *testing.T) {
 	r := newRegistry()
 	if r.Len() != 0 {

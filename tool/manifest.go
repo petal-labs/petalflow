@@ -61,6 +61,7 @@ type ActionSpec struct {
 	Description string               `json:"description,omitempty"`
 	Inputs      map[string]FieldSpec `json:"inputs,omitempty"`
 	Outputs     map[string]FieldSpec `json:"outputs,omitempty"`
+	LLMCallable *bool                `json:"llm_callable,omitempty"`
 	Idempotent  bool                 `json:"idempotent,omitempty"`
 }
 
