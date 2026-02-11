@@ -2,27 +2,36 @@ import { useCallback, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { toast } from "sonner"
 import { useEditorStore } from "@/stores/editor"
+import { useGraphStore } from "@/stores/graph"
 
-export function SourceTab() {
-  const toDefinition = useEditorStore((s) => s.toDefinition)
-  const loadDefinition = useEditorStore((s) => s.loadDefinition)
+interface SourceTabProps {
+  mode?: "agent_workflow" | "graph"
+}
+
+export function SourceTab({ mode = "agent_workflow" }: SourceTabProps) {
+  const agentToDefinition = useEditorStore((s) => s.toDefinition)
+  const agentLoadDefinition = useEditorStore((s) => s.loadDefinition)
+  const graphToIR = useGraphStore((s) => s.toGraphIR)
+  const graphLoadIR = useGraphStore((s) => s.loadFromGraphIR)
+
+  const toJSON = mode === "graph" ? graphToIR : agentToDefinition
+  const fromJSON = mode === "graph" ? graphLoadIR : agentLoadDefinition
 
   const [source, setSource] = useState(() =>
-    JSON.stringify(toDefinition(), null, 2),
+    JSON.stringify(toJSON(), null, 2),
   )
   const [parseError, setParseError] = useState<string | null>(null)
 
   const syncFromEditor = useCallback(() => {
-    const def = toDefinition()
+    const def = toJSON()
     setSource(JSON.stringify(def, null, 2))
     setParseError(null)
-  }, [toDefinition])
+  }, [toJSON])
 
-  // Apply source changes back to editor
   const handleApply = () => {
     try {
       const parsed = JSON.parse(source)
-      loadDefinition(parsed)
+      fromJSON(parsed)
       setParseError(null)
       toast.success("Source applied to editor.")
     } catch (e) {
@@ -49,7 +58,9 @@ export function SourceTab() {
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b px-3 py-1.5">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-medium">Source (JSON)</span>
+          <span className="text-xs font-medium">
+            Source ({mode === "graph" ? "Graph IR" : "JSON"})
+          </span>
           {parseError && (
             <span className="text-xs text-destructive">{parseError}</span>
           )}

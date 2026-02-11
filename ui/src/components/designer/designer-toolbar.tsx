@@ -9,6 +9,7 @@ interface DesignerToolbarProps {
   dirty: boolean
   onRun: () => void
   onSettings: () => void
+  onEject?: () => void
 }
 
 export function DesignerToolbar({
@@ -18,6 +19,7 @@ export function DesignerToolbar({
   dirty,
   onRun,
   onSettings,
+  onEject,
 }: DesignerToolbarProps) {
   return (
     <div className="flex h-12 items-center justify-between border-b px-4">
@@ -33,6 +35,11 @@ export function DesignerToolbar({
         </span>
       </div>
       <div className="flex items-center gap-2">
+        {kind === "agent_workflow" && onEject && (
+          <Button variant="outline" size="sm" onClick={onEject}>
+            Eject to Graph
+          </Button>
+        )}
         <Button variant="outline" size="sm" onClick={onSettings}>
           Settings
         </Button>

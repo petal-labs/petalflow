@@ -1,24 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { useEditorStore } from "@/stores/editor"
+import { useGraphStore } from "@/stores/graph"
 import { useWorkflowStore } from "@/stores/workflows"
+import { validateGraph } from "@/lib/graph-validation"
 import type { ValidationDiagnostic } from "@/api/types"
 
 interface IssuesPanelProps {
+  mode?: "agent_workflow" | "graph"
   onNavigate?: (path: string) => void
 }
 
-export function IssuesPanel({ onNavigate }: IssuesPanelProps) {
+export function IssuesPanel({ mode = "agent_workflow", onNavigate }: IssuesPanelProps) {
   const toDefinition = useEditorStore((s) => s.toDefinition)
   const tasks = useEditorStore((s) => s.tasks)
   const agents = useEditorStore((s) => s.agents)
   const validate = useWorkflowStore((s) => s.validate)
 
+  const graphNodes = useGraphStore((s) => s.nodes)
+  const graphEdges = useGraphStore((s) => s.edges)
+
   const [issues, setIssues] = useState<ValidationDiagnostic[]>([])
   const [collapsed, setCollapsed] = useState(false)
   const debounceRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null)
 
-  const doValidate = useCallback(async () => {
+  const doValidateAgent = useCallback(async () => {
     if (tasks.length === 0 && agents.length === 0) {
       setIssues([])
       return
@@ -32,13 +38,21 @@ export function IssuesPanel({ onNavigate }: IssuesPanelProps) {
     }
   }, [toDefinition, validate, tasks.length, agents.length])
 
+  const doValidateGraph = useCallback(() => {
+    const diags = validateGraph(graphNodes, graphEdges)
+    setIssues(diags)
+  }, [graphNodes, graphEdges])
+
+  const doValidate = mode === "graph" ? doValidateGraph : doValidateAgent
+
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = globalThis.setTimeout(doValidate, 800)
+    const delay = mode === "graph" ? 500 : 800
+    debounceRef.current = globalThis.setTimeout(doValidate, delay)
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [doValidate])
+  }, [doValidate, mode])
 
   const errors = issues.filter((i) => i.severity === "error")
   const warnings = issues.filter((i) => i.severity === "warning")

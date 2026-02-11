@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
 import { ReactFlowProvider } from "@xyflow/react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -6,12 +6,18 @@ import { DesignerToolbar } from "@/components/designer/designer-toolbar"
 import { AgentTaskSidebar } from "@/components/designer/agent-task-sidebar"
 import { DetailPanel } from "@/components/designer/detail-panel"
 import { GraphPreview } from "@/components/designer/graph-preview"
+import { GraphCanvas } from "@/components/designer/graph-canvas"
+import { NodePalette } from "@/components/designer/node-palette"
+import { NodeInspector } from "@/components/designer/node-inspector"
+import { EdgeInspector } from "@/components/designer/edge-inspector"
+import { EjectDialog } from "@/components/designer/eject-dialog"
 import { IssuesPanel } from "@/components/designer/issues-panel"
 import { SourceTab } from "@/components/designer/source-tab"
 import { WorkflowSettingsPanel } from "@/components/designer/workflow-settings-panel"
 import { RegisterToolSheet } from "@/components/tools/register-tool-sheet"
 import { useWorkflowStore } from "@/stores/workflows"
 import { useEditorStore } from "@/stores/editor"
+import { useGraphStore } from "@/stores/graph"
 import { useAutoSave } from "@/hooks/use-auto-save"
 import { toast } from "sonner"
 
@@ -33,8 +39,19 @@ export default function WorkflowEditorPage() {
   const strategy = useEditorStore((s) => s.strategy)
   const dependencies = useEditorStore((s) => s.dependencies)
 
+  const loadFromGraphIR = useGraphStore((s) => s.loadFromGraphIR)
+  const toGraphIR = useGraphStore((s) => s.toGraphIR)
+  const graphNodes = useGraphStore((s) => s.nodes)
+  const graphEdges = useGraphStore((s) => s.edges)
+  const resetGraph = useGraphStore((s) => s.reset)
+  const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
+  const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId)
+
+  const compile = useWorkflowStore((s) => s.compile)
+
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [registerToolOpen, setRegisterToolOpen] = useState(false)
+  const [ejectOpen, setEjectOpen] = useState(false)
 
   useAutoSave()
 
@@ -49,6 +66,8 @@ export default function WorkflowEditorPage() {
         openWorkflow(wf)
         if (wf.kind === "agent_workflow" && wf.definition) {
           loadDefinition(wf.definition)
+        } else if (wf.kind === "graph" && wf.definition) {
+          loadFromGraphIR(wf.definition)
         }
       } catch {
         toast.error("Failed to load workflow.")
@@ -58,8 +77,9 @@ export default function WorkflowEditorPage() {
       cancelled = true
       closeWorkflow()
       reset()
+      resetGraph()
     }
-  }, [id, getWorkflow, openWorkflow, closeWorkflow, loadDefinition, reset])
+  }, [id, getWorkflow, openWorkflow, closeWorkflow, loadDefinition, loadFromGraphIR, reset, resetGraph])
 
   // Sync editor state → workflow definition (for save)
   useEffect(() => {
@@ -67,6 +87,29 @@ export default function WorkflowEditorPage() {
     const def = toDefinition()
     setDefinition(def)
   }, [agents, tasks, strategy, dependencies, current, toDefinition, setDefinition])
+
+  // Sync graph state → workflow definition (for save)
+  useEffect(() => {
+    if (!current || current.kind !== "graph") return
+    const ir = toGraphIR()
+    setDefinition(ir)
+  }, [graphNodes, graphEdges, current, toGraphIR, setDefinition])
+
+  // Eject Agent/Task → Graph
+  const handleEject = useCallback(async () => {
+    if (!current) return
+    try {
+      const def = toDefinition()
+      const result = await compile(def)
+      // Switch workflow kind to graph
+      openWorkflow({ ...current, kind: "graph" })
+      loadFromGraphIR(result.graph)
+      reset() // clear agent/task editor state
+      toast.success("Ejected to graph mode.")
+    } catch {
+      toast.error("Eject failed — could not compile workflow.")
+    }
+  }, [current, toDefinition, compile, openWorkflow, loadFromGraphIR, reset])
 
   if (!current) {
     return (
@@ -89,6 +132,7 @@ export default function WorkflowEditorPage() {
           dirty={dirty}
           onRun={() => toast.info("Run modal — coming soon.")}
           onSettings={() => setSettingsOpen(true)}
+          onEject={isAgentMode ? () => setEjectOpen(true) : undefined}
         />
 
         {/* Main content */}
@@ -121,19 +165,38 @@ export default function WorkflowEditorPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                    Graph mode canvas — coming in Phase 4
+                  <div className="flex h-full">
+                    {/* Node Palette */}
+                    <div className="w-52 shrink-0 border-r overflow-y-auto">
+                      <NodePalette />
+                    </div>
+                    {/* Canvas */}
+                    <div className="flex-1">
+                      <GraphCanvas />
+                    </div>
+                    {/* Inspector */}
+                    <div className="w-80 shrink-0 border-l overflow-y-auto">
+                      {selectedNodeId ? (
+                        <NodeInspector nodeId={selectedNodeId} />
+                      ) : selectedEdgeId ? (
+                        <EdgeInspector edgeId={selectedEdgeId} />
+                      ) : (
+                        <div className="flex h-full items-center justify-center p-4 text-xs text-muted-foreground">
+                          Select a node or edge to inspect
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </TabsContent>
 
               <TabsContent value="source" className="flex-1 overflow-hidden m-0">
-                <SourceTab />
+                <SourceTab mode={current.kind} />
               </TabsContent>
             </Tabs>
 
             {/* Issues panel */}
-            <IssuesPanel />
+            <IssuesPanel mode={current.kind} />
           </div>
         </div>
 
@@ -153,6 +216,13 @@ export default function WorkflowEditorPage() {
         <RegisterToolSheet
           open={registerToolOpen}
           onOpenChange={setRegisterToolOpen}
+        />
+
+        {/* Eject dialog */}
+        <EjectDialog
+          open={ejectOpen}
+          onOpenChange={setEjectOpen}
+          onConfirm={handleEject}
         />
       </div>
     </ReactFlowProvider>
