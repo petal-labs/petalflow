@@ -39,8 +39,9 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().IntP("port", "p", 8080, "Listen port")
 	cmd.Flags().String("host", "0.0.0.0", "Listen host")
 	cmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
-	cmd.Flags().String("store", "memory", "Workflow store backend: memory | file")
-	cmd.Flags().String("store-path", "", "File store directory (only for --store file)")
+	cmd.Flags().String("store", "sqlite", "Tool store backend: memory | sqlite | file")
+	cmd.Flags().String("store-path", "", "Store path (--store sqlite: DB file path, --store file: JSON file path)")
+	cmd.Flags().String("db-path", "", "Shared SQLite DB path (default: ~/.petalflow/petalflow.db)")
 	cmd.Flags().String("state-path", "", "Server auth/settings state file path")
 	cmd.Flags().String("config", "", "Path to petalflow.yaml tool config")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable)")
@@ -65,9 +66,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
 	storeKind, _ := cmd.Flags().GetString("store")
 	storePath, _ := cmd.Flags().GetString("store-path")
+	dbPath, _ := cmd.Flags().GetString("db-path")
 	statePath, _ := cmd.Flags().GetString("state-path")
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
 	devUI, _ := cmd.Flags().GetBool("dev-ui")
+	if strings.TrimSpace(dbPath) == "" {
+		dbPath = os.Getenv("PETALFLOW_DB_PATH")
+	}
 	if strings.TrimSpace(statePath) == "" {
 		defaultStatePath, err := server.DefaultStateStorePath()
 		if err != nil {
@@ -77,7 +82,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// --- Daemon tool server (Phase 3) ---
-	toolStore, err := resolveServeStore(storeKind, storePath)
+	toolStore, err := resolveServeStore(storeKind, storePath, dbPath)
 	if err != nil {
 		return err
 	}
@@ -214,17 +219,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 }
 
-func resolveServeStore(kind, storePath string) (tool.Store, error) {
+func resolveServeStore(kind, storePath, dbPath string) (tool.Store, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "", "memory":
+	case "memory":
 		return daemon.NewMemoryToolStore(), nil
+	case "", "sqlite":
+		target := strings.TrimSpace(storePath)
+		if target == "" {
+			target = strings.TrimSpace(dbPath)
+		}
+		if target == "" {
+			return tool.NewDefaultSQLiteStore()
+		}
+		return tool.NewSQLiteStore(filepath.Clean(target))
 	case "file":
 		if strings.TrimSpace(storePath) == "" {
 			return tool.NewDefaultFileStore()
 		}
 		return tool.NewFileStore(filepath.Clean(storePath)), nil
 	default:
-		return nil, fmt.Errorf(`invalid --store %q (use "memory" or "file")`, kind)
+		return nil, fmt.Errorf(`invalid --store %q (use "memory", "sqlite", or "file")`, kind)
 	}
 }
 

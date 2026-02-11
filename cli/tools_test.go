@@ -13,8 +13,8 @@ import (
 )
 
 func TestToolsRegisterListInspectUnregister(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
-	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+	dbPath := filepath.Join(t.TempDir(), "petalflow.db")
+	t.Setenv("PETALFLOW_DB_PATH", dbPath)
 
 	manifest := map[string]any{
 		"manifest_version": "1.0",
@@ -81,8 +81,8 @@ func TestToolsRegisterListInspectUnregister(t *testing.T) {
 }
 
 func TestToolsConfigMasksSensitiveValues(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
-	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+	dbPath := filepath.Join(t.TempDir(), "petalflow.db")
+	t.Setenv("PETALFLOW_DB_PATH", dbPath)
 
 	root := newTestRoot()
 	stdout, _, err := executeCommand(
@@ -117,8 +117,8 @@ func TestToolsConfigMasksSensitiveValues(t *testing.T) {
 }
 
 func TestToolsTestInvokesNativeBuiltin(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
-	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+	dbPath := filepath.Join(t.TempDir(), "petalflow.db")
+	t.Setenv("PETALFLOW_DB_PATH", dbPath)
 
 	root := newTestRoot()
 	stdout, _, err := executeCommand(
@@ -142,8 +142,8 @@ func TestToolsTestInvokesNativeBuiltin(t *testing.T) {
 }
 
 func TestToolsRegisterDuplicateNameShowsValidationCode(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
-	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+	dbPath := filepath.Join(t.TempDir(), "petalflow.db")
+	t.Setenv("PETALFLOW_DB_PATH", dbPath)
 
 	manifest := map[string]any{
 		"manifest_version": "1.0",
@@ -179,8 +179,8 @@ func TestToolsRegisterDuplicateNameShowsValidationCode(t *testing.T) {
 }
 
 func TestToolsRegisterMCPRefreshOverlayAndHealth(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
-	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+	dbPath := filepath.Join(t.TempDir(), "petalflow.db")
+	t.Setenv("PETALFLOW_DB_PATH", dbPath)
 
 	overlayPath := writeTestFile(t, "overlay.yaml", `
 overlay_version: "1.0"
@@ -330,7 +330,13 @@ func mustRawJSONForCLI(t *testing.T, value any) json.RawMessage {
 }
 
 func TestResolveStoredRegistration(t *testing.T) {
-	store := tool.NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	store, err := tool.NewSQLiteStore(filepath.Join(t.TempDir(), "petalflow.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	ctx := context.Background()
 	reg := tool.ToolRegistration{
 		Name:     "x",
