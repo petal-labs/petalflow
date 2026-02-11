@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
@@ -31,6 +32,9 @@ type Server struct {
 	corsOrigin    string
 	maxBody       int64
 	logger        *slog.Logger
+
+	settingsMu sync.RWMutex
+	settings   AppSettings
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -56,6 +60,7 @@ func NewServer(cfg ServerConfig) *Server {
 		corsOrigin:    corsOrigin,
 		maxBody:       maxBody,
 		logger:        logger,
+		settings:      defaultAppSettings(),
 	}
 }
 
@@ -76,8 +81,10 @@ func (s *Server) Handler() http.Handler {
 // Use this when composing with other handlers (e.g. daemon server).
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/node-types", s.handleNodeTypes)
 	mux.HandleFunc("GET /api/workflows", s.handleListWorkflows)
+	mux.HandleFunc("POST /api/workflows", s.handleCreateWorkflow)
 	mux.HandleFunc("POST /api/workflows/agent", s.handleCreateAgentWorkflow)
 	mux.HandleFunc("POST /api/workflows/graph", s.handleCreateGraphWorkflow)
 	mux.HandleFunc("GET /api/workflows/{id}", s.handleGetWorkflow)
@@ -85,6 +92,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
+	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 }
 
 // --- Middleware ---
@@ -126,6 +135,51 @@ type apiErrorBody struct {
 	Code    string   `json:"code"`
 	Message string   `json:"message"`
 	Details []string `json:"details,omitempty"`
+}
+
+// --- App settings ---
+
+// AppSettings stores user preferences (matches the UI's AppSettings type).
+type AppSettings struct {
+	OnboardingComplete bool            `json:"onboarding_complete"`
+	OnboardingStep     int             `json:"onboarding_step,omitempty"`
+	Preferences        UserPreferences `json:"preferences"`
+}
+
+// UserPreferences stores per-user UI/behavior settings.
+type UserPreferences struct {
+	DefaultWorkflowMode string `json:"default_workflow_mode,omitempty"`
+	AutoSaveIntervalMs  int    `json:"auto_save_interval_ms,omitempty"`
+	TracingDefault      *bool  `json:"tracing_default,omitempty"`
+	Theme               string `json:"theme,omitempty"`
+	SnapToGrid          *bool  `json:"snap_to_grid,omitempty"`
+	ShowPortTypes       *bool  `json:"show_port_types,omitempty"`
+	OutputFormat        string `json:"output_format,omitempty"`
+}
+
+func defaultAppSettings() AppSettings {
+	return AppSettings{
+		Preferences: UserPreferences{},
+	}
+}
+
+func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
+	s.settingsMu.RLock()
+	settings := s.settings
+	s.settingsMu.RUnlock()
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
+	var updated AppSettings
+	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+	s.settingsMu.Lock()
+	s.settings = updated
+	s.settingsMu.Unlock()
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string, details ...string) {

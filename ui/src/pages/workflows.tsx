@@ -187,7 +187,21 @@ export default function WorkflowsPage() {
           <EmptyState
             title="No workflows yet"
             description="Create your first workflow to start building AI pipelines."
-            action={{ label: "New workflow", onClick: () => {} }}
+            action={{
+              label: "New workflow",
+              onClick: async () => {
+                try {
+                  const created = await createWorkflow({
+                    name: "Untitled Agent Workflow",
+                    kind: "agent_workflow",
+                    definition: {},
+                  })
+                  navigate(`/workflows/${created.id}/edit`)
+                } catch {
+                  toast.error("Failed to create workflow.")
+                }
+              },
+            }}
           />
         ) : (
           <EmptyState

@@ -57,6 +57,93 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rec)
 }
 
+// createWorkflowRequest is the JSON body for the unified POST /api/workflows.
+type createWorkflowRequest struct {
+	Name        string         `json:"name"`
+	Kind        string         `json:"kind"`
+	Description string         `json:"description,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
+	Definition  map[string]any `json:"definition"`
+}
+
+// handleCreateWorkflow creates a workflow from the unified REST endpoint.
+// Accepts { name, kind, definition, description?, tags? } and stores
+// without requiring full compilation (compile happens on run).
+func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if isMaxBytesError(err) {
+			writeError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", "request body exceeds size limit")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "READ_ERROR", err.Error())
+		return
+	}
+
+	var req createWorkflowRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+
+	kind := loader.SchemaKind(req.Kind)
+	if kind != loader.SchemaKindAgent && kind != loader.SchemaKindGraph {
+		writeError(w, http.StatusBadRequest, "INVALID_KIND",
+			fmt.Sprintf("kind must be %q or %q", loader.SchemaKindAgent, loader.SchemaKindGraph))
+		return
+	}
+
+	defBytes, err := json.Marshal(req.Definition)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid definition: "+err.Error())
+		return
+	}
+
+	now := time.Now()
+	id := uuid.New().String()
+	name := req.Name
+	if name == "" {
+		name = id
+	}
+
+	rec := WorkflowRecord{
+		ID:          id,
+		SchemaKind:  kind,
+		Name:        name,
+		Description: req.Description,
+		Tags:        req.Tags,
+		Source:      json.RawMessage(defBytes),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	// Attempt compilation but don't fail if the definition is empty/incomplete.
+	switch kind {
+	case loader.SchemaKindAgent:
+		if wf, err := agent.LoadFromBytes(defBytes); err == nil {
+			if gd, err := agent.Compile(wf); err == nil {
+				rec.Compiled = gd
+			}
+		}
+	case loader.SchemaKindGraph:
+		var gd graph.GraphDefinition
+		if err := json.Unmarshal(defBytes, &gd); err == nil {
+			rec.Compiled = &gd
+		}
+	}
+
+	if err := s.store.Create(r.Context(), rec); err != nil {
+		if errors.Is(err, ErrWorkflowExists) {
+			writeError(w, http.StatusConflict, "CONFLICT", fmt.Sprintf("workflow %q already exists", id))
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, rec)
+}
+
 // handleCreateAgentWorkflow creates a workflow from an agent schema body.
 func (s *Server) handleCreateAgentWorkflow(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
@@ -176,6 +263,14 @@ func (s *Server) handleCreateGraphWorkflow(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusCreated, rec)
 }
 
+// updateWorkflowRequest is the JSON body for PUT /api/workflows/{id}.
+type updateWorkflowRequest struct {
+	Name        *string        `json:"name,omitempty"`
+	Description *string        `json:"description,omitempty"`
+	Tags        []string       `json:"tags,omitempty"`
+	Definition  map[string]any `json:"definition,omitempty"`
+}
+
 // handleUpdateWorkflow updates an existing workflow.
 func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -200,47 +295,45 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-compile based on schema kind
-	switch rec.SchemaKind {
-	case loader.SchemaKindAgent:
-		wf, err := agent.LoadFromBytes(body)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
-			return
-		}
-		diags := agent.Validate(wf)
-		if graph.HasErrors(diags) {
-			details := diagMessages(diags)
-			writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "agent workflow validation failed", details...)
-			return
-		}
-		gd, err := agent.Compile(wf)
-		if err != nil {
-			writeError(w, http.StatusUnprocessableEntity, "COMPILE_ERROR", err.Error())
-			return
-		}
-		rec.Source = json.RawMessage(body)
-		rec.Compiled = gd
-		rec.Name = wf.Name
-
-	case loader.SchemaKindGraph:
-		var gd graph.GraphDefinition
-		if err := json.Unmarshal(body, &gd); err != nil {
-			writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
-			return
-		}
-		diags := gd.Validate()
-		if graph.HasErrors(diags) {
-			details := diagMessages(diags)
-			writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "graph validation failed", details...)
-			return
-		}
-		rec.Source = json.RawMessage(body)
-		rec.Compiled = &gd
-
-	default:
-		writeError(w, http.StatusBadRequest, "UNKNOWN_KIND", fmt.Sprintf("unknown schema kind %q", rec.SchemaKind))
+	// Try the structured update format { name?, definition?, description?, tags? }.
+	var req updateWorkflowRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
 		return
+	}
+
+	if req.Name != nil {
+		rec.Name = *req.Name
+	}
+	if req.Description != nil {
+		rec.Description = *req.Description
+	}
+	if req.Tags != nil {
+		rec.Tags = req.Tags
+	}
+
+	// If a definition was provided, update source and attempt re-compilation.
+	if req.Definition != nil {
+		defBytes, err := json.Marshal(req.Definition)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid definition: "+err.Error())
+			return
+		}
+		rec.Source = json.RawMessage(defBytes)
+
+		switch rec.SchemaKind {
+		case loader.SchemaKindAgent:
+			if wf, err := agent.LoadFromBytes(defBytes); err == nil {
+				if gd, err := agent.Compile(wf); err == nil {
+					rec.Compiled = gd
+				}
+			}
+		case loader.SchemaKindGraph:
+			var gd graph.GraphDefinition
+			if err := json.Unmarshal(defBytes, &gd); err == nil {
+				rec.Compiled = &gd
+			}
+		}
 	}
 
 	rec.UpdatedAt = time.Now()

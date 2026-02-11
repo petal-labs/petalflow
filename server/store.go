@@ -19,13 +19,15 @@ var (
 
 // WorkflowRecord represents a stored workflow.
 type WorkflowRecord struct {
-	ID         string                 `json:"id"`
-	SchemaKind loader.SchemaKind      `json:"kind"`
-	Name       string                 `json:"name,omitempty"`
-	Source     json.RawMessage        `json:"source"`
-	Compiled   *graph.GraphDefinition `json:"compiled,omitempty"`
-	CreatedAt  time.Time              `json:"created_at"`
-	UpdatedAt  time.Time              `json:"updated_at"`
+	ID          string                 `json:"id"`
+	SchemaKind  loader.SchemaKind      `json:"kind"`
+	Name        string                 `json:"name,omitempty"`
+	Description string                 `json:"description,omitempty"`
+	Tags        []string               `json:"tags,omitempty"`
+	Source      json.RawMessage        `json:"source"`
+	Compiled    *graph.GraphDefinition `json:"compiled,omitempty"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   time.Time              `json:"updated_at"`
 }
 
 // WorkflowStore provides CRUD operations for workflow records.

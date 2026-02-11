@@ -2,6 +2,13 @@ import { create } from "zustand"
 import { api } from "@/api/client"
 import type { AppSettings, UserPreferences } from "@/api/types"
 
+function defaultSettings(): AppSettings {
+  return {
+    onboarding_complete: false,
+    preferences: {},
+  }
+}
+
 interface SettingsState {
   settings: AppSettings | null
   loading: boolean
@@ -22,10 +29,15 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   async fetchSettings() {
     set({ loading: true })
     try {
-      const data = await api.get<AppSettings>("/api/settings")
-      set({ settings: data, loading: false })
+      const data = await api.get<AppSettings>("/api/settings", { silent: true })
+      // Guard against non-object responses (e.g. SPA HTML fallback).
+      if (data && typeof data === "object" && "preferences" in data) {
+        set({ settings: data, loading: false })
+      } else {
+        set({ settings: defaultSettings(), loading: false })
+      }
     } catch {
-      set({ loading: false })
+      set({ settings: defaultSettings(), loading: false })
     }
   },
 
