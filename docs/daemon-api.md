@@ -55,7 +55,7 @@ Example registration:
 ## Security and Error Semantics
 
 - Sensitive tool config values are always masked in API responses (`**********`).
-- File-backed stores persist sensitive config values encrypted at rest.
+- SQLite-backed stores persist sensitive config values encrypted at rest.
 - Invocation/adapter failures are returned as structured error payloads:
 
 ```json

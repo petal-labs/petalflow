@@ -13,7 +13,7 @@ This document summarizes the Phase 4 production hardening behaviors for tool + d
 
 ## Secrets at Rest and in Responses
 
-- Sensitive config fields (`sensitive: true`) are encrypted at rest in file-backed stores.
+- Sensitive config fields (`sensitive: true`) are encrypted at rest in SQLite-backed stores.
 - API and CLI outputs mask sensitive values as `**********`.
 - Runtime invocation paths still receive decrypted values in-memory.
 
@@ -94,7 +94,7 @@ Spans:
 
 - [ ] All `go test ./...` passing.
 - [ ] Sensitive config not present in API/CLI outputs.
-- [ ] File-backed stores contain encrypted sensitive values (`enc:v1:` prefix).
+- [ ] SQLite-backed stores contain encrypted sensitive values (`enc:v1:` prefix).
 - [ ] Health scheduler behavior validated for interval + threshold transitions.
 - [ ] Retry policies verified with deterministic tests for retryable and non-retryable failures.
 - [ ] OTel metrics visible in target environment.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -75,5 +76,52 @@ func TestSQLiteStateStoreLoadSave(t *testing.T) {
 	}
 	if got.ProviderMeta["openai"].DefaultModel != "gpt-4o-mini" {
 		t.Fatalf("provider_meta[openai].default_model = %q, want gpt-4o-mini", got.ProviderMeta["openai"].DefaultModel)
+	}
+}
+
+func TestSQLiteStateStoreMigratesLegacyFileState(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	legacyPath, err := DefaultStateStorePath()
+	if err != nil {
+		t.Fatalf("DefaultStateStorePath() error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o750); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	legacyStore := NewFileStateStore(legacyPath)
+	if err := legacyStore.Save(serverState{
+		AuthUser: &authAccount{
+			Username: "legacy-admin",
+			Password: "legacy-secret",
+		},
+		Settings: AppSettings{
+			OnboardingComplete: true,
+			OnboardingStep:     3,
+		},
+	}); err != nil {
+		t.Fatalf("legacy Save() error = %v", err)
+	}
+
+	store, err := NewDefaultSQLiteStateStore()
+	if err != nil {
+		t.Fatalf("NewDefaultSQLiteStateStore() error = %v", err)
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	got, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.AuthUser == nil {
+		t.Fatal("AuthUser = nil, want migrated user")
+	}
+	if got.AuthUser.Username != "legacy-admin" {
+		t.Fatalf("username = %q, want legacy-admin", got.AuthUser.Username)
+	}
+	if !got.Settings.OnboardingComplete || got.Settings.OnboardingStep != 3 {
+		t.Fatalf("settings = %+v, want onboarding complete step 3", got.Settings)
 	}
 }

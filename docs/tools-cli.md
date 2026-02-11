@@ -91,7 +91,9 @@ Config:
   region: us-west-2
 ```
 
-Sensitive values are encrypted at rest in file-backed tool stores and always masked in CLI/API output.
+Sensitive values are encrypted at rest in SQLite-backed tool stores and always masked in CLI/API output.
+
+By default, tool registrations are stored in `~/.petalflow/petalflow.db`. Override with `--db-path` or `PETALFLOW_DB_PATH`.
 
 ## 4. Invoke Actions with `tools test`
 

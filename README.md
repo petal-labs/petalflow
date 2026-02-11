@@ -178,6 +178,8 @@ make dev
 
 Then open [http://localhost:5173](http://localhost:5173).
 
+Daemon data (workflows, auth/settings, providers, tool registrations, and run events) is persisted in SQLite at `~/.petalflow/petalflow.db` by default. Set `PETALFLOW_DB_PATH` or `petalflow serve --db-path <path>` to override.
+
 **3. First-run setup**
 
 On first launch the UI walks you through:

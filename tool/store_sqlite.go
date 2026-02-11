@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -60,10 +61,15 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	return &SQLiteStore{
+	store := &SQLiteStore{
 		path: clean,
 		db:   db,
-	}, nil
+	}
+	if err := store.migrateLegacyDefaultFileStore(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 // NewDefaultSQLiteStore creates a tool store at the shared default DB path.
@@ -464,6 +470,50 @@ func overlayPathValue(overlay *ToolOverlay) any {
 		return nil
 	}
 	return overlay.Path
+}
+
+func (s *SQLiteStore) migrateLegacyDefaultFileStore(ctx context.Context) error {
+	defaultPath, err := DefaultSQLiteStorePath()
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(defaultPath) != filepath.Clean(s.path) {
+		return nil
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM tool_registrations`).Scan(&count); err != nil {
+		return fmt.Errorf("tool: count sqlite registrations: %w", err)
+	}
+	if count > 0 {
+		return nil
+	}
+
+	legacyPath, err := DefaultCLIStorePath()
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(legacyPath) == filepath.Clean(s.path) {
+		return nil
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("tool: stat legacy store %q: %w", legacyPath, err)
+	}
+
+	legacyStore := NewFileStore(legacyPath)
+	regs, err := legacyStore.List(ctx)
+	if err != nil {
+		return fmt.Errorf("tool: load legacy file store %q: %w", legacyPath, err)
+	}
+	for _, reg := range regs {
+		if err := s.Upsert(ctx, reg); err != nil {
+			return fmt.Errorf("tool: migrate registration %q: %w", reg.Name, err)
+		}
+	}
+	return nil
 }
 
 var _ Store = (*SQLiteStore)(nil)

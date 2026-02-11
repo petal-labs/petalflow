@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -55,10 +56,79 @@ func NewSQLiteStateStore(path string) (*SQLiteStateStore, error) {
 		return nil, err
 	}
 
-	return &SQLiteStateStore{
+	store := &SQLiteStateStore{
 		path: clean,
 		db:   db,
-	}, nil
+	}
+	if err := store.migrateLegacyDefaultFileState(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *SQLiteStateStore) migrateLegacyDefaultFileState() error {
+	defaultDBPath, err := storagesqlite.DefaultPath()
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(defaultDBPath) != filepath.Clean(s.path) {
+		return nil
+	}
+
+	var (
+		authUserJSON     sql.NullString
+		settingsJSON     string
+		providersJSON    string
+		providerMetaJSON string
+	)
+	err = s.db.QueryRow(
+		`SELECT auth_user_json, settings_json, providers_json, provider_meta_json
+		 FROM server_state
+		 WHERE id = 1`,
+	).Scan(&authUserJSON, &settingsJSON, &providersJSON, &providerMetaJSON)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("server: inspect sqlite state for migration: %w", err)
+	}
+	if authUserJSON.Valid && strings.TrimSpace(authUserJSON.String) != "" {
+		return nil
+	}
+	if strings.TrimSpace(settingsJSON) != "" && strings.TrimSpace(settingsJSON) != "{}" {
+		return nil
+	}
+	if strings.TrimSpace(providersJSON) != "" && strings.TrimSpace(providersJSON) != "{}" {
+		return nil
+	}
+	if strings.TrimSpace(providerMetaJSON) != "" && strings.TrimSpace(providerMetaJSON) != "{}" {
+		return nil
+	}
+
+	legacyPath, err := DefaultStateStorePath()
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(legacyPath) == filepath.Clean(s.path) {
+		return nil
+	}
+	if _, err := os.Stat(legacyPath); err != nil {
+		if err == os.ErrNotExist || os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("server: stat legacy state store %q: %w", legacyPath, err)
+	}
+
+	legacyStore := NewFileStateStore(legacyPath)
+	state, err := legacyStore.Load()
+	if err != nil {
+		return fmt.Errorf("server: load legacy state store %q: %w", legacyPath, err)
+	}
+	if state.AuthUser == nil && state.Settings == defaultAppSettings() && len(state.Providers) == 0 && len(state.ProviderMeta) == 0 {
+		return nil
+	}
+	if err := s.Save(state); err != nil {
+		return fmt.Errorf("server: migrate legacy state store %q: %w", legacyPath, err)
+	}
+	return nil
 }
 
 // NewDefaultSQLiteStateStore creates a state store using the default DB path.
