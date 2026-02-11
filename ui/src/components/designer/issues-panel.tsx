@@ -32,7 +32,7 @@ export function IssuesPanel({ mode = "agent_workflow", onNavigate }: IssuesPanel
     try {
       const def = toDefinition()
       const result = await validate(def)
-      setIssues(result.diagnostics)
+      setIssues(result.diagnostics ?? [])
     } catch {
       // validation endpoint unavailable — skip
     }
