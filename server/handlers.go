@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,19 +36,243 @@ func (s *Server) handleNodeTypes(w http.ResponseWriter, _ *http.Request) {
 
 // handleListProviders returns configured LLM providers.
 func (s *Server) handleListProviders(w http.ResponseWriter, _ *http.Request) {
-	type providerInfo struct {
-		Name         string `json:"name"`
-		DefaultModel string `json:"default_model"`
-		BaseURL      string `json:"base_url,omitempty"`
-		Verified     bool   `json:"verified"`
+	s.providersMu.RLock()
+	names := make([]string, 0, len(s.providers))
+	for name := range s.providers {
+		names = append(names, name)
 	}
-	result := make([]providerInfo, 0, len(s.providers))
+	sort.Strings(names)
+	result := make([]providerInfo, 0, len(names))
+	for _, name := range names {
+		result = append(result, toProviderInfo(name, s.providers[name], s.providerMeta[name]))
+	}
+	s.providersMu.RUnlock()
+	writeJSON(w, http.StatusOK, result)
+}
+
+type providerInfo struct {
+	Name         string `json:"name"`
+	DefaultModel string `json:"default_model"`
+	BaseURL      string `json:"base_url,omitempty"`
+	Verified     bool   `json:"verified"`
+	LatencyMS    int64  `json:"latency_ms,omitempty"`
+}
+
+type providerCreateRequest struct {
+	Name           string `json:"name"`
+	APIKey         string `json:"api_key"`
+	DefaultModel   string `json:"default_model"`
+	BaseURL        string `json:"base_url,omitempty"`
+	OrganizationID string `json:"organization_id,omitempty"`
+	ProjectID      string `json:"project_id,omitempty"`
+}
+
+type providerUpdateRequest struct {
+	APIKey         *string `json:"api_key,omitempty"`
+	DefaultModel   *string `json:"default_model,omitempty"`
+	BaseURL        *string `json:"base_url,omitempty"`
+	OrganizationID *string `json:"organization_id,omitempty"`
+	ProjectID      *string `json:"project_id,omitempty"`
+}
+
+type providerTestResult struct {
+	Success   bool   `json:"success"`
+	LatencyMS int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
+func toProviderInfo(name string, cfg hydrate.ProviderConfig, meta providerMetadata) providerInfo {
+	return providerInfo{
+		Name:         name,
+		DefaultModel: meta.DefaultModel,
+		BaseURL:      cfg.BaseURL,
+		Verified:     meta.Verified,
+		LatencyMS:    meta.LatencyMS,
+	}
+}
+
+func normalizeProviderName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func (s *Server) snapshotProviders() hydrate.ProviderMap {
+	s.providersMu.RLock()
+	defer s.providersMu.RUnlock()
+	out := make(hydrate.ProviderMap, len(s.providers))
 	for name, cfg := range s.providers {
-		result = append(result, providerInfo{
-			Name:    name,
-			BaseURL: cfg.BaseURL,
-		})
+		out[name] = cfg
 	}
+	return out
+}
+
+func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
+	var req providerCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+
+	name := normalizeProviderName(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "provider name is required")
+		return
+	}
+
+	s.providersMu.Lock()
+	if _, exists := s.providers[name]; exists {
+		s.providersMu.Unlock()
+		writeError(w, http.StatusConflict, "CONFLICT", fmt.Sprintf("provider %q already exists", name))
+		return
+	}
+	s.providers[name] = hydrate.ProviderConfig{
+		APIKey:  req.APIKey,
+		BaseURL: req.BaseURL,
+	}
+	s.providerMeta[name] = providerMetadata{
+		DefaultModel:   req.DefaultModel,
+		OrganizationID: req.OrganizationID,
+		ProjectID:      req.ProjectID,
+	}
+	cfg := s.providers[name]
+	meta := s.providerMeta[name]
+	s.providersMu.Unlock()
+
+	writeJSON(w, http.StatusCreated, toProviderInfo(name, cfg, meta))
+}
+
+func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
+	name := normalizeProviderName(r.PathValue("name"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "provider name is required")
+		return
+	}
+
+	var req providerUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+
+	s.providersMu.Lock()
+	cfg, exists := s.providers[name]
+	if !exists {
+		s.providersMu.Unlock()
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("provider %q not found", name))
+		return
+	}
+	meta := s.providerMeta[name]
+
+	changed := false
+	if req.APIKey != nil {
+		cfg.APIKey = *req.APIKey
+		changed = true
+	}
+	if req.BaseURL != nil {
+		cfg.BaseURL = *req.BaseURL
+		changed = true
+	}
+	if req.DefaultModel != nil {
+		meta.DefaultModel = *req.DefaultModel
+		changed = true
+	}
+	if req.OrganizationID != nil {
+		meta.OrganizationID = *req.OrganizationID
+		changed = true
+	}
+	if req.ProjectID != nil {
+		meta.ProjectID = *req.ProjectID
+		changed = true
+	}
+	if changed {
+		meta.Verified = false
+		meta.LatencyMS = 0
+	}
+
+	s.providers[name] = cfg
+	s.providerMeta[name] = meta
+	s.providersMu.Unlock()
+
+	writeJSON(w, http.StatusOK, toProviderInfo(name, cfg, meta))
+}
+
+func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
+	name := normalizeProviderName(r.PathValue("name"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "provider name is required")
+		return
+	}
+
+	s.providersMu.Lock()
+	if _, exists := s.providers[name]; !exists {
+		s.providersMu.Unlock()
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("provider %q not found", name))
+		return
+	}
+	delete(s.providers, name)
+	delete(s.providerMeta, name)
+	s.providersMu.Unlock()
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
+	name := normalizeProviderName(r.PathValue("name"))
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "provider name is required")
+		return
+	}
+
+	s.providersMu.RLock()
+	cfg, exists := s.providers[name]
+	meta := s.providerMeta[name]
+	s.providersMu.RUnlock()
+	if !exists {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("provider %q not found", name))
+		return
+	}
+
+	start := time.Now()
+	result := providerTestResult{}
+
+	switch {
+	case s.clientFactory == nil:
+		result.Error = "provider client factory is not configured"
+	default:
+		client, err := s.clientFactory(name, cfg)
+		if err != nil {
+			result.Error = err.Error()
+			break
+		}
+		if strings.TrimSpace(meta.DefaultModel) == "" {
+			result.Success = true
+			break
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		maxTokens := 1
+		_, err = client.Complete(ctx, core.LLMRequest{
+			Model:     meta.DefaultModel,
+			InputText: "ping",
+			MaxTokens: &maxTokens,
+		})
+		cancel()
+		if err != nil {
+			result.Error = err.Error()
+			break
+		}
+		result.Success = true
+	}
+
+	result.LatencyMS = time.Since(start).Milliseconds()
+
+	s.providersMu.Lock()
+	if currentMeta, ok := s.providerMeta[name]; ok {
+		currentMeta.Verified = result.Success
+		currentMeta.LatencyMS = result.LatencyMS
+		s.providerMeta[name] = currentMeta
+	}
+	s.providersMu.Unlock()
+
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -444,10 +670,11 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hydrate graph
-	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory,
+	providers := s.snapshotProviders()
+	factory := hydrate.NewLiveNodeFactory(providers, s.clientFactory,
 		hydrate.WithToolRegistry(core.NewToolRegistry()),
 	)
-	execGraph, err := hydrate.HydrateGraph(rec.Compiled, s.providers, factory)
+	execGraph, err := hydrate.HydrateGraph(rec.Compiled, providers, factory)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "HYDRATE_ERROR", err.Error())
 		return

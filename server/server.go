@@ -29,6 +29,7 @@ type ServerConfig struct {
 type Server struct {
 	store         WorkflowStore
 	providers     hydrate.ProviderMap
+	providerMeta  map[string]providerMetadata
 	clientFactory hydrate.ClientFactory
 	bus           bus.EventBus
 	eventStore    bus.EventStore
@@ -36,12 +37,22 @@ type Server struct {
 	maxBody       int64
 	logger        *slog.Logger
 
+	providersMu sync.RWMutex
+
 	settingsMu sync.RWMutex
 	settings   AppSettings
 
 	authMu   sync.RWMutex
-	authUser *authAccount  // nil = setup not done
+	authUser *authAccount      // nil = setup not done
 	tokens   map[string]string // token → username
+}
+
+type providerMetadata struct {
+	DefaultModel   string
+	OrganizationID string
+	ProjectID      string
+	Verified       bool
+	LatencyMS      int64
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -58,9 +69,19 @@ func NewServer(cfg ServerConfig) *Server {
 	if maxBody <= 0 {
 		maxBody = 1 << 20 // 1 MB default
 	}
+	providers := make(hydrate.ProviderMap, len(cfg.Providers))
+	for name, pc := range cfg.Providers {
+		providers[name] = pc
+	}
+	providerMeta := make(map[string]providerMetadata, len(providers))
+	for name := range providers {
+		providerMeta[name] = providerMetadata{}
+	}
+
 	return &Server{
 		store:         cfg.Store,
-		providers:     cfg.Providers,
+		providers:     providers,
+		providerMeta:  providerMeta,
 		clientFactory: cfg.ClientFactory,
 		bus:           cfg.Bus,
 		eventStore:    cfg.EventStore,
@@ -107,6 +128,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runs", s.handleListRuns)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
 	mux.HandleFunc("GET /api/providers", s.handleListProviders)
+	mux.HandleFunc("POST /api/providers", s.handleCreateProvider)
+	mux.HandleFunc("PUT /api/providers/{name}", s.handleUpdateProvider)
+	mux.HandleFunc("DELETE /api/providers/{name}", s.handleDeleteProvider)
+	mux.HandleFunc("POST /api/providers/{name}/test", s.handleTestProvider)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 }

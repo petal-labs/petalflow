@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,17 @@ import (
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
 )
+
+type providerTestLLMClient struct {
+	shouldFail bool
+}
+
+func (c *providerTestLLMClient) Complete(_ context.Context, _ core.LLMRequest) (core.LLMResponse, error) {
+	if c.shouldFail {
+		return core.LLMResponse{}, errors.New("authentication failed")
+	}
+	return core.LLMResponse{Text: "ok"}, nil
+}
 
 // testServer creates a Server with defaults suitable for testing.
 func testServer() *Server {
@@ -27,6 +39,110 @@ func testServer() *Server {
 		CORSOrigin: "*",
 		MaxBody:    1 << 20,
 	})
+}
+
+func TestProviderEndpoints_CRUDAndTest(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store:     NewMemoryStore(),
+		Providers: hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			if name == "unsupported" {
+				return nil, errors.New("unsupported provider")
+			}
+			return &providerTestLLMClient{shouldFail: cfg.APIKey == "bad-key"}, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: bus.NewMemEventStore(),
+		CORSOrigin: "*",
+		MaxBody:    1 << 20,
+	})
+	handler := srv.Handler()
+
+	createBody := map[string]any{
+		"name":          "openai",
+		"api_key":       "good-key",
+		"default_model": "gpt-4o-mini",
+	}
+	b, _ := json.Marshal(createBody)
+	r := httptest.NewRequest(http.MethodPost, "/api/providers", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create provider: got %d, want %d; body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/providers", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list providers: got %d, want %d", w.Code, http.StatusOK)
+	}
+	var providers []providerInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &providers); err != nil {
+		t.Fatalf("unmarshal providers: %v", err)
+	}
+	if len(providers) != 1 {
+		t.Fatalf("providers len = %d, want 1", len(providers))
+	}
+	if providers[0].Verified {
+		t.Fatal("provider should start unverified")
+	}
+	if providers[0].DefaultModel != "gpt-4o-mini" {
+		t.Fatalf("default_model = %q, want %q", providers[0].DefaultModel, "gpt-4o-mini")
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "/api/providers/openai/test", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("test provider: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var testResult providerTestResult
+	if err := json.Unmarshal(w.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("unmarshal test result: %v", err)
+	}
+	if !testResult.Success {
+		t.Fatalf("expected provider test success; error=%q", testResult.Error)
+	}
+
+	updateBody := map[string]any{"api_key": "bad-key"}
+	b, _ = json.Marshal(updateBody)
+	r = httptest.NewRequest(http.MethodPut, "/api/providers/openai", bytes.NewReader(b))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update provider: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "/api/providers/openai/test", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("test provider (bad key): got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &testResult); err != nil {
+		t.Fatalf("unmarshal failed test result: %v", err)
+	}
+	if testResult.Success {
+		t.Fatal("expected provider test failure with bad key")
+	}
+	if testResult.Error == "" {
+		t.Fatal("expected error message for failed provider test")
+	}
+
+	r = httptest.NewRequest(http.MethodDelete, "/api/providers/openai", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete provider: got %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	r = httptest.NewRequest(http.MethodPost, "/api/providers/openai/test", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("test deleted provider: got %d, want %d", w.Code, http.StatusNotFound)
+	}
 }
 
 func TestHealth(t *testing.T) {

@@ -15,12 +15,6 @@ import { useProviderStore } from "@/stores/providers"
 import { useToolStore } from "@/stores/tools"
 import { useSettingsStore } from "@/stores/settings"
 
-function FirstWorkflowStep() {
-  return (
-    <p className="text-muted-foreground">Build your first workflow (coming soon)</p>
-  )
-}
-
 function DoneStep() {
   const providers = useProviderStore((s) => s.providers)
   const tools = useToolStore((s) => s.tools)
@@ -124,7 +118,6 @@ function OnboardingContent() {
       canContinue: () => hasProvider,
     },
     { path: "tools", label: "Tools" },
-    { path: "first-workflow", label: "First Workflow" },
     { path: "done", label: "Done" },
   ]
 
@@ -135,7 +128,6 @@ function OnboardingContent() {
         <Route path="welcome" element={<WelcomeStep />} />
         <Route path="providers" element={<ProvidersStep />} />
         <Route path="tools" element={<ToolsStep />} />
-        <Route path="first-workflow" element={<FirstWorkflowStep />} />
         <Route path="done" element={<DoneStep />} />
       </Routes>
     </OnboardingShell>
