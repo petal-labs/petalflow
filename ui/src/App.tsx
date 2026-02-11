@@ -16,6 +16,7 @@ import SetupPage from "@/pages/setup"
 import NotFoundPage from "@/pages/not-found"
 import { AccountSettings } from "@/components/settings/account-settings"
 import { ProvidersSettings } from "@/components/settings/providers-settings"
+import { ToolsSettings } from "@/components/settings/tools-settings"
 
 export default function App() {
   const checkStatus = useAuthStore((s) => s.checkStatus)
@@ -67,12 +68,7 @@ export default function App() {
                 path="providers"
                 element={<ProvidersSettings />}
               />
-              <Route
-                path="tools"
-                element={
-                  <p className="text-muted-foreground">Tool registry</p>
-                }
-              />
+              <Route path="tools" element={<ToolsSettings />} />
               <Route
                 path="preferences"
                 element={<p className="text-muted-foreground">Preferences</p>}

@@ -9,12 +9,9 @@ import {
   ProvidersStep,
   useHasProvider,
 } from "@/components/onboarding/providers-step"
+import { ToolsStep } from "@/components/onboarding/tools-step"
 import { useProviderStore } from "@/stores/providers"
 import { useSettingsStore } from "@/stores/settings"
-
-function ToolsStep() {
-  return <p className="text-muted-foreground">Register tools (coming soon)</p>
-}
 
 function FirstWorkflowStep() {
   return (
