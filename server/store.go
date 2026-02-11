@@ -24,7 +24,7 @@ type WorkflowRecord struct {
 	Name        string                 `json:"name,omitempty"`
 	Description string                 `json:"description,omitempty"`
 	Tags        []string               `json:"tags,omitempty"`
-	Source      json.RawMessage        `json:"source"`
+	Source      json.RawMessage        `json:"definition"`
 	Compiled    *graph.GraphDefinition `json:"compiled,omitempty"`
 	CreatedAt   time.Time              `json:"created_at"`
 	UpdatedAt   time.Time              `json:"updated_at"`

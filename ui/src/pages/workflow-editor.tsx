@@ -86,19 +86,25 @@ export default function WorkflowEditorPage() {
     }
   }, [id, getWorkflow, openWorkflow, closeWorkflow, loadDefinition, loadFromGraphIR, reset, resetGraph])
 
+  // Derive stable primitives from current to avoid re-trigger loops.
+  // setDefinition creates a new `current` reference, so including `current`
+  // in the deps would cause an infinite render cycle.
+  const currentKind = current?.kind
+  const hasCurrent = current !== null
+
   // Sync editor state → workflow definition (for save)
   useEffect(() => {
-    if (!current || current.kind !== "agent_workflow") return
+    if (!hasCurrent || currentKind !== "agent_workflow") return
     const def = toDefinition()
     setDefinition(def)
-  }, [agents, tasks, strategy, dependencies, current, toDefinition, setDefinition])
+  }, [agents, tasks, strategy, dependencies, hasCurrent, currentKind, toDefinition, setDefinition])
 
   // Sync graph state → workflow definition (for save)
   useEffect(() => {
-    if (!current || current.kind !== "graph") return
+    if (!hasCurrent || currentKind !== "graph") return
     const ir = toGraphIR()
     setDefinition(ir)
-  }, [graphNodes, graphEdges, current, toGraphIR, setDefinition])
+  }, [graphNodes, graphEdges, hasCurrent, currentKind, toGraphIR, setDefinition])
 
   // Eject Agent/Task → Graph
   const handleEject = useCallback(async () => {
