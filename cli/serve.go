@@ -25,6 +25,7 @@ import (
 	petalotel "github.com/petal-labs/petalflow/otel"
 	"github.com/petal-labs/petalflow/server"
 	"github.com/petal-labs/petalflow/tool"
+	petalui "github.com/petal-labs/petalflow/ui"
 )
 
 // NewServeCmd creates the "serve" subcommand.
@@ -47,6 +48,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().Duration("read-timeout", 30*time.Second, "HTTP read timeout")
 	cmd.Flags().Duration("write-timeout", 60*time.Second, "HTTP write timeout")
 	cmd.Flags().Int64("max-body", 1<<20, "Max request body size in bytes")
+	cmd.Flags().Bool("dev-ui", false, "Skip serving embedded UI (for Vite dev server)")
 
 	return cmd
 }
@@ -63,6 +65,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	storeKind, _ := cmd.Flags().GetString("store")
 	storePath, _ := cmd.Flags().GetString("store-path")
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
+	devUI, _ := cmd.Flags().GetBool("dev-ui")
 
 	// --- Daemon tool server (Phase 3) ---
 	toolStore, err := resolveServeStore(storeKind, storePath)
@@ -151,6 +154,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	daemonHandler := daemonServer.Handler()
 	mux.Handle("/api/tools/", daemonHandler)
 	mux.Handle("/api/tools", daemonHandler)
+
+	// Serve embedded SPA unless --dev-ui is set (Vite dev server handles it).
+	if !devUI {
+		mux.Handle("/", petalui.Handler())
+	}
 
 	handler := withCORS(mux, corsOrigin)
 	handler = maxBodyMiddleware(handler, maxBody)

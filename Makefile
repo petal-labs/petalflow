@@ -3,11 +3,24 @@ LDFLAGS  = -s -w -X main.version=$(VERSION)
 BINARY   = petalflow
 CMD      = ./cmd/petalflow
 
-.PHONY: build test lint vet coverage clean cross snapshot-update
+.PHONY: build build-ui test lint vet coverage clean cross snapshot-update dev
 
-## build: compile the CLI binary
-build:
+## build: compile the CLI binary (includes pre-built UI if ui/dist exists)
+build: build-ui
 	go build -ldflags='$(LDFLAGS)' -o $(BINARY) $(CMD)
+
+## build-go: compile only the Go binary without rebuilding the UI
+build-go:
+	go build -ldflags='$(LDFLAGS)' -o $(BINARY) $(CMD)
+
+## build-ui: build the React SPA to ui/dist/
+build-ui:
+	cd ui && npm run build
+
+## dev: start daemon and Vite dev server concurrently
+dev:
+	@echo "Starting PetalFlow daemon and Vite dev server..."
+	@(go run $(CMD) serve --host 127.0.0.1 --port 8080 &) && cd ui && npm run dev
 
 ## test: run all tests with race detector
 test:
@@ -40,3 +53,4 @@ snapshot-update:
 clean:
 	rm -f $(BINARY) $(BINARY)-linux-amd64 $(BINARY)-darwin-arm64 $(BINARY)-windows-amd64.exe
 	rm -f coverage.out coverage.html
+	rm -rf ui/dist
