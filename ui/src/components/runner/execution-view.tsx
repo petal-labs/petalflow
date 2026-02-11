@@ -146,6 +146,7 @@ export function ExecutionView({
   const { status: streamStatus, retryCount } = useRunStream(runId)
 
   const [autoScroll, setAutoScroll] = useState(true)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const outputEndRef = useRef<HTMLDivElement>(null)
 
   // Auto-scroll output
@@ -180,8 +181,19 @@ export function ExecutionView({
   }, [cancelRun, runId])
 
   const isRunning = activeRun?.status === "running" || activeRun?.status === "pending"
+
+  useEffect(() => {
+    if (!isRunning) return
+    const timer = globalThis.setInterval(() => {
+      setNowMs(Date.now())
+    }, 1000)
+    return () => {
+      clearInterval(timer)
+    }
+  }, [isRunning])
+
   const elapsed = activeRun?.started_at
-    ? Math.round((Date.now() - new Date(activeRun.started_at).getTime()) / 1000)
+    ? Math.max(0, Math.round((nowMs - new Date(activeRun.started_at).getTime()) / 1000))
     : 0
 
   // Build ordered output list from nodes that have output

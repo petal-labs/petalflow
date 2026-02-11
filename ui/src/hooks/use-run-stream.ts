@@ -19,7 +19,30 @@ export function useRunStream(runId: string | null) {
   const retryTimer = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null)
   const retryRef = useRef(0)
   const runIdRef = useRef(runId)
-  runIdRef.current = runId
+
+  useEffect(() => {
+    runIdRef.current = runId
+  }, [runId])
+
+  const updateStatus = useCallback((next: StreamStatus) => {
+    setStatus((prev) => (prev === next ? prev : next))
+  }, [])
+
+  const updateRetryCount = useCallback((next: number) => {
+    setRetryCount((prev) => (prev === next ? prev : next))
+  }, [])
+
+  const scheduleStatus = useCallback((next: StreamStatus) => {
+    globalThis.setTimeout(() => {
+      updateStatus(next)
+    }, 0)
+  }, [updateStatus])
+
+  const scheduleRetryCount = useCallback((next: number) => {
+    globalThis.setTimeout(() => {
+      updateRetryCount(next)
+    }, 0)
+  }, [updateRetryCount])
 
   const clearRetryTimer = useCallback(() => {
     if (retryTimer.current) {
@@ -32,13 +55,13 @@ export function useRunStream(runId: string | null) {
     const id = runIdRef.current
     if (!id) return
     if (retryRef.current >= MAX_RETRIES) {
-      setStatus("disconnected")
+      updateStatus("disconnected")
       return
     }
 
     retryRef.current += 1
-    setRetryCount(retryRef.current)
-    setStatus("reconnecting")
+    updateRetryCount(retryRef.current)
+    updateStatus("reconnecting")
 
     const delay = Math.min(BASE_DELAY * Math.pow(2, retryRef.current - 1), MAX_DELAY)
     retryTimer.current = globalThis.setTimeout(() => {
@@ -46,7 +69,13 @@ export function useRunStream(runId: string | null) {
         connectStream(id)
       }
     }, delay)
-  }, [connectStream])
+  }, [connectStream, updateRetryCount, updateStatus])
+
+  const scheduleReconnect = useCallback(() => {
+    globalThis.setTimeout(() => {
+      attemptReconnect()
+    }, 0)
+  }, [attemptReconnect])
 
   // Catch up on missed events after reconnect
   const catchUp = useCallback(async () => {
@@ -62,7 +91,7 @@ export function useRunStream(runId: string | null) {
   // Monitor wsConnected changes for reconnection
   useEffect(() => {
     if (!runId) {
-      setStatus("disconnected")
+      scheduleStatus("disconnected")
       return
     }
 
@@ -72,39 +101,39 @@ export function useRunStream(runId: string | null) {
         catchUp()
       }
       retryRef.current = 0
-      setRetryCount(0)
+      scheduleRetryCount(0)
       clearRetryTimer()
-      setStatus("connected")
+      scheduleStatus("connected")
     } else if (status === "connected" || status === "reconnecting") {
       // Lost connection — try to reconnect
       // But only if the run is still active
       const run = activeRun
       if (run && (run.status === "running" || run.status === "pending")) {
-        attemptReconnect()
+        scheduleReconnect()
       } else {
-        setStatus("disconnected")
+        scheduleStatus("disconnected")
       }
     }
-  }, [wsConnected, runId, status, activeRun, attemptReconnect, catchUp, clearRetryTimer])
+  }, [wsConnected, runId, status, activeRun, catchUp, clearRetryTimer, scheduleReconnect, scheduleRetryCount, scheduleStatus])
 
   // Connect/disconnect on runId change
   useEffect(() => {
     if (runId) {
       retryRef.current = 0
-      setRetryCount(0)
-      setStatus("connecting")
+      scheduleRetryCount(0)
+      scheduleStatus("connecting")
       connectStream(runId)
     } else {
       clearRetryTimer()
       disconnectStream()
-      setStatus("disconnected")
+      scheduleStatus("disconnected")
     }
 
     return () => {
       clearRetryTimer()
       disconnectStream()
     }
-  }, [runId, connectStream, disconnectStream, clearRetryTimer])
+  }, [runId, connectStream, disconnectStream, clearRetryTimer, scheduleRetryCount, scheduleStatus])
 
   return { status, retryCount }
 }
