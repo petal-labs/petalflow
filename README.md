@@ -150,6 +150,55 @@ execution:
 petalflow run workflow.yaml --provider-key anthropic=sk-ant-... --input '{"topic": "Go"}'
 ```
 
+## PetalFlow Designer
+
+PetalFlow Designer is a browser-based UI for building, running, and inspecting workflows visually. It connects to the PetalFlow daemon (`petalflow serve`) and provides:
+
+- **Dual-mode workflow editor** — build with Agent/Task forms or an interactive React Flow graph canvas
+- **Tool registry** — register and manage MCP, HTTP, and Stdio tools
+- **Live runner** — execute workflows with real-time streaming output, human-in-the-loop review gates, and cancel support
+- **Trace viewer** — Gantt-style timeline of every node execution with LLM token counts, tool calls, and timing
+- **Workflow library** — save, search, duplicate, export, and import workflows
+
+### Getting Started
+
+**1. Install dependencies**
+
+```bash
+cd ui && npm install
+```
+
+**2. Start in development mode**
+
+This launches the Go daemon and Vite dev server together (Vite proxies `/api/*` to the daemon):
+
+```bash
+make dev
+```
+
+Then open [http://localhost:5173](http://localhost:5173).
+
+**3. First-run setup**
+
+On first launch the UI walks you through:
+
+1. **Create admin account** — set a username and password
+2. **Configure LLM providers** — add at least one provider key (Anthropic, OpenAI, etc.)
+3. **Register tools** *(optional)* — connect MCP servers, HTTP APIs, or Stdio tools
+4. **Build your first workflow** — pick a template or start from scratch
+
+**4. Production build**
+
+```bash
+make build
+```
+
+This compiles the React SPA into `ui/dist/` and embeds it in the Go binary via `embed.FS`. Run the single binary with `petalflow serve` — no separate web server needed.
+
+### Keyboard Shortcuts
+
+Press `?` anywhere in the app to see all available shortcuts, or click the `?` button in the navigation bar.
+
 ## Examples
 
 See the [`examples/`](./examples) directory:
