@@ -32,6 +32,29 @@ func (s *Server) handleNodeTypes(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, types)
 }
 
+// handleListProviders returns configured LLM providers.
+func (s *Server) handleListProviders(w http.ResponseWriter, _ *http.Request) {
+	type providerInfo struct {
+		Name         string `json:"name"`
+		DefaultModel string `json:"default_model"`
+		BaseURL      string `json:"base_url,omitempty"`
+		Verified     bool   `json:"verified"`
+	}
+	result := make([]providerInfo, 0, len(s.providers))
+	for name, cfg := range s.providers {
+		result = append(result, providerInfo{
+			Name:    name,
+			BaseURL: cfg.BaseURL,
+		})
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleListRuns returns run history (stub — returns empty list).
+func (s *Server) handleListRuns(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, []any{})
+}
+
 // handleListWorkflows returns all workflows.
 func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 	records, err := s.store.List(r.Context())

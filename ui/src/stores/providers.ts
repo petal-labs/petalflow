@@ -28,10 +28,10 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
   async fetchProviders() {
     set({ loading: true })
     try {
-      const data = await api.get<Provider[]>("/api/providers")
-      set({ providers: data, loading: false })
+      const data = await api.get<Provider[]>("/api/providers", { silent: true })
+      set({ providers: Array.isArray(data) ? data : [], loading: false })
     } catch {
-      set({ loading: false })
+      set({ providers: [], loading: false })
     }
   },
 

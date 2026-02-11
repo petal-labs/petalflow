@@ -91,7 +91,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
+	mux.HandleFunc("GET /api/runs", s.handleListRuns)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
+	mux.HandleFunc("GET /api/providers", s.handleListProviders)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
 }

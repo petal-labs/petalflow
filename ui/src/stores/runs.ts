@@ -62,10 +62,10 @@ export const useRunStore = create<RunState>((set, get) => ({
       if (workflowId) params.set("workflow_id", workflowId)
       const qs = params.toString()
       const path = qs ? `/api/runs?${qs}` : "/api/runs"
-      const data = await api.get<RunSummary[]>(path)
-      set({ runs: data, loading: false })
+      const data = await api.get<RunSummary[]>(path, { silent: true })
+      set({ runs: Array.isArray(data) ? data : [], loading: false })
     } catch {
-      set({ loading: false })
+      set({ runs: [], loading: false })
     }
   },
 

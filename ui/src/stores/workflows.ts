@@ -53,10 +53,10 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   async fetchWorkflows() {
     set({ loading: true })
     try {
-      const data = await api.get<WorkflowSummary[]>("/api/workflows")
-      set({ workflows: data, loading: false })
+      const data = await api.get<WorkflowSummary[]>("/api/workflows", { silent: true })
+      set({ workflows: Array.isArray(data) ? data : [], loading: false })
     } catch {
-      set({ loading: false })
+      set({ workflows: [], loading: false })
     }
   },
 

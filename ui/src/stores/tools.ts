@@ -40,10 +40,10 @@ export const useToolStore = create<ToolState>((set, get) => ({
       if (opts?.includeSchemas) params.set("include_schemas", "true")
       const qs = params.toString()
       const path = qs ? `/api/tools?${qs}` : "/api/tools"
-      const data = await api.get<Tool[]>(path)
-      set({ tools: data, loading: false })
+      const data = await api.get<Tool[]>(path, { silent: true })
+      set({ tools: Array.isArray(data) ? data : [], loading: false })
     } catch {
-      set({ loading: false })
+      set({ tools: [], loading: false })
     }
   },
 
