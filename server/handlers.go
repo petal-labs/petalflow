@@ -124,6 +124,8 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "CONFLICT", fmt.Sprintf("provider %q already exists", name))
 		return
 	}
+	prevProviders := cloneProviderMap(s.providers)
+	prevMeta := cloneProviderMetaMap(s.providerMeta)
 	s.providers[name] = hydrate.ProviderConfig{
 		APIKey:  req.APIKey,
 		BaseURL: req.BaseURL,
@@ -136,6 +138,15 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 	cfg := s.providers[name]
 	meta := s.providerMeta[name]
 	s.providersMu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.providersMu.Lock()
+		s.providers = prevProviders
+		s.providerMeta = prevMeta
+		s.providersMu.Unlock()
+		s.logger.Error("server: persist providers failed after create", "provider", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist provider")
+		return
+	}
 
 	writeJSON(w, http.StatusCreated, toProviderInfo(name, cfg, meta))
 }
@@ -160,6 +171,8 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("provider %q not found", name))
 		return
 	}
+	prevProviders := cloneProviderMap(s.providers)
+	prevMeta := cloneProviderMetaMap(s.providerMeta)
 	meta := s.providerMeta[name]
 
 	changed := false
@@ -191,6 +204,15 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 	s.providers[name] = cfg
 	s.providerMeta[name] = meta
 	s.providersMu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.providersMu.Lock()
+		s.providers = prevProviders
+		s.providerMeta = prevMeta
+		s.providersMu.Unlock()
+		s.logger.Error("server: persist providers failed after update", "provider", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist provider")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, toProviderInfo(name, cfg, meta))
 }
@@ -208,9 +230,20 @@ func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("provider %q not found", name))
 		return
 	}
+	prevProviders := cloneProviderMap(s.providers)
+	prevMeta := cloneProviderMetaMap(s.providerMeta)
 	delete(s.providers, name)
 	delete(s.providerMeta, name)
 	s.providersMu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.providersMu.Lock()
+		s.providers = prevProviders
+		s.providerMeta = prevMeta
+		s.providersMu.Unlock()
+		s.logger.Error("server: persist providers failed after delete", "provider", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist provider")
+		return
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -266,12 +299,21 @@ func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 	result.LatencyMS = time.Since(start).Milliseconds()
 
 	s.providersMu.Lock()
+	prevMeta := cloneProviderMetaMap(s.providerMeta)
 	if currentMeta, ok := s.providerMeta[name]; ok {
 		currentMeta.Verified = result.Success
 		currentMeta.LatencyMS = result.LatencyMS
 		s.providerMeta[name] = currentMeta
 	}
 	s.providersMu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.providersMu.Lock()
+		s.providerMeta = prevMeta
+		s.providersMu.Unlock()
+		s.logger.Error("server: persist providers failed after test", "provider", name, "error", err)
+		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist provider test status")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, result)
 }

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/petal-labs/petalflow/hydrate"
 )
 
 const (
@@ -19,8 +21,10 @@ const (
 var errEmptyStateStorePath = errors.New("server: file state store path is empty")
 
 type serverState struct {
-	AuthUser *authAccount `json:"auth_user,omitempty"`
-	Settings AppSettings  `json:"settings"`
+	AuthUser     *authAccount                `json:"auth_user,omitempty"`
+	Settings     AppSettings                 `json:"settings"`
+	Providers    hydrate.ProviderMap         `json:"providers,omitempty"`
+	ProviderMeta map[string]providerMetadata `json:"provider_meta,omitempty"`
 }
 
 type stateStoreDocument struct {
@@ -111,6 +115,8 @@ func (s *FileStateStore) load() (serverState, error) {
 		if strings.TrimSpace(doc.Version) != "" || doc.State.AuthUser != nil || doc.State.Settings != (AppSettings{}) {
 			doc.State.AuthUser = cloneAuthAccount(doc.State.AuthUser)
 			doc.State.Settings = normalizeAppSettings(doc.State.Settings)
+			doc.State.Providers = cloneProviderMap(doc.State.Providers)
+			doc.State.ProviderMeta = cloneProviderMetaMap(doc.State.ProviderMeta)
 			return doc.State, nil
 		}
 	}
@@ -122,6 +128,8 @@ func (s *FileStateStore) load() (serverState, error) {
 	}
 	state.AuthUser = cloneAuthAccount(state.AuthUser)
 	state.Settings = normalizeAppSettings(state.Settings)
+	state.Providers = cloneProviderMap(state.Providers)
+	state.ProviderMeta = cloneProviderMetaMap(state.ProviderMeta)
 	return state, nil
 }
 
@@ -132,6 +140,8 @@ func (s *FileStateStore) save(state serverState) error {
 
 	state.AuthUser = cloneAuthAccount(state.AuthUser)
 	state.Settings = normalizeAppSettings(state.Settings)
+	state.Providers = cloneProviderMap(state.Providers)
+	state.ProviderMeta = cloneProviderMetaMap(state.ProviderMeta)
 
 	doc := stateStoreDocument{
 		Version: stateStoreVersionV1,
@@ -157,3 +167,5 @@ func (s *FileStateStore) save(state serverState) error {
 	}
 	return nil
 }
+
+var _ ServerStateStore = (*FileStateStore)(nil)

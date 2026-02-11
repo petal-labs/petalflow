@@ -25,6 +25,7 @@ type ServerConfig struct {
 	CORSOrigin    string
 	MaxBody       int64
 	Logger        *slog.Logger
+	StateStore    ServerStateStore
 	StatePath     string
 }
 
@@ -39,7 +40,7 @@ type Server struct {
 	corsOrigin    string
 	maxBody       int64
 	logger        *slog.Logger
-	stateStore    *FileStateStore
+	stateStore    ServerStateStore
 
 	providersMu sync.RWMutex
 
@@ -49,6 +50,12 @@ type Server struct {
 	authMu   sync.RWMutex
 	authUser *authAccount      // nil = setup not done
 	tokens   map[string]string // token → username
+}
+
+// ServerStateStore persists auth/settings/provider state.
+type ServerStateStore interface {
+	Load() (serverState, error)
+	Save(serverState) error
 }
 
 type providerMetadata struct {
@@ -81,10 +88,12 @@ func NewServer(cfg ServerConfig) *Server {
 	for name := range providers {
 		providerMeta[name] = providerMetadata{}
 	}
-	statePath := strings.TrimSpace(cfg.StatePath)
-	var stateStore *FileStateStore
-	if statePath != "" {
-		stateStore = NewFileStateStore(filepath.Clean(statePath))
+	stateStore := cfg.StateStore
+	if stateStore == nil {
+		statePath := strings.TrimSpace(cfg.StatePath)
+		if statePath != "" {
+			stateStore = NewFileStateStore(filepath.Clean(statePath))
+		}
 	}
 
 	srv := &Server{
@@ -102,7 +111,7 @@ func NewServer(cfg ServerConfig) *Server {
 		tokens:        make(map[string]string),
 	}
 	if err := srv.loadState(); err != nil {
-		srv.logger.Warn("server: load persistent state failed", "error", err, "path", statePath)
+		srv.logger.Warn("server: load persistent state failed", "error", err)
 	}
 	return srv
 }
@@ -225,6 +234,28 @@ func normalizeAppSettings(in AppSettings) AppSettings {
 	return out
 }
 
+func cloneProviderMap(in hydrate.ProviderMap) hydrate.ProviderMap {
+	if len(in) == 0 {
+		return hydrate.ProviderMap{}
+	}
+	out := make(hydrate.ProviderMap, len(in))
+	for name, cfg := range in {
+		out[name] = cfg
+	}
+	return out
+}
+
+func cloneProviderMetaMap(in map[string]providerMetadata) map[string]providerMetadata {
+	if len(in) == 0 {
+		return map[string]providerMetadata{}
+	}
+	out := make(map[string]providerMetadata, len(in))
+	for name, meta := range in {
+		out[name] = meta
+	}
+	return out
+}
+
 func cloneAuthAccount(in *authAccount) *authAccount {
 	if in == nil {
 		return nil
@@ -248,6 +279,23 @@ func (s *Server) loadState() error {
 	s.settingsMu.Lock()
 	s.settings = normalizeAppSettings(state.Settings)
 	s.settingsMu.Unlock()
+
+	s.providersMu.Lock()
+	if len(state.Providers) > 0 {
+		s.providers = cloneProviderMap(state.Providers)
+	}
+	if len(state.ProviderMeta) > 0 {
+		s.providerMeta = cloneProviderMetaMap(state.ProviderMeta)
+	}
+	if s.providerMeta == nil {
+		s.providerMeta = map[string]providerMetadata{}
+	}
+	for name := range s.providers {
+		if _, ok := s.providerMeta[name]; !ok {
+			s.providerMeta[name] = providerMetadata{}
+		}
+	}
+	s.providersMu.Unlock()
 	return nil
 }
 
@@ -264,9 +312,16 @@ func (s *Server) persistState() error {
 	settings := s.settings
 	s.settingsMu.RUnlock()
 
+	s.providersMu.RLock()
+	providers := cloneProviderMap(s.providers)
+	providerMeta := cloneProviderMetaMap(s.providerMeta)
+	s.providersMu.RUnlock()
+
 	return s.stateStore.Save(serverState{
-		AuthUser: authUser,
-		Settings: settings,
+		AuthUser:     authUser,
+		Settings:     settings,
+		Providers:    providers,
+		ProviderMeta: providerMeta,
 	})
 }
 
