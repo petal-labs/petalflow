@@ -99,14 +99,20 @@ func (s *Server) Handler() http.Handler {
 }
 
 type registerToolRequest struct {
-	Name        string             `json:"name"`
-	Origin      string             `json:"origin,omitempty"`
-	Type        string             `json:"type,omitempty"`
-	Manifest    *tool.ToolManifest `json:"manifest,omitempty"`
-	Config      map[string]string  `json:"config,omitempty"`
-	Transport   *tool.MCPTransport `json:"transport,omitempty"`
-	OverlayPath string             `json:"overlay_path,omitempty"`
-	Enabled     *bool              `json:"enabled,omitempty"`
+	Name        string               `json:"name"`
+	Origin      string               `json:"origin,omitempty"`
+	Type        string               `json:"type,omitempty"`
+	Manifest    *tool.ToolManifest   `json:"manifest,omitempty"`
+	Config      map[string]string    `json:"config,omitempty"`
+	Transport   *mcpTransportRequest `json:"transport,omitempty"`
+	Command     string               `json:"command,omitempty"`
+	Args        []string             `json:"args,omitempty"`
+	EndpointURL string               `json:"endpoint_url,omitempty"`
+	Endpoint    string               `json:"endpoint,omitempty"`
+	Env         map[string]string    `json:"env,omitempty"`
+	TimeoutMS   int                  `json:"timeout_ms,omitempty"`
+	OverlayPath string               `json:"overlay_path,omitempty"`
+	Enabled     *bool                `json:"enabled,omitempty"`
 }
 
 type updateToolRequest struct {
@@ -142,6 +148,68 @@ type apiErrorDetail struct {
 
 type apiErrorResponse struct {
 	Error apiErrorDetail `json:"error"`
+}
+
+// mcpTransportRequest supports both canonical object payloads and legacy string payloads.
+// Canonical: {"mode":"stdio","command":"npx","args":["-y","@..."]}
+// Legacy: "stdio" (mode only, with command/args supplied at top level).
+type mcpTransportRequest struct {
+	tool.MCPTransport
+}
+
+func (t *mcpTransportRequest) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	var mode string
+	if err := json.Unmarshal(data, &mode); err == nil {
+		t.Mode = tool.MCPMode(strings.ToLower(strings.TrimSpace(mode)))
+		return nil
+	}
+	var parsed tool.MCPTransport
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return err
+	}
+	t.MCPTransport = parsed
+	return nil
+}
+
+func (req registerToolRequest) mcpTransport(origin tool.ToolOrigin) *tool.MCPTransport {
+	if origin != tool.OriginMCP {
+		return nil
+	}
+
+	transport := tool.MCPTransport{}
+	if req.Transport != nil {
+		transport = req.Transport.MCPTransport
+	}
+
+	if transport.Mode == "" {
+		if strings.TrimSpace(transport.Endpoint) != "" || strings.TrimSpace(req.EndpointURL) != "" || strings.TrimSpace(req.Endpoint) != "" {
+			transport.Mode = tool.MCPModeSSE
+		} else {
+			transport.Mode = tool.MCPModeStdio
+		}
+	}
+	if transport.Command == "" {
+		transport.Command = strings.TrimSpace(req.Command)
+	}
+	if len(transport.Args) == 0 && len(req.Args) > 0 {
+		transport.Args = append([]string(nil), req.Args...)
+	}
+	if transport.Endpoint == "" {
+		transport.Endpoint = strings.TrimSpace(req.EndpointURL)
+		if transport.Endpoint == "" {
+			transport.Endpoint = strings.TrimSpace(req.Endpoint)
+		}
+	}
+	if len(transport.Env) == 0 && len(req.Env) > 0 {
+		transport.Env = cloneStringMap(req.Env)
+	}
+	if transport.TimeoutMS == 0 && req.TimeoutMS > 0 {
+		transport.TimeoutMS = req.TimeoutMS
+	}
+	return &transport
 }
 
 func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +286,7 @@ func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
 		Origin:       origin,
 		Manifest:     req.Manifest,
 		Config:       cloneStringMap(req.Config),
-		MCPTransport: req.Transport,
+		MCPTransport: req.mcpTransport(origin),
 		OverlayPath:  req.OverlayPath,
 		Enabled:      req.Enabled,
 	}

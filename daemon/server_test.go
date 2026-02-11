@@ -197,6 +197,62 @@ func TestServer_ActionEndpointsAndCatalog(t *testing.T) {
 	}
 }
 
+func TestServer_RegisterMCP_LegacyTransportPayload(t *testing.T) {
+	server := newTestServer(t)
+
+	stdioResp := requestJSON(t, server.Handler(), http.MethodPost, "/api/tools", map[string]any{
+		"name":      "filesystem",
+		"type":      "mcp",
+		"transport": "stdio",
+		"command":   "npx",
+		"args":      []string{"-y", "@modelcontextprotocol/server-filesystem", "/tmp"},
+	})
+	if stdioResp.Code != http.StatusCreated {
+		t.Fatalf("legacy stdio register status = %d, want 201; body=%s", stdioResp.Code, stdioResp.Body.String())
+	}
+	var stdioReg tool.ToolRegistration
+	if err := json.Unmarshal(stdioResp.Body.Bytes(), &stdioReg); err != nil {
+		t.Fatalf("unmarshal legacy stdio registration: %v", err)
+	}
+	stdioTransport, ok := stdioReg.Manifest.Transport.AsMCP()
+	if !ok {
+		t.Fatalf("legacy stdio registration transport should be mcp, got %q", stdioReg.Manifest.Transport.Type)
+	}
+	if stdioTransport.Mode != tool.MCPModeStdio {
+		t.Fatalf("legacy stdio transport mode = %q, want %q", stdioTransport.Mode, tool.MCPModeStdio)
+	}
+	if stdioTransport.Command != "npx" {
+		t.Fatalf("legacy stdio command = %q, want npx", stdioTransport.Command)
+	}
+	if len(stdioTransport.Args) != 3 {
+		t.Fatalf("legacy stdio args len = %d, want 3 (%v)", len(stdioTransport.Args), stdioTransport.Args)
+	}
+
+	sseResp := requestJSON(t, server.Handler(), http.MethodPost, "/api/tools", map[string]any{
+		"name":         "remote_mcp",
+		"type":         "mcp",
+		"transport":    "sse",
+		"endpoint_url": "https://example.invalid/mcp",
+	})
+	if sseResp.Code != http.StatusCreated {
+		t.Fatalf("legacy sse register status = %d, want 201; body=%s", sseResp.Code, sseResp.Body.String())
+	}
+	var sseReg tool.ToolRegistration
+	if err := json.Unmarshal(sseResp.Body.Bytes(), &sseReg); err != nil {
+		t.Fatalf("unmarshal legacy sse registration: %v", err)
+	}
+	sseTransport, ok := sseReg.Manifest.Transport.AsMCP()
+	if !ok {
+		t.Fatalf("legacy sse registration transport should be mcp, got %q", sseReg.Manifest.Transport.Type)
+	}
+	if sseTransport.Mode != tool.MCPModeSSE {
+		t.Fatalf("legacy sse transport mode = %q, want %q", sseTransport.Mode, tool.MCPModeSSE)
+	}
+	if sseTransport.Endpoint != "https://example.invalid/mcp" {
+		t.Fatalf("legacy sse endpoint = %q, want https://example.invalid/mcp", sseTransport.Endpoint)
+	}
+}
+
 func TestServer_MasksSensitiveConfigInResponses(t *testing.T) {
 	server := newTestServer(t)
 
