@@ -20,9 +20,18 @@ import { useWorkflowStore } from "@/stores/workflows"
 import { useEditorStore } from "@/stores/editor"
 import { useGraphStore } from "@/stores/graph"
 import { useAutoSave } from "@/hooks/use-auto-save"
+import { ErrorBoundary } from "@/components/error-boundary"
 import { toast } from "sonner"
 
 export default function WorkflowEditorPage() {
+  return (
+    <ErrorBoundary>
+      <WorkflowEditorInner />
+    </ErrorBoundary>
+  )
+}
+
+function WorkflowEditorInner() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const getWorkflow = useWorkflowStore((s) => s.getWorkflow)
@@ -68,6 +77,8 @@ export default function WorkflowEditorPage() {
       try {
         const wf = await getWorkflow(id)
         if (cancelled) return
+        // Normalize: backend may serialize definition under a different key.
+        if (!wf.definition) wf.definition = {}
         openWorkflow(wf)
         if (wf.kind === "agent_workflow" && wf.definition) {
           loadDefinition(wf.definition)

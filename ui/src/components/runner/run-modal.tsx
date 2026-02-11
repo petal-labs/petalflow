@@ -166,11 +166,13 @@ export function RunModal({ open, onOpenChange, workflow, onStarted }: RunModalPr
   const [dryRun, setDryRun] = useState(false)
   const [starting, setStarting] = useState(false)
 
+  const def = workflow.definition
+
   // Check if any referenced providers have failed tests
   const providerWarnings = useMemo(() => {
+    if (!def) return []
     const warnings: string[] = []
     // Collect provider names from agent definitions
-    const def = workflow.definition as Record<string, unknown>
     const agents = (def.agents ?? []) as Array<Record<string, unknown>>
     const usedProviders = new Set<string>()
     for (const agent of agents) {
@@ -189,26 +191,27 @@ export function RunModal({ open, onOpenChange, workflow, onStarted }: RunModalPr
       }
     }
     return warnings
-  }, [workflow.definition, providers, testResults])
+  }, [def, providers, testResults])
 
   // Derive input fields from schema or template vars
   const fields = useMemo<InputField[]>(() => {
-    const schemaFields = extractSchemaFields(workflow.definition)
+    if (!def) return []
+    const schemaFields = extractSchemaFields(def)
     if (schemaFields.length > 0) return schemaFields
 
     // Fallback: extract template variables
-    const vars = extractTemplateVars(workflow.definition)
+    const vars = extractTemplateVars(def)
     return vars.map((name) => ({
       name,
       type: "string",
       required: true,
     }))
-  }, [workflow.definition])
+  }, [def])
 
   // Pre-populate default values
   useEffect(() => {
     const defaults: Record<string, unknown> = {}
-    const defInputs = workflow.definition.default_inputs as Record<string, unknown> | undefined
+    const defInputs = def?.default_inputs as Record<string, unknown> | undefined
     for (const field of fields) {
       if (defInputs?.[field.name] !== undefined) {
         defaults[field.name] = defInputs[field.name]
@@ -217,7 +220,7 @@ export function RunModal({ open, onOpenChange, workflow, onStarted }: RunModalPr
       }
     }
     setInputs(defaults)
-  }, [fields, workflow.definition.default_inputs])
+  }, [fields, def])
 
   const setField = useCallback((name: string, value: unknown) => {
     setInputs((prev) => ({ ...prev, [name]: value }))

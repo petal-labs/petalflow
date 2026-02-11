@@ -1,10 +1,13 @@
 package server
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
@@ -35,6 +38,10 @@ type Server struct {
 
 	settingsMu sync.RWMutex
 	settings   AppSettings
+
+	authMu   sync.RWMutex
+	authUser *authAccount  // nil = setup not done
+	tokens   map[string]string // token → username
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -61,6 +68,7 @@ func NewServer(cfg ServerConfig) *Server {
 		maxBody:       maxBody,
 		logger:        logger,
 		settings:      defaultAppSettings(),
+		tokens:        make(map[string]string),
 	}
 }
 
@@ -82,6 +90,11 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/auth/setup", s.handleAuthSetup)
+	mux.HandleFunc("POST /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("POST /api/auth/refresh", s.handleAuthRefresh)
 	mux.HandleFunc("GET /api/node-types", s.handleNodeTypes)
 	mux.HandleFunc("GET /api/workflows", s.handleListWorkflows)
 	mux.HandleFunc("POST /api/workflows", s.handleCreateWorkflow)
@@ -182,6 +195,122 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	s.settings = updated
 	s.settingsMu.Unlock()
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// --- Auth ---
+
+type authAccount struct {
+	Username string `json:"username"`
+	Password string `json:"password"` // plaintext for now (in-memory only)
+}
+
+type authStatusResponse struct {
+	SetupComplete bool `json:"setup_complete"`
+}
+
+type authLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type authSetupRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type authTokensResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+}
+
+func generateToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, _ *http.Request) {
+	s.authMu.RLock()
+	done := s.authUser != nil
+	s.authMu.RUnlock()
+	writeJSON(w, http.StatusOK, authStatusResponse{SetupComplete: done})
+}
+
+func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	if s.authUser != nil {
+		writeError(w, http.StatusConflict, "ALREADY_SETUP", "admin account already exists")
+		return
+	}
+
+	var req authSetupRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+	if req.Username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "username and password are required")
+		return
+	}
+
+	s.authUser = &authAccount{Username: req.Username, Password: req.Password}
+	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	var req authLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	if s.authUser == nil || req.Username != s.authUser.Username || req.Password != s.authUser.Password {
+		writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
+		return
+	}
+
+	token := generateToken()
+	refresh := generateToken()
+	s.tokens[token] = req.Username
+	s.tokens[refresh] = req.Username
+	expiresIn := int((24 * time.Hour).Seconds())
+
+	writeJSON(w, http.StatusOK, authTokensResponse{
+		AccessToken:  token,
+		RefreshToken: refresh,
+		ExpiresIn:    expiresIn,
+	})
+}
+
+func (s *Server) handleAuthLogout(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleAuthRefresh(w http.ResponseWriter, _ *http.Request) {
+	// Issue a new token unconditionally (simplified).
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	if s.authUser == nil {
+		writeError(w, http.StatusUnauthorized, "NO_SESSION", "no active session")
+		return
+	}
+
+	token := generateToken()
+	s.tokens[token] = s.authUser.Username
+	expiresIn := int((24 * time.Hour).Seconds())
+
+	writeJSON(w, http.StatusOK, authTokensResponse{
+		AccessToken:  token,
+		RefreshToken: generateToken(),
+		ExpiresIn:    expiresIn,
+	})
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string, details ...string) {
