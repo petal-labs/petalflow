@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +25,7 @@ type ServerConfig struct {
 	CORSOrigin    string
 	MaxBody       int64
 	Logger        *slog.Logger
+	StatePath     string
 }
 
 // Server is the PetalFlow HTTP API server.
@@ -36,6 +39,7 @@ type Server struct {
 	corsOrigin    string
 	maxBody       int64
 	logger        *slog.Logger
+	stateStore    *FileStateStore
 
 	providersMu sync.RWMutex
 
@@ -77,8 +81,13 @@ func NewServer(cfg ServerConfig) *Server {
 	for name := range providers {
 		providerMeta[name] = providerMetadata{}
 	}
+	statePath := strings.TrimSpace(cfg.StatePath)
+	var stateStore *FileStateStore
+	if statePath != "" {
+		stateStore = NewFileStateStore(filepath.Clean(statePath))
+	}
 
-	return &Server{
+	srv := &Server{
 		store:         cfg.Store,
 		providers:     providers,
 		providerMeta:  providerMeta,
@@ -88,9 +97,14 @@ func NewServer(cfg ServerConfig) *Server {
 		corsOrigin:    corsOrigin,
 		maxBody:       maxBody,
 		logger:        logger,
+		stateStore:    stateStore,
 		settings:      defaultAppSettings(),
 		tokens:        make(map[string]string),
 	}
+	if err := srv.loadState(); err != nil {
+		srv.logger.Warn("server: load persistent state failed", "error", err, "path", statePath)
+	}
+	return srv
 }
 
 // Handler returns an http.Handler with all routes and middleware wired.
@@ -203,6 +217,59 @@ func defaultAppSettings() AppSettings {
 	}
 }
 
+func normalizeAppSettings(in AppSettings) AppSettings {
+	out := defaultAppSettings()
+	out.OnboardingComplete = in.OnboardingComplete
+	out.OnboardingStep = in.OnboardingStep
+	out.Preferences = in.Preferences
+	return out
+}
+
+func cloneAuthAccount(in *authAccount) *authAccount {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func (s *Server) loadState() error {
+	if s.stateStore == nil {
+		return nil
+	}
+	state, err := s.stateStore.Load()
+	if err != nil {
+		return err
+	}
+	s.authMu.Lock()
+	s.authUser = cloneAuthAccount(state.AuthUser)
+	s.authMu.Unlock()
+
+	s.settingsMu.Lock()
+	s.settings = normalizeAppSettings(state.Settings)
+	s.settingsMu.Unlock()
+	return nil
+}
+
+func (s *Server) persistState() error {
+	if s.stateStore == nil {
+		return nil
+	}
+
+	s.authMu.RLock()
+	authUser := cloneAuthAccount(s.authUser)
+	s.authMu.RUnlock()
+
+	s.settingsMu.RLock()
+	settings := s.settings
+	s.settingsMu.RUnlock()
+
+	return s.stateStore.Save(serverState{
+		AuthUser: authUser,
+		Settings: settings,
+	})
+}
+
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 	s.settingsMu.RLock()
 	settings := s.settings
@@ -217,8 +284,17 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.settingsMu.Lock()
+	previous := s.settings
 	s.settings = updated
 	s.settingsMu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.settingsMu.Lock()
+		s.settings = previous
+		s.settingsMu.Unlock()
+		s.logger.Error("server: persist settings failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist settings")
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -263,10 +339,10 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
-	s.authMu.Lock()
-	defer s.authMu.Unlock()
-
-	if s.authUser != nil {
+	s.authMu.RLock()
+	alreadySetup := s.authUser != nil
+	s.authMu.RUnlock()
+	if alreadySetup {
 		writeError(w, http.StatusConflict, "ALREADY_SETUP", "admin account already exists")
 		return
 	}
@@ -281,7 +357,25 @@ func (s *Server) handleAuthSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.authUser = &authAccount{Username: req.Username, Password: req.Password}
+	user := &authAccount{Username: req.Username, Password: req.Password}
+	s.authMu.Lock()
+	if s.authUser != nil {
+		s.authMu.Unlock()
+		writeError(w, http.StatusConflict, "ALREADY_SETUP", "admin account already exists")
+		return
+	}
+	s.authUser = user
+	s.authMu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.authMu.Lock()
+		if s.authUser == user {
+			s.authUser = nil
+		}
+		s.authMu.Unlock()
+		s.logger.Error("server: persist auth setup failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist auth setup")
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 

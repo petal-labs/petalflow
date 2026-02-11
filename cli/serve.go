@@ -41,6 +41,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
 	cmd.Flags().String("store", "memory", "Workflow store backend: memory | file")
 	cmd.Flags().String("store-path", "", "File store directory (only for --store file)")
+	cmd.Flags().String("state-path", "", "Server auth/settings state file path")
 	cmd.Flags().String("config", "", "Path to petalflow.yaml tool config")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable)")
 	cmd.Flags().String("tls-cert", "", "TLS certificate file")
@@ -64,8 +65,16 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
 	storeKind, _ := cmd.Flags().GetString("store")
 	storePath, _ := cmd.Flags().GetString("store-path")
+	statePath, _ := cmd.Flags().GetString("state-path")
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
 	devUI, _ := cmd.Flags().GetBool("dev-ui")
+	if strings.TrimSpace(statePath) == "" {
+		defaultStatePath, err := server.DefaultStateStorePath()
+		if err != nil {
+			return exitError(exitRuntime, "resolving state store path: %v", err)
+		}
+		statePath = defaultStatePath
+	}
 
 	// --- Daemon tool server (Phase 3) ---
 	toolStore, err := resolveServeStore(storeKind, storePath)
@@ -144,6 +153,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		CORSOrigin: corsOrigin,
 		MaxBody:    maxBody,
 		Logger:     logger,
+		StatePath:  statePath,
 	})
 
 	// Compose both handlers on one mux.

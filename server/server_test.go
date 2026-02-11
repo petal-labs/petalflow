@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -38,6 +39,21 @@ func testServer() *Server {
 		EventStore: bus.NewMemEventStore(),
 		CORSOrigin: "*",
 		MaxBody:    1 << 20,
+	})
+}
+
+func testPersistentServer(statePath string) *Server {
+	return NewServer(ServerConfig{
+		Store:     NewMemoryStore(),
+		Providers: hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			return nil, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: bus.NewMemEventStore(),
+		CORSOrigin: "*",
+		MaxBody:    1 << 20,
+		StatePath:  statePath,
 	})
 }
 
@@ -507,6 +523,95 @@ func TestIntegrationFlow(t *testing.T) {
 	handler.ServeHTTP(w, r)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("get after delete: %d", w.Code)
+	}
+}
+
+func TestAuthAndSettingsPersistAcrossServerRestart(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "server_state.json")
+
+	srv := testPersistentServer(statePath)
+	handler := srv.Handler()
+
+	setupReq := authSetupRequest{Username: "admin", Password: "secret"}
+	setupBody, _ := json.Marshal(setupReq)
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/setup", bytes.NewReader(setupBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup: got %d, want %d; body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	settings := AppSettings{
+		OnboardingComplete: true,
+		OnboardingStep:     2,
+		Preferences: UserPreferences{
+			Theme:               "light",
+			DefaultWorkflowMode: "graph",
+			AutoSaveIntervalMs:  1500,
+			OutputFormat:        "json",
+		},
+	}
+	settingsBody, _ := json.Marshal(settings)
+	r = httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(settingsBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update settings: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	restarted := testPersistentServer(statePath)
+	restartedHandler := restarted.Handler()
+
+	r = httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)
+	w = httptest.NewRecorder()
+	restartedHandler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", w.Code, http.StatusOK)
+	}
+	var status authStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("unmarshal auth status: %v", err)
+	}
+	if !status.SetupComplete {
+		t.Fatal("setup_complete = false, want true after restart")
+	}
+
+	loginReq := authLoginRequest{Username: "admin", Password: "secret"}
+	loginBody, _ := json.Marshal(loginReq)
+	r = httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(loginBody))
+	w = httptest.NewRecorder()
+	restartedHandler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login after restart: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	w = httptest.NewRecorder()
+	restartedHandler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get settings after restart: got %d, want %d", w.Code, http.StatusOK)
+	}
+	var got AppSettings
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if got.OnboardingComplete != settings.OnboardingComplete {
+		t.Fatalf("onboarding_complete = %v, want %v", got.OnboardingComplete, settings.OnboardingComplete)
+	}
+	if got.OnboardingStep != settings.OnboardingStep {
+		t.Fatalf("onboarding_step = %d, want %d", got.OnboardingStep, settings.OnboardingStep)
+	}
+	if got.Preferences.Theme != settings.Preferences.Theme {
+		t.Fatalf("theme = %q, want %q", got.Preferences.Theme, settings.Preferences.Theme)
+	}
+	if got.Preferences.DefaultWorkflowMode != settings.Preferences.DefaultWorkflowMode {
+		t.Fatalf("default_workflow_mode = %q, want %q", got.Preferences.DefaultWorkflowMode, settings.Preferences.DefaultWorkflowMode)
+	}
+	if got.Preferences.AutoSaveIntervalMs != settings.Preferences.AutoSaveIntervalMs {
+		t.Fatalf("auto_save_interval_ms = %d, want %d", got.Preferences.AutoSaveIntervalMs, settings.Preferences.AutoSaveIntervalMs)
+	}
+	if got.Preferences.OutputFormat != settings.Preferences.OutputFormat {
+		t.Fatalf("output_format = %q, want %q", got.Preferences.OutputFormat, settings.Preferences.OutputFormat)
 	}
 }
 
