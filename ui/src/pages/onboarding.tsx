@@ -1,46 +1,79 @@
+import { useEffect } from "react"
 import { Routes, Route, Navigate } from "react-router-dom"
-import { OnboardingShell } from "@/components/onboarding/onboarding-shell"
-
-// Step components — stubs for now, fleshed out in P1-25..P1-27
-function WelcomeStep() {
-  return <p className="text-muted-foreground">Welcome to PetalFlow</p>
-}
-
-function ProvidersStep() {
-  return <p className="text-muted-foreground">Configure LLM providers</p>
-}
+import {
+  OnboardingShell,
+  type OnboardingStep,
+} from "@/components/onboarding/onboarding-shell"
+import { WelcomeStep } from "@/components/onboarding/welcome-step"
+import {
+  ProvidersStep,
+  useHasProvider,
+} from "@/components/onboarding/providers-step"
+import { useProviderStore } from "@/stores/providers"
+import { useSettingsStore } from "@/stores/settings"
 
 function ToolsStep() {
-  return <p className="text-muted-foreground">Register tools</p>
+  return <p className="text-muted-foreground">Register tools (coming soon)</p>
 }
 
 function FirstWorkflowStep() {
-  return <p className="text-muted-foreground">Build your first workflow</p>
+  return (
+    <p className="text-muted-foreground">Build your first workflow (coming soon)</p>
+  )
 }
 
 function DoneStep() {
-  return <p className="text-muted-foreground">Setup complete!</p>
+  return (
+    <div className="text-center space-y-2">
+      <p className="text-lg font-medium">You're all set!</p>
+      <p className="text-muted-foreground text-sm">
+        Your workspace is ready. Click "Go to Workflows" to start building.
+      </p>
+    </div>
+  )
 }
 
-const steps = [
-  { path: "welcome", label: "Welcome", element: <WelcomeStep /> },
-  { path: "providers", label: "Providers", element: <ProvidersStep /> },
-  { path: "tools", label: "Tools", element: <ToolsStep /> },
-  { path: "first-workflow", label: "First Workflow", element: <FirstWorkflowStep /> },
-  { path: "done", label: "Done", element: <DoneStep /> },
-]
+function OnboardingContent() {
+  const hasProvider = useHasProvider()
+  const fetchProviders = useProviderStore((s) => s.fetchProviders)
+  const fetchSettings = useSettingsStore((s) => s.fetchSettings)
 
-export { steps as onboardingSteps }
+  useEffect(() => {
+    fetchProviders()
+    fetchSettings()
+  }, [fetchProviders, fetchSettings])
 
-export default function OnboardingPage() {
+  const steps: OnboardingStep[] = [
+    {
+      path: "welcome",
+      label: "Welcome",
+      noSkip: true,
+    },
+    {
+      path: "providers",
+      label: "Providers",
+      noSkip: true,
+      canContinue: () => hasProvider,
+    },
+    { path: "tools", label: "Tools" },
+    { path: "first-workflow", label: "First Workflow" },
+    { path: "done", label: "Done" },
+  ]
+
   return (
     <OnboardingShell steps={steps}>
       <Routes>
         <Route index element={<Navigate to="welcome" replace />} />
-        {steps.map((step) => (
-          <Route key={step.path} path={step.path} element={step.element} />
-        ))}
+        <Route path="welcome" element={<WelcomeStep />} />
+        <Route path="providers" element={<ProvidersStep />} />
+        <Route path="tools" element={<ToolsStep />} />
+        <Route path="first-workflow" element={<FirstWorkflowStep />} />
+        <Route path="done" element={<DoneStep />} />
       </Routes>
     </OnboardingShell>
   )
+}
+
+export default function OnboardingPage() {
+  return <OnboardingContent />
 }

@@ -14,6 +14,8 @@ import OnboardingPage from "@/pages/onboarding"
 import LoginPage from "@/pages/login"
 import SetupPage from "@/pages/setup"
 import NotFoundPage from "@/pages/not-found"
+import { AccountSettings } from "@/components/settings/account-settings"
+import { ProvidersSettings } from "@/components/settings/providers-settings"
 
 export default function App() {
   const checkStatus = useAuthStore((s) => s.checkStatus)
@@ -60,19 +62,10 @@ export default function App() {
                 index
                 element={<Navigate to="/settings/account" replace />}
               />
-              <Route
-                path="account"
-                element={
-                  <p className="text-muted-foreground">Account settings</p>
-                }
-              />
+              <Route path="account" element={<AccountSettings />} />
               <Route
                 path="providers"
-                element={
-                  <p className="text-muted-foreground">
-                    Provider configuration
-                  </p>
-                }
+                element={<ProvidersSettings />}
               />
               <Route
                 path="tools"
