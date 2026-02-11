@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { useRunStore } from "@/stores/runs"
+import { useProviderStore } from "@/stores/providers"
 import { toast } from "sonner"
 import type { Workflow } from "@/api/types"
 
@@ -158,10 +159,37 @@ function InputWidget({
 
 export function RunModal({ open, onOpenChange, workflow, onStarted }: RunModalProps) {
   const startRun = useRunStore((s) => s.startRun)
+  const providers = useProviderStore((s) => s.providers)
+  const testResults = useProviderStore((s) => s.testResults)
   const [inputs, setInputs] = useState<Record<string, unknown>>({})
   const [trace, setTrace] = useState(true)
   const [dryRun, setDryRun] = useState(false)
   const [starting, setStarting] = useState(false)
+
+  // Check if any referenced providers have failed tests
+  const providerWarnings = useMemo(() => {
+    const warnings: string[] = []
+    // Collect provider names from agent definitions
+    const def = workflow.definition as Record<string, unknown>
+    const agents = (def.agents ?? []) as Array<Record<string, unknown>>
+    const usedProviders = new Set<string>()
+    for (const agent of agents) {
+      if (typeof agent.provider === "string") {
+        usedProviders.add(agent.provider)
+      }
+    }
+    for (const name of usedProviders) {
+      const result = testResults[name]
+      if (result && !result.success) {
+        warnings.push(`Provider '${name}' is not responding: ${result.error ?? "test failed"}. Check Settings > Providers.`)
+      }
+      const provider = providers.find((p) => p.name === name)
+      if (!provider) {
+        warnings.push(`Provider '${name}' is not configured. Add it in Settings > Providers.`)
+      }
+    }
+    return warnings
+  }, [workflow.definition, providers, testResults])
 
   // Derive input fields from schema or template vars
   const fields = useMemo<InputField[]>(() => {
@@ -220,6 +248,15 @@ export function RunModal({ open, onOpenChange, workflow, onStarted }: RunModalPr
         </DialogHeader>
 
         <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+          {/* Provider warnings */}
+          {providerWarnings.length > 0 && (
+            <div className="rounded border border-amber-500/50 bg-amber-500/10 px-3 py-2 space-y-1">
+              {providerWarnings.map((w, i) => (
+                <p key={i} className="text-xs text-amber-700 dark:text-amber-400">{w}</p>
+              ))}
+            </div>
+          )}
+
           {/* Input fields */}
           {fields.length > 0 && (
             <div className="space-y-3">

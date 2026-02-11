@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { ToolPicker } from "@/components/tools/tool-picker"
+import { FieldHelp, LearnMore } from "@/components/designer/field-help"
 import { useEditorStore, type AgentDef } from "@/stores/editor"
 import { useProviderStore } from "@/stores/providers"
 import { providerDefs } from "@/lib/provider-defs"
@@ -69,6 +70,7 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       <div className="space-y-1.5">
         <Label className="text-xs">
           Role <span className="text-destructive">*</span>
+          <FieldHelp section="agent" field="role" />
         </Label>
         <Input
           value={agent.role}
@@ -88,6 +90,7 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       <div className="space-y-1.5">
         <Label className="text-xs">
           Goal <span className="text-destructive">*</span>
+          <FieldHelp section="agent" field="goal" />
         </Label>
         <Input
           value={agent.goal}
@@ -98,7 +101,10 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-xs">Backstory</Label>
+        <Label className="text-xs">
+          Backstory
+          <FieldHelp section="agent" field="backstory" />
+        </Label>
         <Textarea
           value={agent.backstory}
           onChange={(e) => update({ backstory: e.target.value })}
@@ -112,6 +118,7 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       <div className="space-y-1.5">
         <Label className="text-xs">
           Provider <span className="text-destructive">*</span>
+          <FieldHelp section="agent" field="provider" />
         </Label>
         <Select
           value={agent.provider}
@@ -133,6 +140,7 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       <div className="space-y-1.5">
         <Label className="text-xs">
           Model <span className="text-destructive">*</span>
+          <FieldHelp section="agent" field="model" />
         </Label>
         {modelList.length > 0 ? (
           <Select
@@ -161,7 +169,10 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-xs">Tools</Label>
+        <Label className="text-xs">
+          Tools
+          <FieldHelp section="agent" field="tools" />
+        </Label>
         <ToolPicker
           selected={agent.tools}
           onChange={(tools) => update({ tools })}
@@ -173,7 +184,10 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
 
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <Label className="text-xs">Temperature</Label>
+          <Label className="text-xs">
+            Temperature
+            <FieldHelp section="agent" field="temperature" />
+          </Label>
           <Input
             type="number"
             min={0}
@@ -192,7 +206,10 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
           />
         </div>
         <div className="space-y-1.5">
-          <Label className="text-xs">Max Tokens</Label>
+          <Label className="text-xs">
+            Max Tokens
+            <FieldHelp section="agent" field="max_tokens" />
+          </Label>
           <Input
             type="number"
             value={agent.max_tokens ?? ""}
@@ -210,7 +227,10 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-xs">System Prompt Override</Label>
+        <Label className="text-xs">
+          System Prompt Override
+          <FieldHelp section="agent" field="system_prompt" />
+        </Label>
         <Textarea
           value={agent.system_prompt ?? ""}
           onChange={(e) => update({ system_prompt: e.target.value || undefined })}
@@ -218,6 +238,8 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
           className="text-xs min-h-[60px]"
         />
       </div>
+
+      <LearnMore section="agent" />
     </div>
   )
 }

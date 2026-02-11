@@ -1,7 +1,12 @@
 import { NavLink, Outlet } from "react-router-dom"
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 import { ThemeToggle } from "./theme-toggle"
 import { UserMenu } from "./user-menu"
+import {
+  KeyboardShortcutsDialog,
+  useShortcutsDialog,
+} from "@/components/keyboard-shortcuts-dialog"
 
 const navItems = [
   { to: "/workflows", label: "Workflows" },
@@ -10,6 +15,8 @@ const navItems = [
 ]
 
 export function AppShell() {
+  const [shortcutsOpen, setShortcutsOpen] = useShortcutsDialog()
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -40,6 +47,15 @@ export function AppShell() {
           </nav>
 
           <div className="ml-auto flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 w-8 p-0 text-muted-foreground"
+              onClick={() => setShortcutsOpen(true)}
+              title="Keyboard shortcuts (?)"
+            >
+              ?
+            </Button>
             <ThemeToggle />
             <UserMenu />
           </div>
@@ -49,6 +65,11 @@ export function AppShell() {
       <main className="flex-1">
         <Outlet />
       </main>
+
+      <KeyboardShortcutsDialog
+        open={shortcutsOpen}
+        onOpenChange={setShortcutsOpen}
+      />
     </div>
   )
 }

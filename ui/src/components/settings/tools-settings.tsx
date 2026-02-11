@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { EmptyState } from "@/components/empty-state"
+import { ToolsTableSkeleton } from "@/components/loading-skeletons"
 import {
   Select,
   SelectContent,
@@ -151,13 +153,20 @@ export function ToolsSettings() {
 
       {/* Table */}
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
+        <ToolsTableSkeleton />
       ) : filtered.length === 0 ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">
-          {tools.length === 0
-            ? "No tools registered. Click \"+ Register Tool\" to get started."
-            : "No tools match your search."}
-        </div>
+        tools.length === 0 ? (
+          <EmptyState
+            title="No tools registered"
+            description="Register MCP servers, HTTP APIs, or Stdio tools to give your agents external capabilities."
+            action={{ label: "Register Tool", onClick: () => setRegisterOpen(true) }}
+          />
+        ) : (
+          <EmptyState
+            title="No matching tools"
+            description="No tools match your search or status filter."
+          />
+        )
       ) : (
         <>
           <div className="rounded-md border">

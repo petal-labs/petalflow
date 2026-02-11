@@ -47,12 +47,14 @@ export function IssuesPanel({ mode = "agent_workflow", onNavigate }: IssuesPanel
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
-    const delay = mode === "graph" ? 500 : 800
+    // Use longer debounce for large workflows (50+ nodes) per spec §9.5
+    const isLargeGraph = mode === "graph" && graphNodes.length >= 50
+    const delay = isLargeGraph ? 1500 : mode === "graph" ? 500 : 800
     debounceRef.current = globalThis.setTimeout(doValidate, delay)
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
     }
-  }, [doValidate, mode])
+  }, [doValidate, mode, graphNodes.length])
 
   const errors = issues.filter((i) => i.severity === "error")
   const warnings = issues.filter((i) => i.severity === "warning")

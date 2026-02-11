@@ -22,6 +22,7 @@ interface WorkflowCardProps {
   onRun: (id: string) => void
   onDuplicate: (id: string) => void
   onDelete: (id: string) => void
+  onExport?: (id: string) => void
 }
 
 export function WorkflowCard({
@@ -29,6 +30,7 @@ export function WorkflowCard({
   onRun,
   onDuplicate,
   onDelete,
+  onExport,
 }: WorkflowCardProps) {
   const navigate = useNavigate()
 
@@ -63,6 +65,11 @@ export function WorkflowCard({
               <DropdownMenuItem onClick={() => navigate(`/runs?workflow_id=${workflow.id}`)}>
                 View Run History
               </DropdownMenuItem>
+              {onExport && (
+                <DropdownMenuItem onClick={() => onExport(workflow.id)}>
+                  Export JSON
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => onDelete(workflow.id)}

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { useNavigate } from "react-router-dom"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -10,9 +11,14 @@ import {
 import { WorkflowCard } from "@/components/library/workflow-card"
 import { NewWorkflowDropdown } from "@/components/library/new-workflow-dropdown"
 import { DeleteWorkflowDialog } from "@/components/library/delete-workflow-dialog"
+import { EmptyState } from "@/components/empty-state"
+import { WorkflowCardsSkeleton } from "@/components/loading-skeletons"
+import { Button } from "@/components/ui/button"
 import { useWorkflowStore } from "@/stores/workflows"
+import { RunModal } from "@/components/runner/run-modal"
+import { exportWorkflow, importWorkflow } from "@/lib/workflow-io"
 import { toast } from "sonner"
-import type { WorkflowKind, WorkflowSummary } from "@/api/types"
+import type { Workflow, WorkflowKind, WorkflowSummary } from "@/api/types"
 
 type TypeFilter = "all" | WorkflowKind
 type SortBy = "recent" | "name" | "created"
@@ -21,7 +27,10 @@ export default function WorkflowsPage() {
   const workflows = useWorkflowStore((s) => s.workflows)
   const loading = useWorkflowStore((s) => s.loading)
   const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows)
+  const getWorkflow = useWorkflowStore((s) => s.getWorkflow)
+  const createWorkflow = useWorkflowStore((s) => s.createWorkflow)
   const duplicateWorkflow = useWorkflowStore((s) => s.duplicateWorkflow)
+  const navigate = useNavigate()
 
   const [search, setSearch] = useState("")
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all")
@@ -29,6 +38,8 @@ export default function WorkflowsPage() {
 
   // Delete dialog state
   const [deleteTarget, setDeleteTarget] = useState<WorkflowSummary | null>(null)
+  // Run modal state
+  const [runTarget, setRunTarget] = useState<Workflow | null>(null)
 
   useEffect(() => {
     fetchWorkflows()
@@ -69,10 +80,14 @@ export default function WorkflowsPage() {
     return result
   }, [workflows, search, typeFilter, sortBy])
 
-  const handleRun = (id: string) => {
-    // TODO: Open run modal (P3+)
-    toast.info(`Run modal for ${id} — coming soon.`)
-  }
+  const handleRun = useCallback(async (id: string) => {
+    try {
+      const wf = await getWorkflow(id)
+      setRunTarget(wf)
+    } catch {
+      toast.error("Failed to load workflow for run.")
+    }
+  }, [getWorkflow])
 
   const handleDuplicate = async (id: string) => {
     try {
@@ -88,12 +103,44 @@ export default function WorkflowsPage() {
     if (wf) setDeleteTarget(wf)
   }
 
+  const handleExport = useCallback(async (id: string) => {
+    try {
+      const wf = await getWorkflow(id)
+      exportWorkflow(wf)
+    } catch {
+      toast.error("Failed to export workflow.")
+    }
+  }, [getWorkflow])
+
+  const handleImport = useCallback(async () => {
+    try {
+      const data = await importWorkflow()
+      if (!data) return
+      const created = await createWorkflow({
+        name: data.name,
+        kind: data.kind,
+        description: data.description,
+        tags: data.tags,
+        definition: data.definition,
+      })
+      toast.success(`Imported "${created.name}".`)
+      navigate(`/workflows/${created.id}/edit`)
+    } catch {
+      toast.error("Failed to import workflow. Check the file format.")
+    }
+  }, [createWorkflow, navigate])
+
   return (
     <div className="container mx-auto py-6 space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Workflows</h1>
-        <NewWorkflowDropdown />
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleImport}>
+            Import
+          </Button>
+          <NewWorkflowDropdown />
+        </div>
       </div>
 
       {/* Search & filter bar */}
@@ -134,15 +181,20 @@ export default function WorkflowsPage() {
 
       {/* Grid */}
       {loading ? (
-        <p className="text-sm text-muted-foreground">Loading...</p>
+        <WorkflowCardsSkeleton />
       ) : filtered.length === 0 ? (
-        <div className="py-12 text-center">
-          <p className="text-muted-foreground">
-            {workflows.length === 0
-              ? "No workflows yet. Create one to get started."
-              : "No workflows match your search."}
-          </p>
-        </div>
+        workflows.length === 0 ? (
+          <EmptyState
+            title="No workflows yet"
+            description="Create your first workflow to start building AI pipelines."
+            action={{ label: "New workflow", onClick: () => {} }}
+          />
+        ) : (
+          <EmptyState
+            title="No matches"
+            description="No workflows match your current filters. Try adjusting your search or type filter."
+          />
+        )
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {filtered.map((w) => (
@@ -152,6 +204,7 @@ export default function WorkflowsPage() {
               onRun={handleRun}
               onDuplicate={handleDuplicate}
               onDelete={handleDelete}
+              onExport={handleExport}
             />
           ))}
         </div>
@@ -166,6 +219,19 @@ export default function WorkflowsPage() {
           if (!open) setDeleteTarget(null)
         }}
       />
+
+      {/* Run modal */}
+      {runTarget && (
+        <RunModal
+          open={runTarget !== null}
+          onOpenChange={(open) => { if (!open) setRunTarget(null) }}
+          workflow={runTarget}
+          onStarted={(runId) => {
+            setRunTarget(null)
+            navigate(`/runs/${runId}`)
+          }}
+        />
+      )}
     </div>
   )
 }

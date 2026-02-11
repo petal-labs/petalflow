@@ -1,0 +1,51 @@
+{
+  "agent": {
+    "_help": "Agents are the personas that execute tasks. Each agent has a role, goal, and backstory that shape how the LLM responds.",
+    "role": "A short label describing the agent's function, e.g. \"Research Analyst\" or \"Content Writer\".",
+    "goal": "What this agent is trying to accomplish. The LLM uses the goal to guide its output.",
+    "backstory": "Context about the agent's expertise and personality. Provides framing for the LLM's system prompt.",
+    "provider": "The LLM provider to use for this agent (e.g. Anthropic, OpenAI).",
+    "model": "The model to use within the chosen provider (e.g. claude-sonnet-4-5-20250929, gpt-4o).",
+    "tools": "External tools this agent can call during execution. Tools must be registered in Settings > Tools.",
+    "temperature": "Controls randomness. Lower values (0–0.3) are more deterministic; higher values (0.7–1.0) are more creative.",
+    "max_tokens": "Maximum number of tokens in the LLM response. Leave empty for the model's default.",
+    "system_prompt": "Override the auto-generated system prompt. Use this for precise control over agent behavior."
+  },
+  "task": {
+    "_help": "Tasks define units of work assigned to agents. Each task produces an output that downstream tasks can reference.",
+    "description": "What the agent should do. Supports template variables: {{input.xxx}} for workflow inputs, {{tasks.taskId.output}} for upstream outputs.",
+    "agent": "Which agent executes this task.",
+    "expected_output": "Describes what the output should look like. Helps the LLM produce structured, useful results.",
+    "output_key": "The variable name for this task's output. Other tasks reference it via {{tasks.<output_key>.output}}.",
+    "human_review": "When enabled, execution pauses after this task for human approval before continuing.",
+    "review_instructions": "Instructions shown to the reviewer when this task's output is ready for review."
+  },
+  "execution_strategy": {
+    "_help": "Controls how tasks are executed relative to each other.",
+    "sequential": "Tasks run one at a time in the order they appear.",
+    "parallel": "All tasks run simultaneously. Use when tasks are independent.",
+    "hierarchical": "A manager agent coordinates task assignment and ordering automatically.",
+    "custom": "Define explicit dependencies between tasks for fine-grained control over execution order."
+  },
+  "node_inspector": {
+    "_help": "Configure the selected node's behavior, inputs, and outputs.",
+    "provider": "The LLM provider for this node.",
+    "model": "The model for this node.",
+    "system_prompt": "The system message sent to the LLM.",
+    "prompt_template": "The user prompt template. Use {{portName}} to reference input port values.",
+    "temperature": "Controls response randomness (0 = deterministic, 1 = creative).",
+    "max_tokens": "Maximum response length in tokens.",
+    "tools": "Tools available to this LLM node for function calling.",
+    "action": "Which action to invoke on the connected tool.",
+    "input_mapping": "Map node input ports to tool action parameters.",
+    "config_overrides": "Override tool-level configuration for this specific node."
+  },
+  "template_syntax": {
+    "description": "Template variables let tasks reference workflow inputs and outputs from other tasks.",
+    "examples": [
+      { "pattern": "{{input.topic}}", "description": "Reference a workflow input named 'topic'" },
+      { "pattern": "{{tasks.research.output}}", "description": "Reference the output of a task with output_key 'research'" },
+      { "pattern": "{{input.topic | default: 'AI'}}", "description": "Provide a fallback value" }
+    ]
+  }
+}

@@ -1,5 +1,5 @@
-import { useEffect } from "react"
-import { Routes, Route, Navigate } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { Routes, Route, Navigate, useNavigate } from "react-router-dom"
 import {
   OnboardingShell,
   type OnboardingStep,
@@ -10,7 +10,9 @@ import {
   useHasProvider,
 } from "@/components/onboarding/providers-step"
 import { ToolsStep } from "@/components/onboarding/tools-step"
+import { Checkbox } from "@/components/ui/checkbox"
 import { useProviderStore } from "@/stores/providers"
+import { useToolStore } from "@/stores/tools"
 import { useSettingsStore } from "@/stores/settings"
 
 function FirstWorkflowStep() {
@@ -20,12 +22,81 @@ function FirstWorkflowStep() {
 }
 
 function DoneStep() {
+  const providers = useProviderStore((s) => s.providers)
+  const tools = useToolStore((s) => s.tools)
+  const updatePreferences = useSettingsStore((s) => s.updatePreferences)
+  const navigate = useNavigate()
+  const [showTips, setShowTips] = useState(true)
+
+  const readyTools = tools.filter((t) => t.status === "ready")
+
   return (
-    <div className="text-center space-y-2">
-      <p className="text-lg font-medium">You're all set!</p>
-      <p className="text-muted-foreground text-sm">
-        Your workspace is ready. Click "Go to Workflows" to start building.
-      </p>
+    <div className="space-y-6 max-w-md mx-auto">
+      <div className="text-center space-y-2">
+        <p className="text-lg font-medium">You're all set!</p>
+        <p className="text-muted-foreground text-sm">
+          Your workspace is configured and ready.
+        </p>
+      </div>
+
+      {/* Config summary */}
+      <div className="rounded border divide-y text-sm">
+        <div className="flex items-center justify-between px-4 py-2.5">
+          <span className="text-muted-foreground">LLM Providers</span>
+          <span className="font-medium">
+            {providers.length} configured
+          </span>
+        </div>
+        <div className="flex items-center justify-between px-4 py-2.5">
+          <span className="text-muted-foreground">Tools</span>
+          <span className="font-medium">
+            {readyTools.length} ready
+          </span>
+        </div>
+      </div>
+
+      {/* Quick-action cards */}
+      <div className="grid gap-2">
+        <button
+          type="button"
+          className="flex items-center gap-3 rounded border p-3 text-left text-sm hover:bg-muted/50 transition-colors"
+          onClick={() => navigate("/workflows")}
+        >
+          <span className="text-xl">+</span>
+          <div>
+            <div className="font-medium">Build a new workflow</div>
+            <div className="text-xs text-muted-foreground">
+              Create an Agent/Task or Graph workflow
+            </div>
+          </div>
+        </button>
+        <button
+          type="button"
+          className="flex items-center gap-3 rounded border p-3 text-left text-sm hover:bg-muted/50 transition-colors"
+          onClick={() => navigate("/settings/tools")}
+        >
+          <span className="text-xl">*</span>
+          <div>
+            <div className="font-medium">Explore tool registry</div>
+            <div className="text-xs text-muted-foreground">
+              Register MCP servers and HTTP tools
+            </div>
+          </div>
+        </button>
+      </div>
+
+      {/* Show tips checkbox */}
+      <label className="flex items-center gap-2 cursor-pointer text-sm">
+        <Checkbox
+          checked={showTips}
+          onCheckedChange={(checked) => {
+            const val = checked === true
+            setShowTips(val)
+            updatePreferences({ show_tips: val } as Record<string, unknown>)
+          }}
+        />
+        <span>Show tips in the designer</span>
+      </label>
     </div>
   )
 }

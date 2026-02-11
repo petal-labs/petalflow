@@ -18,6 +18,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { EmptyState } from "@/components/empty-state"
+import { RunsTableSkeleton } from "@/components/loading-skeletons"
 import { useRunStore } from "@/stores/runs"
 import { useWorkflowStore } from "@/stores/workflows"
 import type { RunStatus } from "@/api/types"
@@ -166,6 +168,22 @@ export default function RunsPage() {
       </div>
 
       {/* Table */}
+      {loading ? (
+        <RunsTableSkeleton />
+      ) : filtered.length === 0 ? (
+        runs.length === 0 ? (
+          <EmptyState
+            title="No runs yet"
+            description="Run a workflow to see execution history here."
+            action={{ label: "Go to Workflows", onClick: () => navigate("/workflows") }}
+          />
+        ) : (
+          <EmptyState
+            title="No matching runs"
+            description="No runs match your current filters. Try adjusting your search or status filter."
+          />
+        )
+      ) : (
       <div className="rounded border">
         <Table>
           <TableHeader>
@@ -178,13 +196,6 @@ export default function RunsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={5} className="text-center text-xs text-muted-foreground py-8">
-                  {loading ? "Loading..." : "No runs found."}
-                </TableCell>
-              </TableRow>
-            )}
             {filtered.map((run) => (
               <TableRow
                 key={run.run_id}
@@ -211,6 +222,7 @@ export default function RunsPage() {
           </TableBody>
         </Table>
       </div>
+      )}
     </div>
   )
 }

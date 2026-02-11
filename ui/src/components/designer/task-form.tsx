@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Separator } from "@/components/ui/separator"
 import { TemplateHelper } from "@/components/designer/template-helper"
+import { FieldHelp, LearnMore } from "@/components/designer/field-help"
 import { useEditorStore, type TaskDef } from "@/stores/editor"
 
 interface TaskFormProps {
@@ -53,6 +54,7 @@ export function TaskForm({ task }: TaskFormProps) {
         <div className="flex items-center gap-2">
           <Label className="text-xs">
             Description <span className="text-destructive">*</span>
+            <FieldHelp section="task" field="description" />
           </Label>
           <TemplateHelper />
         </div>
@@ -67,6 +69,7 @@ export function TaskForm({ task }: TaskFormProps) {
       <div className="space-y-1.5">
         <Label className="text-xs">
           Agent <span className="text-destructive">*</span>
+          <FieldHelp section="task" field="agent" />
         </Label>
         <Select
           value={task.agent}
@@ -89,6 +92,7 @@ export function TaskForm({ task }: TaskFormProps) {
         <div className="flex items-center gap-2">
           <Label className="text-xs">
             Expected Output <span className="text-destructive">*</span>
+            <FieldHelp section="task" field="expected_output" />
           </Label>
           <TemplateHelper />
         </div>
@@ -101,7 +105,10 @@ export function TaskForm({ task }: TaskFormProps) {
       </div>
 
       <div className="space-y-1.5">
-        <Label className="text-xs">Output Key</Label>
+        <Label className="text-xs">
+          Output Key
+          <FieldHelp section="task" field="output_key" />
+        </Label>
         <Input
           value={task.output_key}
           onChange={(e) => update({ output_key: e.target.value })}
@@ -130,12 +137,18 @@ export function TaskForm({ task }: TaskFormProps) {
               update({ human_review: checked === true })
             }
           />
-          <span className="text-xs">Require human review after this task</span>
+          <span className="text-xs">
+            Require human review after this task
+            <FieldHelp section="task" field="human_review" />
+          </span>
         </label>
 
         {task.human_review && (
           <div className="space-y-1.5">
-            <Label className="text-xs">Review Instructions</Label>
+            <Label className="text-xs">
+              Review Instructions
+              <FieldHelp section="task" field="review_instructions" />
+            </Label>
             <Textarea
               value={task.review_instructions}
               onChange={(e) =>
@@ -147,6 +160,8 @@ export function TaskForm({ task }: TaskFormProps) {
           </div>
         )}
       </div>
+
+      <LearnMore section="task" />
     </div>
   )
 }

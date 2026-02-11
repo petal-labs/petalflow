@@ -55,6 +55,8 @@ export default function WorkflowEditorPage() {
   const [registerToolOpen, setRegisterToolOpen] = useState(false)
   const [ejectOpen, setEjectOpen] = useState(false)
   const [runModalOpen, setRunModalOpen] = useState(false)
+  const [paletteCollapsed, setPaletteCollapsed] = useState(false)
+  const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
 
   useAutoSave()
 
@@ -169,26 +171,46 @@ export default function WorkflowEditorPage() {
                   </div>
                 ) : (
                   <div className="flex h-full">
-                    {/* Node Palette */}
-                    <div className="w-52 shrink-0 border-r overflow-y-auto">
-                      <NodePalette />
-                    </div>
+                    {/* Node Palette (collapsible) */}
+                    {!paletteCollapsed && (
+                      <div className="w-52 shrink-0 border-r overflow-y-auto">
+                        <NodePalette />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      className="shrink-0 w-5 flex items-center justify-center border-r text-muted-foreground hover:bg-muted/50 transition-colors text-[10px]"
+                      onClick={() => setPaletteCollapsed(!paletteCollapsed)}
+                      title={paletteCollapsed ? "Show palette" : "Hide palette"}
+                    >
+                      {paletteCollapsed ? "\u203A" : "\u2039"}
+                    </button>
                     {/* Canvas */}
                     <div className="flex-1">
                       <GraphCanvas />
                     </div>
-                    {/* Inspector */}
-                    <div className="w-80 shrink-0 border-l overflow-y-auto">
-                      {selectedNodeId ? (
-                        <NodeInspector nodeId={selectedNodeId} />
-                      ) : selectedEdgeId ? (
-                        <EdgeInspector edgeId={selectedEdgeId} />
-                      ) : (
-                        <div className="flex h-full items-center justify-center p-4 text-xs text-muted-foreground">
-                          Select a node or edge to inspect
-                        </div>
-                      )}
-                    </div>
+                    {/* Inspector (collapsible) */}
+                    <button
+                      type="button"
+                      className="shrink-0 w-5 flex items-center justify-center border-l text-muted-foreground hover:bg-muted/50 transition-colors text-[10px]"
+                      onClick={() => setInspectorCollapsed(!inspectorCollapsed)}
+                      title={inspectorCollapsed ? "Show inspector" : "Hide inspector"}
+                    >
+                      {inspectorCollapsed ? "\u2039" : "\u203A"}
+                    </button>
+                    {!inspectorCollapsed && (
+                      <div className="w-80 shrink-0 border-l overflow-y-auto">
+                        {selectedNodeId ? (
+                          <NodeInspector nodeId={selectedNodeId} />
+                        ) : selectedEdgeId ? (
+                          <EdgeInspector edgeId={selectedEdgeId} />
+                        ) : (
+                          <div className="flex h-full items-center justify-center p-4 text-xs text-muted-foreground">
+                            Select a node or edge to inspect
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </TabsContent>
