@@ -9,6 +9,7 @@ import { useAuthStore } from "@/stores/auth"
 import WorkflowsPage from "@/pages/workflows"
 import WorkflowEditorPage from "@/pages/workflow-editor"
 import RunsPage from "@/pages/runs"
+import RunDetailPage from "@/pages/run-detail"
 import SettingsPage from "@/pages/settings"
 import OnboardingPage from "@/pages/onboarding"
 import LoginPage from "@/pages/login"
@@ -58,6 +59,7 @@ export default function App() {
               element={<WorkflowEditorPage />}
             />
             <Route path="/runs" element={<RunsPage />} />
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
             <Route path="/settings" element={<SettingsPage />}>
               <Route
                 index

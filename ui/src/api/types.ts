@@ -263,6 +263,60 @@ export type RunEvent =
   | { type: "trace_event"; node_id: string; event: Record<string, unknown> }
 
 // ---------------------------------------------------------------------------
+// Traces
+// ---------------------------------------------------------------------------
+
+export interface Trace {
+  run_id: string
+  workflow_id: string
+  started_at: string
+  completed_at: string
+  duration_ms: number
+  status: "completed" | "failed" | "cancelled"
+  spans: TraceSpan[]
+}
+
+export interface TraceSpan {
+  span_id: string
+  node_id: string
+  node_type: string
+  parent_span_id: string | null
+  started_at: string
+  completed_at: string
+  duration_ms: number
+  status: "ok" | "error"
+  inputs: Record<string, unknown>
+  outputs: Record<string, unknown>
+  events: TraceEvent[]
+  metadata: {
+    provider?: string
+    model?: string
+    tokens_in?: number
+    tokens_out?: number
+    cost_usd?: number
+    tool_name?: string
+    action_name?: string
+    retries?: number
+  }
+}
+
+export type TraceEventType =
+  | "llm_request"
+  | "llm_response"
+  | "tool_call"
+  | "tool_result"
+  | "error"
+  | "retry"
+  | "review_requested"
+  | "review_completed"
+
+export interface TraceEvent {
+  timestamp: string
+  type: TraceEventType
+  data: Record<string, unknown>
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 

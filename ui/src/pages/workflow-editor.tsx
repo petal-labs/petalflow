@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { useParams } from "react-router-dom"
+import { useNavigate, useParams } from "react-router-dom"
 import { ReactFlowProvider } from "@xyflow/react"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DesignerToolbar } from "@/components/designer/designer-toolbar"
@@ -15,6 +15,7 @@ import { IssuesPanel } from "@/components/designer/issues-panel"
 import { SourceTab } from "@/components/designer/source-tab"
 import { WorkflowSettingsPanel } from "@/components/designer/workflow-settings-panel"
 import { RegisterToolSheet } from "@/components/tools/register-tool-sheet"
+import { RunModal } from "@/components/runner/run-modal"
 import { useWorkflowStore } from "@/stores/workflows"
 import { useEditorStore } from "@/stores/editor"
 import { useGraphStore } from "@/stores/graph"
@@ -23,6 +24,7 @@ import { toast } from "sonner"
 
 export default function WorkflowEditorPage() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
   const getWorkflow = useWorkflowStore((s) => s.getWorkflow)
   const openWorkflow = useWorkflowStore((s) => s.openWorkflow)
   const current = useWorkflowStore((s) => s.current)
@@ -52,6 +54,7 @@ export default function WorkflowEditorPage() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [registerToolOpen, setRegisterToolOpen] = useState(false)
   const [ejectOpen, setEjectOpen] = useState(false)
+  const [runModalOpen, setRunModalOpen] = useState(false)
 
   useAutoSave()
 
@@ -130,7 +133,7 @@ export default function WorkflowEditorPage() {
           kind={current.kind}
           saving={saving}
           dirty={dirty}
-          onRun={() => toast.info("Run modal — coming soon.")}
+          onRun={() => setRunModalOpen(true)}
           onSettings={() => setSettingsOpen(true)}
           onEject={isAgentMode ? () => setEjectOpen(true) : undefined}
         />
@@ -223,6 +226,14 @@ export default function WorkflowEditorPage() {
           open={ejectOpen}
           onOpenChange={setEjectOpen}
           onConfirm={handleEject}
+        />
+
+        {/* Run modal */}
+        <RunModal
+          open={runModalOpen}
+          onOpenChange={setRunModalOpen}
+          workflow={current}
+          onStarted={(runId) => navigate(`/runs/${runId}`)}
         />
       </div>
     </ReactFlowProvider>
