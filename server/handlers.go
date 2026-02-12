@@ -318,9 +318,25 @@ func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-// handleListRuns returns run history (stub — returns empty list).
-func (s *Server) handleListRuns(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, []any{})
+// handleListRuns returns run history in reverse chronological order.
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	workflowID := strings.TrimSpace(r.URL.Query().Get("workflow_id"))
+	writeJSON(w, http.StatusOK, s.listRuns(workflowID))
+}
+
+// handleGetRun returns a single run by ID.
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	runID := strings.TrimSpace(r.PathValue("run_id"))
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "run_id is required")
+		return
+	}
+	run, ok := s.getRun(runID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
 }
 
 // handleListWorkflows returns all workflows.
@@ -648,7 +664,12 @@ func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 
 // RunRequest is the JSON body for POST /api/workflows/{id}/run.
 type RunRequest struct {
-	Input   map[string]any `json:"input,omitempty"`
+	// Legacy singular key; kept for backward compatibility.
+	Input map[string]any `json:"input,omitempty"`
+	// UI/API v1 key.
+	Inputs  map[string]any `json:"inputs,omitempty"`
+	Trace   *bool          `json:"trace,omitempty"`
+	DryRun  bool           `json:"dry_run,omitempty"`
 	Options RunReqOptions  `json:"options,omitempty"`
 }
 
@@ -660,13 +681,32 @@ type RunReqOptions struct {
 
 // RunResponse is the JSON response for a completed run.
 type RunResponse struct {
-	ID          string       `json:"id"`
-	RunID       string       `json:"run_id"`
-	Status      string       `json:"status"`
-	StartedAt   time.Time    `json:"started_at"`
-	CompletedAt time.Time    `json:"completed_at"`
-	DurationMs  int64        `json:"duration_ms"`
-	Output      EnvelopeJSON `json:"output"`
+	// Legacy field name for workflow ID.
+	ID string `json:"id,omitempty"`
+	// Preferred field name for workflow ID.
+	WorkflowID string `json:"workflow_id"`
+	RunID      string `json:"run_id"`
+	Status     string `json:"status"`
+
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+	DurationMs  int64     `json:"duration_ms,omitempty"`
+
+	Inputs map[string]any `json:"inputs,omitempty"`
+	// Legacy field (full envelope) retained for compatibility.
+	Output EnvelopeJSON `json:"output,omitempty"`
+	// Preferred output shape for UI run detail/completion.
+	Outputs map[string]any `json:"outputs,omitempty"`
+
+	Error *runErrorResponse `json:"error,omitempty"`
+
+	TokensIn  int `json:"tokens_in,omitempty"`
+	TokensOut int `json:"tokens_out,omitempty"`
+}
+
+type runErrorResponse struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 // handleRunWorkflow executes a workflow.
@@ -718,8 +758,21 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	inputs := req.Input
+	if req.Inputs != nil {
+		inputs = req.Inputs
+	}
 	// Build envelope
-	env := EnvelopeFromJSON(req.Input)
+	env := EnvelopeFromJSON(inputs)
+
+	if req.DryRun {
+		if req.Options.Stream {
+			writeError(w, http.StatusBadRequest, "INVALID_OPTIONS", "dry_run cannot be combined with streaming")
+			return
+		}
+		s.handleRunDryRun(w, id, inputs)
+		return
+	}
 
 	// Handle streaming vs non-streaming
 	if req.Options.Stream {
@@ -727,7 +780,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.handleRunSync(w, r, id, execGraph, env, timeout)
+	s.handleRunSync(w, r, id, execGraph, env, inputs, timeout)
 }
 
 // handleRunSync executes a workflow synchronously and returns the result.
@@ -737,6 +790,7 @@ func (s *Server) handleRunSync(
 	id string,
 	execGraph *graph.BasicGraph,
 	env *core.Envelope,
+	inputs map[string]any,
 	timeout time.Duration,
 ) {
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
@@ -766,6 +820,31 @@ func (s *Server) handleRunSync(
 			status = http.StatusGatewayTimeout
 			code = "TIMEOUT"
 		}
+		runID := env.Trace.RunID
+		if result != nil && strings.TrimSpace(result.Trace.RunID) != "" {
+			runID = result.Trace.RunID
+		}
+		s.putRun(RunResponse{
+			ID:          id,
+			WorkflowID:  id,
+			RunID:       runID,
+			Status:      "failed",
+			StartedAt:   startedAt,
+			CompletedAt: completedAt,
+			DurationMs:  completedAt.Sub(startedAt).Milliseconds(),
+			Inputs:      cloneAnyMap(inputs),
+			Output:      EnvelopeToJSON(result),
+			Outputs: func() map[string]any {
+				if result == nil {
+					return nil
+				}
+				return cloneAnyMap(result.Vars)
+			}(),
+			Error: &runErrorResponse{
+				Code:    code,
+				Message: err.Error(),
+			},
+		})
 		writeError(w, status, code, err.Error())
 		return
 	}
@@ -774,16 +853,46 @@ func (s *Server) handleRunSync(
 	if result != nil {
 		runID = result.Trace.RunID
 	}
+	outputs := map[string]any(nil)
+	if result != nil {
+		outputs = cloneAnyMap(result.Vars)
+	}
 
 	resp := RunResponse{
 		ID:          id,
+		WorkflowID:  id,
 		RunID:       runID,
 		Status:      "completed",
 		StartedAt:   startedAt,
 		CompletedAt: completedAt,
 		DurationMs:  completedAt.Sub(startedAt).Milliseconds(),
+		Inputs:      cloneAnyMap(inputs),
 		Output:      EnvelopeToJSON(result),
+		Outputs:     outputs,
 	}
+	s.putRun(resp)
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleRunDryRun validates hydration and persists a successful no-op run.
+func (s *Server) handleRunDryRun(w http.ResponseWriter, workflowID string, inputs map[string]any) {
+	startedAt := time.Now()
+	completedAt := startedAt
+
+	resp := RunResponse{
+		ID:          workflowID,
+		WorkflowID:  workflowID,
+		RunID:       uuid.New().String(),
+		Status:      "completed",
+		StartedAt:   startedAt,
+		CompletedAt: completedAt,
+		DurationMs:  0,
+		Inputs:      cloneAnyMap(inputs),
+		Output:      EnvelopeToJSON(EnvelopeFromJSON(inputs)),
+		Outputs:     cloneAnyMap(inputs),
+	}
+	s.putRun(resp)
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -941,7 +1050,146 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 }
 
+type runTraceResponse struct {
+	RunID       string `json:"run_id"`
+	WorkflowID  string `json:"workflow_id"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at"`
+	DurationMs  int64  `json:"duration_ms"`
+	Status      string `json:"status"`
+	Spans       []any  `json:"spans"`
+}
+
+// handleRunTrace returns a minimal run trace envelope for the trace viewer.
+func (s *Server) handleRunTrace(w http.ResponseWriter, r *http.Request) {
+	runID := strings.TrimSpace(r.PathValue("run_id"))
+	if runID == "" {
+		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "run_id is required")
+		return
+	}
+	run, ok := s.getRun(runID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
+		return
+	}
+
+	startedAt := run.StartedAt.UTC().Format(time.RFC3339)
+	completedAt := run.CompletedAt.UTC().Format(time.RFC3339)
+	if run.CompletedAt.IsZero() {
+		completedAt = startedAt
+	}
+
+	status := run.Status
+	switch status {
+	case "completed", "failed", "cancelled":
+	default:
+		status = "completed"
+	}
+
+	writeJSON(w, http.StatusOK, runTraceResponse{
+		RunID:       run.RunID,
+		WorkflowID:  run.WorkflowID,
+		StartedAt:   startedAt,
+		CompletedAt: completedAt,
+		DurationMs:  run.DurationMs,
+		Status:      status,
+		Spans:       []any{},
+	})
+}
+
 // --- helpers ---
+
+type runSummaryResponse struct {
+	RunID       string    `json:"run_id"`
+	WorkflowID  string    `json:"workflow_id"`
+	Status      string    `json:"status"`
+	StartedAt   time.Time `json:"started_at"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
+	DurationMs  int64     `json:"duration_ms,omitempty"`
+}
+
+func (s *Server) putRun(run RunResponse) {
+	if strings.TrimSpace(run.RunID) == "" {
+		return
+	}
+	s.runsMu.Lock()
+	defer s.runsMu.Unlock()
+
+	if _, exists := s.runs[run.RunID]; !exists {
+		s.runOrder = append(s.runOrder, run.RunID)
+	}
+	s.runs[run.RunID] = cloneRunResponse(run)
+}
+
+func (s *Server) getRun(runID string) (RunResponse, bool) {
+	s.runsMu.RLock()
+	defer s.runsMu.RUnlock()
+
+	run, ok := s.runs[runID]
+	if !ok {
+		return RunResponse{}, false
+	}
+	return cloneRunResponse(run), true
+}
+
+func (s *Server) listRuns(workflowID string) []runSummaryResponse {
+	s.runsMu.RLock()
+	defer s.runsMu.RUnlock()
+
+	runs := make([]runSummaryResponse, 0, len(s.runOrder))
+	for i := len(s.runOrder) - 1; i >= 0; i-- {
+		runID := s.runOrder[i]
+		run, ok := s.runs[runID]
+		if !ok {
+			continue
+		}
+		if workflowID != "" && run.WorkflowID != workflowID {
+			continue
+		}
+		runs = append(runs, runSummaryResponse{
+			RunID:       run.RunID,
+			WorkflowID:  run.WorkflowID,
+			Status:      run.Status,
+			StartedAt:   run.StartedAt,
+			CompletedAt: run.CompletedAt,
+			DurationMs:  run.DurationMs,
+		})
+	}
+	return runs
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneRunResponse(in RunResponse) RunResponse {
+	out := in
+	var traceCopy *TraceJSON
+	if in.Output.Trace != nil {
+		t := *in.Output.Trace
+		traceCopy = &t
+	}
+	out.Inputs = cloneAnyMap(in.Inputs)
+	out.Output = EnvelopeJSON{
+		Vars:      cloneAnyMap(in.Output.Vars),
+		Messages:  append([]MessageJSON(nil), in.Output.Messages...),
+		Artifacts: append([]ArtifactJSON(nil), in.Output.Artifacts...),
+		Trace:     traceCopy,
+	}
+	out.Outputs = cloneAnyMap(in.Outputs)
+	if in.Error != nil {
+		errCopy := *in.Error
+		out.Error = &errCopy
+	}
+	return out
+}
 
 // diagMessages extracts error messages from diagnostics.
 func diagMessages(diags []graph.Diagnostic) []string {

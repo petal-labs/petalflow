@@ -439,7 +439,7 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 
 	// Run workflow
 	runBody, _ := json.Marshal(RunRequest{
-		Input: map[string]any{"greeting": "hello"},
+		Inputs: map[string]any{"greeting": "hello"},
 	})
 	r = httptest.NewRequest(http.MethodPost, "/api/workflows/run-test/run", bytes.NewReader(runBody))
 	w = httptest.NewRecorder()
@@ -459,9 +459,108 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 	if resp.RunID == "" {
 		t.Fatal("run_id should not be empty")
 	}
+	if resp.WorkflowID != "run-test" {
+		t.Fatalf("workflow_id = %q, want %q", resp.WorkflowID, "run-test")
+	}
+	if resp.Outputs["greeting"] != "hello" {
+		t.Fatalf("outputs[greeting] = %v, want %q", resp.Outputs["greeting"], "hello")
+	}
 	// Input vars should be present in output
 	if resp.Output.Vars["greeting"] != "hello" {
 		t.Fatalf("output.vars[greeting] = %v, want %q", resp.Output.Vars["greeting"], "hello")
+	}
+
+	// Run list should include this run and support workflow filter.
+	r = httptest.NewRequest(http.MethodGet, "/api/runs?workflow_id=run-test", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list runs: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var summaries []runSummaryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &summaries); err != nil {
+		t.Fatalf("unmarshal run summaries: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("run summaries count = %d, want 1", len(summaries))
+	}
+	if summaries[0].RunID != resp.RunID {
+		t.Fatalf("summary run_id = %q, want %q", summaries[0].RunID, resp.RunID)
+	}
+
+	// Fetch by run ID should return full run payload.
+	r = httptest.NewRequest(http.MethodGet, "/api/runs/"+resp.RunID, nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get run: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var got RunResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal run: %v", err)
+	}
+	if got.RunID != resp.RunID {
+		t.Fatalf("get run run_id = %q, want %q", got.RunID, resp.RunID)
+	}
+	if got.Inputs["greeting"] != "hello" {
+		t.Fatalf("get run inputs[greeting] = %v, want %q", got.Inputs["greeting"], "hello")
+	}
+
+	// Trace endpoint should return a minimal trace payload.
+	r = httptest.NewRequest(http.MethodGet, "/api/runs/"+resp.RunID+"/trace", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get trace: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var trace runTraceResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &trace); err != nil {
+		t.Fatalf("unmarshal trace: %v", err)
+	}
+	if trace.RunID != resp.RunID {
+		t.Fatalf("trace run_id = %q, want %q", trace.RunID, resp.RunID)
+	}
+	if trace.WorkflowID != "run-test" {
+		t.Fatalf("trace workflow_id = %q, want %q", trace.WorkflowID, "run-test")
+	}
+}
+
+func TestRunWorkflow_DryRunSkipsExecution(t *testing.T) {
+	srv := testServer()
+	handler := srv.Handler()
+
+	body := validGraphJSON("dry-run-test")
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create workflow: got %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	runBody, _ := json.Marshal(RunRequest{
+		Inputs: map[string]any{"topic": "dry-run"},
+		DryRun: true,
+	})
+	r = httptest.NewRequest(http.MethodPost, "/api/workflows/dry-run-test/run", bytes.NewReader(runBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry run: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp RunResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal dry run response: %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Fatalf("dry run status = %q, want %q", resp.Status, "completed")
+	}
+	if resp.Outputs["topic"] != "dry-run" {
+		t.Fatalf("dry run outputs[topic] = %v, want %q", resp.Outputs["topic"], "dry-run")
+	}
+	if resp.RunID == "" {
+		t.Fatal("dry run run_id should not be empty")
 	}
 }
 
@@ -737,6 +836,106 @@ func TestUpdateSettings_DoesNotSeedSamplesWhenWorkflowsExist(t *testing.T) {
 	}
 	if workflows[0].ID != "existing-workflow" {
 		t.Fatalf("workflow ID = %q, want %q", workflows[0].ID, "existing-workflow")
+	}
+}
+
+func TestOnboardingSampleWorkflow_ExecutesAfterProviderSelection(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store:     NewMemoryStore(),
+		Providers: hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			return &providerTestLLMClient{shouldFail: cfg.APIKey == "bad-key"}, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: bus.NewMemEventStore(),
+		CORSOrigin: "*",
+		MaxBody:    1 << 20,
+	})
+	handler := srv.Handler()
+
+	settingsBody, _ := json.Marshal(AppSettings{
+		OnboardingComplete: true,
+		Preferences:        UserPreferences{},
+	})
+	r := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(settingsBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("complete onboarding: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	providerBody, _ := json.Marshal(providerCreateRequest{
+		Name:         "openai",
+		APIKey:       "good-key",
+		DefaultModel: "gpt-4o-mini",
+	})
+	r = httptest.NewRequest(http.MethodPost, "/api/providers", bytes.NewReader(providerBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create provider: got %d, want %d; body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/workflows/sample_research_brief", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get sample workflow: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var rec WorkflowRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &rec); err != nil {
+		t.Fatalf("unmarshal sample workflow: %v", err)
+	}
+	var definition map[string]any
+	if err := json.Unmarshal(rec.Source, &definition); err != nil {
+		t.Fatalf("unmarshal sample definition: %v", err)
+	}
+	agentsRaw, ok := definition["agents"].([]any)
+	if !ok || len(agentsRaw) == 0 {
+		t.Fatalf("sample agents missing or invalid: %#v", definition["agents"])
+	}
+	firstAgent, ok := agentsRaw[0].(map[string]any)
+	if !ok {
+		t.Fatalf("sample first agent invalid: %#v", agentsRaw[0])
+	}
+	firstAgent["provider"] = "openai"
+	firstAgent["model"] = "gpt-4o-mini"
+	agentsRaw[0] = firstAgent
+	definition["agents"] = agentsRaw
+
+	updateBody, _ := json.Marshal(updateWorkflowRequest{
+		Definition: definition,
+	})
+	r = httptest.NewRequest(http.MethodPut, "/api/workflows/sample_research_brief", bytes.NewReader(updateBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update sample workflow: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	runBody, _ := json.Marshal(RunRequest{
+		Inputs: map[string]any{
+			"topic":    "workflow orchestration",
+			"audience": "engineering leaders",
+		},
+	})
+	r = httptest.NewRequest(http.MethodPost, "/api/workflows/sample_research_brief/run", bytes.NewReader(runBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("run sample workflow: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var runResp RunResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &runResp); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+	if runResp.Status != "completed" {
+		t.Fatalf("run status = %q, want %q", runResp.Status, "completed")
+	}
+	if runResp.RunID == "" {
+		t.Fatal("run_id should not be empty")
 	}
 }
 

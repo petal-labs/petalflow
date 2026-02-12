@@ -70,7 +70,9 @@ export const useRunStore = create<RunState>((set, get) => ({
   },
 
   async getRun(runId) {
-    return api.get<Run>(`/api/runs/${encodeURIComponent(runId)}`)
+    const run = await api.get<Run>(`/api/runs/${encodeURIComponent(runId)}`)
+    set({ activeRun: run })
+    return run
   },
 
   async startRun(workflowId, req) {

@@ -47,6 +47,10 @@ type Server struct {
 	authMu   sync.RWMutex
 	authUser *authAccount      // nil = setup not done
 	tokens   map[string]string // token → username
+
+	runsMu   sync.RWMutex
+	runs     map[string]RunResponse
+	runOrder []string
 }
 
 // ServerStateStore persists auth/settings/provider state.
@@ -99,6 +103,7 @@ func NewServer(cfg ServerConfig) *Server {
 		stateStore:    cfg.StateStore,
 		settings:      defaultAppSettings(),
 		tokens:        make(map[string]string),
+		runs:          make(map[string]RunResponse),
 	}
 	if err := srv.loadState(); err != nil {
 		srv.logger.Warn("server: load persistent state failed", "error", err)
@@ -139,7 +144,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
 	mux.HandleFunc("GET /api/runs", s.handleListRuns)
+	mux.HandleFunc("GET /api/runs/{run_id}", s.handleGetRun)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
+	mux.HandleFunc("GET /api/runs/{run_id}/trace", s.handleRunTrace)
 	mux.HandleFunc("GET /api/providers", s.handleListProviders)
 	mux.HandleFunc("POST /api/providers", s.handleCreateProvider)
 	mux.HandleFunc("PUT /api/providers/{name}", s.handleUpdateProvider)
