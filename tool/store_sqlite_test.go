@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -196,14 +197,14 @@ func TestSQLiteStoreMigratesLegacyDefaultFileStore(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ctx := context.Background()
 
-	legacyPath, err := DefaultCLIStorePath()
+	legacyPath, err := defaultLegacyFileStorePath()
 	if err != nil {
-		t.Fatalf("DefaultCLIStorePath() error = %v", err)
+		t.Fatalf("defaultLegacyFileStorePath() error = %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o750); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	legacyStore := NewFileStore(legacyPath)
+
 	reg := ToolRegistration{
 		Name:     "legacy_http",
 		Origin:   OriginHTTP,
@@ -214,8 +215,16 @@ func TestSQLiteStoreMigratesLegacyDefaultFileStore(t *testing.T) {
 		},
 	}
 	reg.Manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://legacy.invalid"})
-	if err := legacyStore.Upsert(ctx, reg); err != nil {
-		t.Fatalf("legacy Upsert() error = %v", err)
+	doc := legacyFileStoreDocument{
+		Version: "1",
+		Tools:   []ToolRegistration{reg},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(legacyPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	store, err := NewDefaultSQLiteStore()

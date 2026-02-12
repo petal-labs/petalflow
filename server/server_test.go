@@ -42,7 +42,16 @@ func testServer() *Server {
 	})
 }
 
-func testPersistentServer(statePath string) *Server {
+func testPersistentServer(t *testing.T, stateDBPath string) *Server {
+	t.Helper()
+	stateStore, err := NewSQLiteStateStore(stateDBPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStateStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = stateStore.Close()
+	})
+
 	return NewServer(ServerConfig{
 		Store:     NewMemoryStore(),
 		Providers: hydrate.ProviderMap{},
@@ -53,7 +62,7 @@ func testPersistentServer(statePath string) *Server {
 		EventStore: bus.NewMemEventStore(),
 		CORSOrigin: "*",
 		MaxBody:    1 << 20,
-		StatePath:  statePath,
+		StateStore: stateStore,
 	})
 }
 
@@ -527,9 +536,9 @@ func TestIntegrationFlow(t *testing.T) {
 }
 
 func TestAuthAndSettingsPersistAcrossServerRestart(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "server_state.json")
+	statePath := filepath.Join(t.TempDir(), "petalflow.db")
 
-	srv := testPersistentServer(statePath)
+	srv := testPersistentServer(t, statePath)
 	handler := srv.Handler()
 
 	setupReq := authSetupRequest{Username: "admin", Password: "secret"}
@@ -559,7 +568,7 @@ func TestAuthAndSettingsPersistAcrossServerRestart(t *testing.T) {
 		t.Fatalf("update settings: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 
-	restarted := testPersistentServer(statePath)
+	restarted := testPersistentServer(t, statePath)
 	restartedHandler := restarted.Handler()
 
 	r = httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)

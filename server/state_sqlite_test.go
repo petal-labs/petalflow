@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,15 +83,15 @@ func TestSQLiteStateStoreLoadSave(t *testing.T) {
 func TestSQLiteStateStoreMigratesLegacyFileState(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	legacyPath, err := DefaultStateStorePath()
+	legacyPath, err := defaultLegacyStatePath()
 	if err != nil {
-		t.Fatalf("DefaultStateStorePath() error = %v", err)
+		t.Fatalf("defaultLegacyStatePath() error = %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o750); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	legacyStore := NewFileStateStore(legacyPath)
-	if err := legacyStore.Save(serverState{
+
+	legacyState := serverState{
 		AuthUser: &authAccount{
 			Username: "legacy-admin",
 			Password: "legacy-secret",
@@ -99,8 +100,17 @@ func TestSQLiteStateStoreMigratesLegacyFileState(t *testing.T) {
 			OnboardingComplete: true,
 			OnboardingStep:     3,
 		},
-	}); err != nil {
-		t.Fatalf("legacy Save() error = %v", err)
+	}
+	doc := legacyStateDocument{
+		Version: "1",
+		State:   legacyState,
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(legacyPath, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	store, err := NewDefaultSQLiteStateStore()

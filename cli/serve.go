@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -40,14 +39,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().IntP("port", "p", 8080, "Listen port")
 	cmd.Flags().String("host", "0.0.0.0", "Listen host")
 	cmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
-	cmd.Flags().String("store", "sqlite", "Tool store backend: memory | sqlite | file")
-	cmd.Flags().String("store-path", "", "Store path (--store sqlite: DB file path, --store file: JSON file path)")
-	cmd.Flags().String("workflow-store", "sqlite", "Workflow store backend: memory | sqlite")
-	cmd.Flags().String("workflow-store-path", "", "Workflow store path (for --workflow-store sqlite)")
-	cmd.Flags().String("event-store", "sqlite", "Run event store backend: memory | sqlite")
-	cmd.Flags().String("event-store-dsn", "", "Run event store DSN/path (for --event-store sqlite)")
 	cmd.Flags().String("db-path", "", "Shared SQLite DB path (default: ~/.petalflow/petalflow.db)")
-	cmd.Flags().String("state-path", "", "Legacy JSON server state file path (optional)")
 	cmd.Flags().String("config", "", "Path to petalflow.yaml tool config")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable)")
 	cmd.Flags().String("tls-cert", "", "TLS certificate file")
@@ -69,14 +61,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	maxBody, _ := cmd.Flags().GetInt64("max-body")
 	tlsCert, _ := cmd.Flags().GetString("tls-cert")
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
-	storeKind, _ := cmd.Flags().GetString("store")
-	storePath, _ := cmd.Flags().GetString("store-path")
-	workflowStoreKind, _ := cmd.Flags().GetString("workflow-store")
-	workflowStorePath, _ := cmd.Flags().GetString("workflow-store-path")
-	eventStoreKind, _ := cmd.Flags().GetString("event-store")
-	eventStoreDSN, _ := cmd.Flags().GetString("event-store-dsn")
 	dbPath, _ := cmd.Flags().GetString("db-path")
-	statePath, _ := cmd.Flags().GetString("state-path")
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
 	devUI, _ := cmd.Flags().GetBool("dev-ui")
 	if strings.TrimSpace(dbPath) == "" {
@@ -91,10 +76,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// --- Daemon tool server (Phase 3) ---
-	toolStore, err := resolveServeStore(storeKind, storePath, dbPath)
+	toolStore, err := tool.NewSQLiteStore(dbPath)
 	if err != nil {
-		return err
+		return exitError(exitRuntime, "opening sqlite tool store: %v", err)
 	}
+	defer func() {
+		_ = toolStore.Close()
+	}()
 
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{
 		Store: toolStore,
@@ -153,35 +141,30 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	eb := bus.NewMemBus(bus.MemBusConfig{})
-
-	workflowStore, workflowStoreClose, err := resolveWorkflowStore(workflowStoreKind, workflowStorePath, dbPath)
+	workflowStore, err := server.NewSQLiteWorkflowStore(dbPath)
 	if err != nil {
-		return err
+		return exitError(exitRuntime, "opening sqlite workflow store: %v", err)
 	}
 	defer func() {
-		if workflowStoreClose != nil {
-			_ = workflowStoreClose()
-		}
+		_ = workflowStore.Close()
 	}()
 
-	es, eventStoreClose, err := resolveEventStore(eventStoreKind, eventStoreDSN, dbPath)
+	es, err := bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{
+		DSN: dbPath,
+	})
 	if err != nil {
-		return err
+		return exitError(exitRuntime, "opening sqlite event store: %v", err)
 	}
 	defer func() {
-		if eventStoreClose != nil {
-			_ = eventStoreClose()
-		}
+		_ = es.Close()
 	}()
 
-	stateStore, stateStoreClose, err := resolveServerStateStore(statePath, dbPath)
+	stateStore, err := server.NewSQLiteStateStore(dbPath)
 	if err != nil {
-		return err
+		return exitError(exitRuntime, "opening sqlite server state store: %v", err)
 	}
 	defer func() {
-		if stateStoreClose != nil {
-			_ = stateStoreClose()
-		}
+		_ = stateStore.Close()
 	}()
 
 	logger := slog.Default()
@@ -256,105 +239,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		return nil
 	}
-}
-
-func resolveServeStore(kind, storePath, dbPath string) (tool.Store, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "memory":
-		return daemon.NewMemoryToolStore(), nil
-	case "", "sqlite":
-		target := strings.TrimSpace(storePath)
-		if target == "" {
-			target = strings.TrimSpace(dbPath)
-		}
-		if target == "" {
-			return tool.NewDefaultSQLiteStore()
-		}
-		return tool.NewSQLiteStore(filepath.Clean(target))
-	case "file":
-		if strings.TrimSpace(storePath) == "" {
-			return tool.NewDefaultFileStore()
-		}
-		return tool.NewFileStore(filepath.Clean(storePath)), nil
-	default:
-		return nil, fmt.Errorf(`invalid --store %q (use "memory", "sqlite", or "file")`, kind)
-	}
-}
-
-func resolveWorkflowStore(kind, storePath, dbPath string) (server.WorkflowStore, func() error, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "memory":
-		return server.NewMemoryStore(), nil, nil
-	case "", "sqlite":
-		target := strings.TrimSpace(storePath)
-		if target == "" {
-			target = strings.TrimSpace(dbPath)
-		}
-		if target == "" {
-			defaultPath, err := storagesqlite.DefaultPath()
-			if err != nil {
-				return nil, nil, exitError(exitRuntime, "resolving workflow db path: %v", err)
-			}
-			target = defaultPath
-		}
-		store, err := server.NewSQLiteWorkflowStore(filepath.Clean(target))
-		if err != nil {
-			return nil, nil, exitError(exitRuntime, "opening workflow store: %v", err)
-		}
-		return store, store.Close, nil
-	default:
-		return nil, nil, exitError(exitValidation, `invalid --workflow-store %q (use "memory" or "sqlite")`, kind)
-	}
-}
-
-func resolveEventStore(kind, dsn, dbPath string) (bus.EventStore, func() error, error) {
-	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "memory":
-		return bus.NewMemEventStore(), nil, nil
-	case "", "sqlite":
-		target := strings.TrimSpace(dsn)
-		if target == "" {
-			target = strings.TrimSpace(dbPath)
-		}
-		if target == "" {
-			defaultPath, err := storagesqlite.DefaultPath()
-			if err != nil {
-				return nil, nil, exitError(exitRuntime, "resolving event db path: %v", err)
-			}
-			target = defaultPath
-		}
-		store, err := bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{
-			DSN: filepath.Clean(target),
-		})
-		if err != nil {
-			return nil, nil, exitError(exitRuntime, "opening event store: %v", err)
-		}
-		return store, store.Close, nil
-	default:
-		return nil, nil, exitError(exitValidation, `invalid --event-store %q (use "memory" or "sqlite")`, kind)
-	}
-}
-
-func resolveServerStateStore(statePath, dbPath string) (server.ServerStateStore, func() error, error) {
-	if strings.TrimSpace(statePath) != "" {
-		store := server.NewFileStateStore(filepath.Clean(statePath))
-		return store, nil, nil
-	}
-
-	target := strings.TrimSpace(dbPath)
-	if target == "" {
-		defaultPath, err := storagesqlite.DefaultPath()
-		if err != nil {
-			return nil, nil, exitError(exitRuntime, "resolving state db path: %v", err)
-		}
-		target = defaultPath
-	}
-
-	store, err := server.NewSQLiteStateStore(filepath.Clean(target))
-	if err != nil {
-		return nil, nil, exitError(exitRuntime, "opening state store: %v", err)
-	}
-	return store, store.Close, nil
 }
 
 func withCORS(next http.Handler, allowedOrigin string) http.Handler {

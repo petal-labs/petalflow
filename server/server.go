@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +24,6 @@ type ServerConfig struct {
 	MaxBody       int64
 	Logger        *slog.Logger
 	StateStore    ServerStateStore
-	StatePath     string
 }
 
 // Server is the PetalFlow HTTP API server.
@@ -88,13 +85,6 @@ func NewServer(cfg ServerConfig) *Server {
 	for name := range providers {
 		providerMeta[name] = providerMetadata{}
 	}
-	stateStore := cfg.StateStore
-	if stateStore == nil {
-		statePath := strings.TrimSpace(cfg.StatePath)
-		if statePath != "" {
-			stateStore = NewFileStateStore(filepath.Clean(statePath))
-		}
-	}
 
 	srv := &Server{
 		store:         cfg.Store,
@@ -106,7 +96,7 @@ func NewServer(cfg ServerConfig) *Server {
 		corsOrigin:    corsOrigin,
 		maxBody:       maxBody,
 		logger:        logger,
-		stateStore:    stateStore,
+		stateStore:    cfg.StateStore,
 		settings:      defaultAppSettings(),
 		tokens:        make(map[string]string),
 	}

@@ -27,7 +27,13 @@ func (s stubReachabilityChecker) CheckMCP(ctx context.Context, reg Registration)
 }
 
 func TestValidateNewRegistrationSuccess(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "petalflow.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	reg := ToolRegistration{
 		Name:     "http_probe",
 		Origin:   OriginHTTP,
@@ -49,7 +55,7 @@ func TestValidateNewRegistrationSuccess(t *testing.T) {
 		"token": {Type: TypeString, Required: true, Sensitive: true},
 	}
 
-	err := ValidateNewRegistration(context.Background(), reg, RegistrationValidationOptions{
+	err = ValidateNewRegistration(context.Background(), reg, RegistrationValidationOptions{
 		Store:               store,
 		ReachabilityChecker: stubReachabilityChecker{},
 	})
@@ -89,7 +95,13 @@ func TestValidateNewRegistrationInvalidName(t *testing.T) {
 }
 
 func TestValidateNewRegistrationDuplicateName(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "petalflow.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	existing := ToolRegistration{
 		Name:     "duplicate_tool",
 		Origin:   OriginNative,
@@ -106,7 +118,7 @@ func TestValidateNewRegistrationDuplicateName(t *testing.T) {
 	}
 
 	reg := existing
-	err := ValidateNewRegistration(context.Background(), reg, RegistrationValidationOptions{
+	err = ValidateNewRegistration(context.Background(), reg, RegistrationValidationOptions{
 		Store:               store,
 		ReachabilityChecker: stubReachabilityChecker{},
 	})

@@ -24,7 +24,6 @@ func NewToolsCmd() *cobra.Command {
 		Short: "Manage tool registrations",
 	}
 	cmd.PersistentFlags().String("db-path", "", "Path to shared SQLite DB (default: ~/.petalflow/petalflow.db)")
-	cmd.PersistentFlags().String("store-path", "", "Path to legacy JSON tool store file (deprecated)")
 
 	cmd.AddCommand(newToolsRegisterCmd())
 	cmd.AddCommand(newToolsListCmd())
@@ -612,19 +611,7 @@ func runToolsHealth(cmd *cobra.Command, args []string) error {
 }
 
 func resolveToolStore(cmd *cobra.Command) (tool.Store, error) {
-	legacyStorePath, _ := cmd.Flags().GetString("store-path")
-	if strings.TrimSpace(legacyStorePath) == "" {
-		legacyStorePath = os.Getenv("PETALFLOW_TOOLS_STORE_PATH")
-	}
-	if strings.TrimSpace(legacyStorePath) != "" {
-		clean := filepath.Clean(legacyStorePath)
-		return tool.NewFileStore(clean), nil
-	}
-
 	dbPath, _ := cmd.Flags().GetString("db-path")
-	if strings.TrimSpace(dbPath) == "" {
-		dbPath = os.Getenv("PETALFLOW_TOOLS_DB_PATH")
-	}
 	if strings.TrimSpace(dbPath) == "" {
 		dbPath = os.Getenv("PETALFLOW_DB_PATH")
 	}
