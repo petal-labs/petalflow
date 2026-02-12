@@ -13,7 +13,7 @@ export function DetailPanel({ onRegisterTool }: DetailPanelProps) {
   const agents = useEditorStore((s) => s.agents)
   const tasks = useEditorStore((s) => s.tasks)
 
-  if (!selectedType || !selectedId) {
+  if (selectedType === null || selectedId === null) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
         Select an agent or task to edit

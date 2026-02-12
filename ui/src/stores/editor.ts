@@ -175,9 +175,42 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   updateTask(id, patch) {
-    set((s) => ({
-      tasks: s.tasks.map((t) => (t.id === id ? { ...t, ...patch } : t)),
-    }))
+    set((s) => {
+      const idx = s.tasks.findIndex((t) => t.id === id)
+      if (idx === -1) return {}
+
+      const requestedId = patch.id
+      const canRename =
+        typeof requestedId === "string" &&
+        requestedId !== id &&
+        !s.tasks.some((t, i) => i !== idx && t.id === requestedId)
+      const nextId = canRename ? requestedId : id
+
+      const nextTasks = s.tasks.map((t) =>
+        t.id === id ? { ...t, ...patch, id: nextId } : t,
+      )
+
+      if (!canRename) {
+        return { tasks: nextTasks }
+      }
+
+      const nextDependencies: Record<string, string[]> = {}
+      for (const [taskId, deps] of Object.entries(s.dependencies)) {
+        const mappedTaskID = taskId === id ? nextId : taskId
+        nextDependencies[mappedTaskID] = deps.map((dep) =>
+          dep === id ? nextId : dep,
+        )
+      }
+
+      return {
+        tasks: nextTasks,
+        dependencies: nextDependencies,
+        selectedId:
+          s.selectedType === "task" && s.selectedId === id
+            ? nextId
+            : s.selectedId,
+      }
+    })
   },
 
   removeTask(id) {

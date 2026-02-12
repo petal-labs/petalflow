@@ -21,6 +21,18 @@ export function GraphPreview() {
   const [compiledEdges, setCompiledEdges] = useState<Edge[]>([])
   const [error, setError] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null)
+  const previewNodeStyle = useMemo(
+    () => ({
+      backgroundColor: "var(--card)",
+      color: "var(--card-foreground)",
+      borderColor: "var(--border)",
+      borderWidth: 1,
+      borderStyle: "solid",
+      borderRadius: 8,
+      fontSize: 12,
+    }),
+    [],
+  )
 
   // Build a simple fallback layout from the editor state directly
   const fallbackLayout = useMemo(() => {
@@ -28,31 +40,46 @@ export function GraphPreview() {
     const edges: Edge[] = []
     const ySpacing = 100
     const xOffset = 50
+    const usedNodeIDs = new Set<string>()
+    const taskNodeIDs = tasks.map((task, i) => {
+      const baseID = task.id.trim() || `task_${i + 1}`
+      let nodeID = baseID
+      let suffix = 2
+      while (usedNodeIDs.has(nodeID)) {
+        nodeID = `${baseID}_${suffix}`
+        suffix++
+      }
+      usedNodeIDs.add(nodeID)
+      return nodeID
+    })
 
     tasks.forEach((task, i) => {
       const agent = agents.find((a) => a.id === task.agent)
+      const taskID = taskNodeIDs[i]
       nodes.push({
-        id: task.id,
+        id: taskID,
         position: { x: xOffset, y: i * ySpacing + 50 },
         data: {
-          label: `${task.id}${agent ? ` (${agent.role || agent.id})` : ""}`,
+          label: `${taskID}${agent ? ` (${agent.role || agent.id})` : ""}`,
         },
+        style: previewNodeStyle,
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
       })
 
       // Sequential edges
       if (strategy === "sequential" && i > 0) {
+        const prevTaskID = taskNodeIDs[i - 1]
         edges.push({
-          id: `e-${tasks[i - 1].id}-${task.id}`,
-          source: tasks[i - 1].id,
-          target: task.id,
+          id: `e-${prevTaskID}-${taskID}`,
+          source: prevTaskID,
+          target: taskID,
         })
       }
     })
 
     return { nodes, edges }
-  }, [agents, tasks, strategy])
+  }, [agents, tasks, strategy, previewNodeStyle])
 
   const doCompile = useCallback(async () => {
     if (tasks.length === 0) {
@@ -69,19 +96,43 @@ export function GraphPreview() {
       const graph = result.graph as Record<string, unknown>
       const graphNodes = graph?.nodes as Array<Record<string, unknown>> | undefined
       if (graphNodes && graphNodes.length > 0) {
-        const nodes: Node[] = graphNodes.map((n, i) => ({
-          id: String(n.id),
-          position: { x: 50, y: i * 100 + 50 },
-          data: { label: String(n.kind ?? n.id) },
-          sourcePosition: Position.Bottom,
-          targetPosition: Position.Top,
-        }))
+        const usedNodeIDs = new Set<string>()
+        const nodes: Node[] = graphNodes.map((n, i) => {
+          const rawID = String(n.id ?? "").trim()
+          const baseID = rawID || `compiled_${i + 1}`
+          let nodeID = baseID
+          let suffix = 2
+          while (usedNodeIDs.has(nodeID)) {
+            nodeID = `${baseID}_${suffix}`
+            suffix++
+          }
+          usedNodeIDs.add(nodeID)
+
+          const rawKind = String(n.kind ?? "").trim()
+          return {
+            id: nodeID,
+            position: { x: 50, y: i * 100 + 50 },
+            data: { label: rawKind || rawID || `Node ${i + 1}` },
+            style: previewNodeStyle,
+            sourcePosition: Position.Bottom,
+            targetPosition: Position.Top,
+          }
+        })
         const graphEdges = (graph?.edges as Array<Record<string, unknown>>) ?? []
-        const edges: Edge[] = graphEdges.map((e, i) => ({
-          id: `compiled-${i}`,
-          source: String(e.source ?? e.from),
-          target: String(e.target ?? e.to),
-        }))
+        const validNodeIDs = new Set(nodes.map((n) => n.id))
+        const edges: Edge[] = graphEdges
+          .map((e, i) => ({
+            id: `compiled-${i}`,
+            source: String(e.source ?? e.from ?? "").trim(),
+            target: String(e.target ?? e.to ?? "").trim(),
+          }))
+          .filter(
+            (e) =>
+              e.source.length > 0 &&
+              e.target.length > 0 &&
+              validNodeIDs.has(e.source) &&
+              validNodeIDs.has(e.target),
+          )
         setCompiledNodes(nodes)
         setCompiledEdges(edges)
       } else {
@@ -96,7 +147,7 @@ export function GraphPreview() {
       setCompiledEdges(fallbackLayout.edges)
       setError(null) // Don't show compile errors in preview
     }
-  }, [toDefinition, compile, tasks.length, fallbackLayout])
+  }, [toDefinition, compile, tasks.length, fallbackLayout, previewNodeStyle])
 
   // Debounced compile on every change
   useEffect(() => {
