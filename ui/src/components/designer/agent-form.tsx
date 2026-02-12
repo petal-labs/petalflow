@@ -76,10 +76,11 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
           value={agent.role}
           onChange={(e) => {
             const role = e.target.value
-            update({ role })
             // Auto-slug ID if it looks auto-generated
             if (agent.id.startsWith("agent_")) {
               update({ role, id: slugify(role) || agent.id })
+            } else {
+              update({ role })
             }
           }}
           placeholder="e.g., Senior Research Analyst"

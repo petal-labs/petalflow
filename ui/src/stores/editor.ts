@@ -105,9 +105,36 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   updateAgent(id, patch) {
-    set((s) => ({
-      agents: s.agents.map((a) => (a.id === id ? { ...a, ...patch } : a)),
-    }))
+    set((s) => {
+      const idx = s.agents.findIndex((a) => a.id === id)
+      if (idx === -1) return {}
+
+      const requestedId = patch.id
+      const canRename =
+        typeof requestedId === "string" &&
+        requestedId !== id &&
+        !s.agents.some((a, i) => i !== idx && a.id === requestedId)
+      const nextId = canRename ? requestedId : id
+
+      const nextAgents = s.agents.map((a) =>
+        a.id === id ? { ...a, ...patch, id: nextId } : a,
+      )
+
+      if (!canRename) {
+        return { agents: nextAgents }
+      }
+
+      return {
+        agents: nextAgents,
+        tasks: s.tasks.map((t) =>
+          t.agent === id ? { ...t, agent: nextId } : t,
+        ),
+        selectedId:
+          s.selectedType === "agent" && s.selectedId === id
+            ? nextId
+            : s.selectedId,
+      }
+    })
   },
 
   removeAgent(id) {
