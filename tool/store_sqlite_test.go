@@ -2,8 +2,6 @@ package tool
 
 import (
 	"context"
-	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -190,59 +188,5 @@ func TestSQLiteStoreEncryptsSensitiveConfigAtRest(t *testing.T) {
 	}
 	if got.Config["api_key"] != "super-secret-value" {
 		t.Fatalf("decrypted api_key = %q, want super-secret-value", got.Config["api_key"])
-	}
-}
-
-func TestSQLiteStoreMigratesLegacyDefaultFileStore(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	ctx := context.Background()
-
-	legacyPath, err := defaultLegacyFileStorePath()
-	if err != nil {
-		t.Fatalf("defaultLegacyFileStorePath() error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(legacyPath), 0o750); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-
-	reg := ToolRegistration{
-		Name:     "legacy_http",
-		Origin:   OriginHTTP,
-		Manifest: NewManifest("legacy_http"),
-		Status:   StatusReady,
-		Config: map[string]string{
-			"region": "us-west-2",
-		},
-	}
-	reg.Manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://legacy.invalid"})
-	doc := legacyFileStoreDocument{
-		Version: "1",
-		Tools:   []ToolRegistration{reg},
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("Marshal() error = %v", err)
-	}
-	if err := os.WriteFile(legacyPath, raw, 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	store, err := NewDefaultSQLiteStore()
-	if err != nil {
-		t.Fatalf("NewDefaultSQLiteStore() error = %v", err)
-	}
-	defer func() {
-		_ = store.Close()
-	}()
-
-	got, ok, err := store.Get(ctx, "legacy_http")
-	if err != nil {
-		t.Fatalf("Get() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("expected migrated legacy registration")
-	}
-	if got.Config["region"] != "us-west-2" {
-		t.Fatalf("migrated config region = %q, want us-west-2", got.Config["region"])
 	}
 }

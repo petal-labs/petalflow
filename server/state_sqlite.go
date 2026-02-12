@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,11 +27,6 @@ INSERT OR IGNORE INTO server_state
 VALUES
   (1, NULL, '{}', '{}', '{}', '');
 `
-
-type legacyStateDocument struct {
-	Version string      `json:"version"`
-	State   serverState `json:"state"`
-}
 
 // SQLiteStateStore persists server auth/settings/providers in SQLite.
 type SQLiteStateStore struct {
@@ -61,118 +55,10 @@ func NewSQLiteStateStore(path string) (*SQLiteStateStore, error) {
 		return nil, err
 	}
 
-	store := &SQLiteStateStore{
+	return &SQLiteStateStore{
 		path: clean,
 		db:   db,
-	}
-	if err := store.migrateLegacyDefaultFileState(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return store, nil
-}
-
-func (s *SQLiteStateStore) migrateLegacyDefaultFileState() error {
-	defaultDBPath, err := storagesqlite.DefaultPath()
-	if err != nil {
-		return err
-	}
-	if filepath.Clean(defaultDBPath) != filepath.Clean(s.path) {
-		return nil
-	}
-
-	var (
-		authUserJSON     sql.NullString
-		settingsJSON     string
-		providersJSON    string
-		providerMetaJSON string
-	)
-	err = s.db.QueryRow(
-		`SELECT auth_user_json, settings_json, providers_json, provider_meta_json
-		 FROM server_state
-		 WHERE id = 1`,
-	).Scan(&authUserJSON, &settingsJSON, &providersJSON, &providerMetaJSON)
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("server: inspect sqlite state for migration: %w", err)
-	}
-	if authUserJSON.Valid && strings.TrimSpace(authUserJSON.String) != "" {
-		return nil
-	}
-	if strings.TrimSpace(settingsJSON) != "" && strings.TrimSpace(settingsJSON) != "{}" {
-		return nil
-	}
-	if strings.TrimSpace(providersJSON) != "" && strings.TrimSpace(providersJSON) != "{}" {
-		return nil
-	}
-	if strings.TrimSpace(providerMetaJSON) != "" && strings.TrimSpace(providerMetaJSON) != "{}" {
-		return nil
-	}
-
-	legacyPath, err := defaultLegacyStatePath()
-	if err != nil {
-		return err
-	}
-	if filepath.Clean(legacyPath) == filepath.Clean(s.path) {
-		return nil
-	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		if err == os.ErrNotExist || os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("server: stat legacy state store %q: %w", legacyPath, err)
-	}
-
-	state, err := loadLegacyStateFile(legacyPath)
-	if err != nil {
-		return fmt.Errorf("server: load legacy state store %q: %w", legacyPath, err)
-	}
-	if state.AuthUser == nil && state.Settings == defaultAppSettings() && len(state.Providers) == 0 && len(state.ProviderMeta) == 0 {
-		return nil
-	}
-	if err := s.Save(state); err != nil {
-		return fmt.Errorf("server: migrate legacy state store %q: %w", legacyPath, err)
-	}
-	return nil
-}
-
-func defaultLegacyStatePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("server: resolve user home: %w", err)
-	}
-	return filepath.Join(home, ".petalflow", "server_state.json"), nil
-}
-
-func loadLegacyStateFile(path string) (serverState, error) {
-	// #nosec G304 -- path is resolved from local default migration location.
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return serverState{}, err
-	}
-	if len(data) == 0 {
-		return serverState{}, nil
-	}
-
-	var doc legacyStateDocument
-	if err := json.Unmarshal(data, &doc); err == nil {
-		if strings.TrimSpace(doc.Version) != "" || doc.State.AuthUser != nil || doc.State.Settings != (AppSettings{}) || len(doc.State.Providers) > 0 || len(doc.State.ProviderMeta) > 0 {
-			doc.State.AuthUser = cloneAuthAccount(doc.State.AuthUser)
-			doc.State.Settings = normalizeAppSettings(doc.State.Settings)
-			doc.State.Providers = cloneProviderMap(doc.State.Providers)
-			doc.State.ProviderMeta = cloneProviderMetaMap(doc.State.ProviderMeta)
-			return doc.State, nil
-		}
-	}
-
-	var state serverState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return serverState{}, fmt.Errorf("server: decode legacy state: %w", err)
-	}
-	state.AuthUser = cloneAuthAccount(state.AuthUser)
-	state.Settings = normalizeAppSettings(state.Settings)
-	state.Providers = cloneProviderMap(state.Providers)
-	state.ProviderMeta = cloneProviderMetaMap(state.ProviderMeta)
-	return state, nil
+	}, nil
 }
 
 // NewDefaultSQLiteStateStore creates a state store using the default DB path.

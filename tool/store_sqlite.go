@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,11 +32,6 @@ CREATE INDEX IF NOT EXISTS idx_tool_registrations_enabled ON tool_registrations 
 `
 
 var errEmptySQLiteStorePath = errors.New("tool: sqlite store path is empty")
-
-type legacyFileStoreDocument struct {
-	Version string             `json:"version"`
-	Tools   []ToolRegistration `json:"tools"`
-}
 
 // SQLiteStore persists tool registrations in a shared SQLite database.
 type SQLiteStore struct {
@@ -66,15 +60,10 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 
-	store := &SQLiteStore{
+	return &SQLiteStore{
 		path: clean,
 		db:   db,
-	}
-	if err := store.migrateLegacyDefaultFileStore(context.Background()); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return store, nil
+	}, nil
 }
 
 // NewDefaultSQLiteStore creates a tool store at the shared default DB path.
@@ -475,114 +464,6 @@ func overlayPathValue(overlay *ToolOverlay) any {
 		return nil
 	}
 	return overlay.Path
-}
-
-func (s *SQLiteStore) migrateLegacyDefaultFileStore(ctx context.Context) error {
-	defaultPath, err := DefaultSQLiteStorePath()
-	if err != nil {
-		return err
-	}
-	if filepath.Clean(defaultPath) != filepath.Clean(s.path) {
-		return nil
-	}
-
-	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM tool_registrations`).Scan(&count); err != nil {
-		return fmt.Errorf("tool: count sqlite registrations: %w", err)
-	}
-	if count > 0 {
-		return nil
-	}
-
-	legacyPath, err := defaultLegacyFileStorePath()
-	if err != nil {
-		return err
-	}
-	if filepath.Clean(legacyPath) == filepath.Clean(s.path) {
-		return nil
-	}
-	if _, err := os.Stat(legacyPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("tool: stat legacy store %q: %w", legacyPath, err)
-	}
-
-	regs, err := loadLegacyFileRegistrations(legacyPath)
-	if err != nil {
-		return fmt.Errorf("tool: load legacy file store %q: %w", legacyPath, err)
-	}
-	for _, reg := range regs {
-		if err := s.Upsert(ctx, reg); err != nil {
-			return fmt.Errorf("tool: migrate registration %q: %w", reg.Name, err)
-		}
-	}
-	return nil
-}
-
-func defaultLegacyFileStorePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("tool: resolve user home: %w", err)
-	}
-	return filepath.Join(home, ".petalflow", "tools.json"), nil
-}
-
-func loadLegacyFileRegistrations(path string) ([]ToolRegistration, error) {
-	// #nosec G304 -- path is resolved from local default migration location.
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) == 0 {
-		return []ToolRegistration{}, nil
-	}
-
-	var doc legacyFileStoreDocument
-	if err := json.Unmarshal(data, &doc); err == nil && doc.Tools != nil {
-		if err := decryptLegacySensitiveRegistrations(path, doc.Tools); err != nil {
-			return nil, err
-		}
-		sortRegistrations(doc.Tools)
-		return cloneRegistrations(doc.Tools), nil
-	}
-
-	var regs []ToolRegistration
-	if err := json.Unmarshal(data, &regs); err != nil {
-		return nil, fmt.Errorf("tool: decode legacy registrations: %w", err)
-	}
-	if err := decryptLegacySensitiveRegistrations(path, regs); err != nil {
-		return nil, err
-	}
-	sortRegistrations(regs)
-	return cloneRegistrations(regs), nil
-}
-
-func decryptLegacySensitiveRegistrations(path string, regs []ToolRegistration) error {
-	codec, err := newSecretCodec(path)
-	if err != nil {
-		return fmt.Errorf("tool: initialize legacy secret codec: %w", err)
-	}
-	for i := range regs {
-		if len(regs[i].Config) == 0 || len(regs[i].Manifest.Config) == 0 {
-			continue
-		}
-		for key, spec := range regs[i].Manifest.Config {
-			if !spec.Sensitive {
-				continue
-			}
-			value := regs[i].Config[key]
-			if strings.TrimSpace(value) == "" {
-				continue
-			}
-			plain, err := codec.Decrypt(value)
-			if err != nil {
-				return fmt.Errorf("tool: decrypt legacy config %q for %s: %w", key, regs[i].Name, err)
-			}
-			regs[i].Config[key] = plain
-		}
-	}
-	return nil
 }
 
 var _ Store = (*SQLiteStore)(nil)
