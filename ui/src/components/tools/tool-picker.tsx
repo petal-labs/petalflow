@@ -3,12 +3,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { cn } from "@/lib/utils"
 import { useToolStore } from "@/stores/tools"
 import type { Tool } from "@/api/types"
 
@@ -65,8 +65,11 @@ export function ToolPicker({
             : `${selectedCount} action${selectedCount !== 1 ? "s" : ""} selected`}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 p-0" align="start">
-        <div className="p-2">
+      <PopoverContent
+        className="w-80 overflow-hidden p-0 !bg-popover !text-popover-foreground !opacity-100 shadow-2xl ring-1 ring-border"
+        align="start"
+      >
+        <div className="border-b bg-muted/40 p-2">
           <Input
             placeholder="Search tools & actions..."
             value={search}
@@ -74,8 +77,8 @@ export function ToolPicker({
             className="h-8 text-xs"
           />
         </div>
-        <ScrollArea className="max-h-64">
-          <div className="space-y-1 p-2 pt-0">
+        <div className="max-h-64 overflow-y-auto bg-popover p-2">
+          <div className="space-y-1.5 pr-1">
             {filtered.length === 0 ? (
               <p className="text-xs text-muted-foreground py-2 text-center">
                 No tools found.
@@ -91,9 +94,9 @@ export function ToolPicker({
               ))
             )}
           </div>
-        </ScrollArea>
+        </div>
         {onRegisterNew && (
-          <div className="border-t p-2">
+          <div className="border-t bg-muted/30 p-2">
             <button
               type="button"
               className="w-full text-xs text-primary hover:underline text-left"
@@ -121,7 +124,7 @@ function ToolGroup({
   onToggle: (actionId: string) => void
 }) {
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-0.5 rounded-md border bg-muted/20 p-1">
       <div className="flex items-center gap-1.5 px-1 py-0.5">
         <span className="text-xs font-medium">{tool.name}</span>
         <Badge variant="secondary" className="text-[9px] px-1 py-0">
@@ -130,18 +133,24 @@ function ToolGroup({
       </div>
       {tool.actions.map((action) => {
         const id = `${tool.name}.${action.name}`
+        const checked = selected.includes(id)
         return (
           <label
             key={id}
-            className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-muted/50 cursor-pointer"
+            className={cn(
+              "flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs transition-colors",
+              checked
+                ? "bg-primary/10 text-primary"
+                : "hover:bg-muted/70",
+            )}
           >
             <Checkbox
-              checked={selected.includes(id)}
+              checked={checked}
               onCheckedChange={() => onToggle(id)}
             />
             <span>{action.name}</span>
             {action.description && (
-              <span className="text-muted-foreground truncate text-[10px]">
+              <span className={cn("truncate text-[10px]", checked ? "text-primary/80" : "text-muted-foreground")}>
                 — {action.description}
               </span>
             )}
