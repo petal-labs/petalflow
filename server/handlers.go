@@ -411,10 +411,8 @@ func (s *Server) handleCreateWorkflow(w http.ResponseWriter, r *http.Request) {
 	// Attempt compilation but don't fail if the definition is empty/incomplete.
 	switch kind {
 	case loader.SchemaKindAgent:
-		if wf, err := agent.LoadFromBytes(defBytes); err == nil {
-			if gd, err := agent.Compile(wf); err == nil {
-				rec.Compiled = gd
-			}
+		if gd, err := compileAgentWorkflowDefinition(defBytes, rec.ID, rec.Name); err == nil {
+			rec.Compiled = gd
 		}
 	case loader.SchemaKindGraph:
 		var gd graph.GraphDefinition
@@ -614,10 +612,8 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 
 		switch rec.SchemaKind {
 		case loader.SchemaKindAgent:
-			if wf, err := agent.LoadFromBytes(defBytes); err == nil {
-				if gd, err := agent.Compile(wf); err == nil {
-					rec.Compiled = gd
-				}
+			if gd, err := compileAgentWorkflowDefinition(defBytes, rec.ID, rec.Name); err == nil {
+				rec.Compiled = gd
 			}
 		case loader.SchemaKindGraph:
 			var gd graph.GraphDefinition

@@ -624,5 +624,121 @@ func TestAuthAndSettingsPersistAcrossServerRestart(t *testing.T) {
 	}
 }
 
+func TestUpdateSettings_SeedsOnboardingSamples(t *testing.T) {
+	srv := testServer()
+	handler := srv.Handler()
+
+	settings := AppSettings{
+		OnboardingComplete: true,
+		Preferences:        UserPreferences{},
+	}
+	settingsBody, _ := json.Marshal(settings)
+
+	r := httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(settingsBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update settings: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/workflows", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list workflows: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var workflows []WorkflowRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &workflows); err != nil {
+		t.Fatalf("unmarshal workflows: %v", err)
+	}
+	if len(workflows) != 3 {
+		t.Fatalf("workflow count = %d, want 3", len(workflows))
+	}
+
+	wantIDs := map[string]struct{}{
+		"sample_research_brief":  {},
+		"sample_meeting_actions": {},
+		"sample_release_notes":   {},
+	}
+	for _, wf := range workflows {
+		if wf.SchemaKind != "agent_workflow" {
+			t.Fatalf("workflow %q kind = %q, want %q", wf.ID, wf.SchemaKind, "agent_workflow")
+		}
+		if wf.Compiled == nil {
+			t.Fatalf("workflow %q compiled graph is nil", wf.ID)
+		}
+		delete(wantIDs, wf.ID)
+	}
+	if len(wantIDs) != 0 {
+		t.Fatalf("missing expected sample workflow IDs: %v", wantIDs)
+	}
+
+	// Re-sending onboarding_complete=true should not create duplicates.
+	r = httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(settingsBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second update settings: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/workflows", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second list workflows: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	workflows = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &workflows); err != nil {
+		t.Fatalf("second unmarshal workflows: %v", err)
+	}
+	if len(workflows) != 3 {
+		t.Fatalf("workflow count after second completion = %d, want 3", len(workflows))
+	}
+}
+
+func TestUpdateSettings_DoesNotSeedSamplesWhenWorkflowsExist(t *testing.T) {
+	srv := testServer()
+	handler := srv.Handler()
+
+	graphBody := validGraphJSON("existing-workflow")
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(graphBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create existing workflow: got %d, want %d; body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	settings := AppSettings{
+		OnboardingComplete: true,
+		Preferences:        UserPreferences{},
+	}
+	settingsBody, _ := json.Marshal(settings)
+	r = httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(settingsBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update settings: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/workflows", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list workflows: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var workflows []WorkflowRecord
+	if err := json.Unmarshal(w.Body.Bytes(), &workflows); err != nil {
+		t.Fatalf("unmarshal workflows: %v", err)
+	}
+	if len(workflows) != 1 {
+		t.Fatalf("workflow count = %d, want 1", len(workflows))
+	}
+	if workflows[0].ID != "existing-workflow" {
+		t.Fatalf("workflow ID = %q, want %q", workflows[0].ID, "existing-workflow")
+	}
+}
+
 // Suppress unused import warnings — bus.EventStore is used via bus.NewMemEventStore.
 var _ = context.Background

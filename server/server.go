@@ -323,15 +323,19 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	var updated AppSettings
-	if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+	var req AppSettings
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
 		return
 	}
+	updated := normalizeAppSettings(req)
+
 	s.settingsMu.Lock()
 	previous := s.settings
 	s.settings = updated
 	s.settingsMu.Unlock()
+
+	seedOnboardingSamples := !previous.OnboardingComplete && updated.OnboardingComplete
 	if err := s.persistState(); err != nil {
 		s.settingsMu.Lock()
 		s.settings = previous
@@ -340,6 +344,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "PERSISTENCE_ERROR", "failed to persist settings")
 		return
 	}
+
+	if seedOnboardingSamples {
+		if err := s.seedOnboardingSampleWorkflows(r.Context()); err != nil {
+			s.logger.Error("server: seed onboarding sample workflows failed", "error", err)
+		}
+	}
+
 	writeJSON(w, http.StatusOK, updated)
 }
 

@@ -123,7 +123,15 @@ export function AgentForm({ agent, onRegisterTool }: AgentFormProps) {
         </Label>
         <Select
           value={agent.provider}
-          onValueChange={(v) => update({ provider: v, model: "" })}
+          onValueChange={(v) => {
+            const provider = providers.find((p) => p.name === v)
+            const staticModels = providerDefs.find((d) => d.id === v)?.models ?? []
+            const defaultModel =
+              (provider?.default_model && provider.default_model.trim()) ||
+              staticModels[0] ||
+              ""
+            update({ provider: v, model: defaultModel })
+          }}
         >
           <SelectTrigger className="h-8 text-xs">
             <SelectValue placeholder="Select provider" />
