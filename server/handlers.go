@@ -1051,50 +1051,50 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 type runTraceResponse struct {
-	RunID       string `json:"run_id"`
-	WorkflowID  string `json:"workflow_id"`
-	StartedAt   string `json:"started_at"`
-	CompletedAt string `json:"completed_at"`
-	DurationMs  int64  `json:"duration_ms"`
-	Status      string `json:"status"`
-	Spans       []any  `json:"spans"`
+	RunID       string              `json:"run_id"`
+	WorkflowID  string              `json:"workflow_id"`
+	StartedAt   string              `json:"started_at"`
+	CompletedAt string              `json:"completed_at"`
+	DurationMs  int64               `json:"duration_ms"`
+	Status      string              `json:"status"`
+	Spans       []traceSpanResponse `json:"spans"`
 }
 
-// handleRunTrace returns a minimal run trace envelope for the trace viewer.
+// handleRunTrace returns reconstructed run trace data for the trace viewer.
 func (s *Server) handleRunTrace(w http.ResponseWriter, r *http.Request) {
 	runID := strings.TrimSpace(r.PathValue("run_id"))
 	if runID == "" {
 		writeError(w, http.StatusBadRequest, "VALIDATION_ERROR", "run_id is required")
 		return
 	}
-	run, ok := s.getRun(runID)
-	if !ok {
+
+	var fallback *RunResponse
+	if run, ok := s.getRun(runID); ok {
+		runCopy := run
+		fallback = &runCopy
+	}
+
+	var events []runtime.Event
+	if s.eventStore != nil {
+		var err error
+		events, err = s.eventStore.List(r.Context(), runID, 0, 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+			return
+		}
+	}
+
+	if len(events) == 0 && fallback == nil {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
 		return
 	}
 
-	startedAt := run.StartedAt.UTC().Format(time.RFC3339)
-	completedAt := run.CompletedAt.UTC().Format(time.RFC3339)
-	if run.CompletedAt.IsZero() {
-		completedAt = startedAt
+	workflowID := ""
+	if fallback != nil {
+		workflowID = strings.TrimSpace(fallback.WorkflowID)
 	}
-
-	status := run.Status
-	switch status {
-	case "completed", "failed", "cancelled":
-	default:
-		status = "completed"
-	}
-
-	writeJSON(w, http.StatusOK, runTraceResponse{
-		RunID:       run.RunID,
-		WorkflowID:  run.WorkflowID,
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		DurationMs:  run.DurationMs,
-		Status:      status,
-		Spans:       []any{},
-	})
+	trace := buildRunTraceResponse(runID, workflowID, fallback, events)
+	writeJSON(w, http.StatusOK, trace)
 }
 
 // --- helpers ---

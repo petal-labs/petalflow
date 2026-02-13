@@ -523,6 +523,9 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 	if trace.WorkflowID != "run-test" {
 		t.Fatalf("trace workflow_id = %q, want %q", trace.WorkflowID, "run-test")
 	}
+	if len(trace.Spans) == 0 {
+		t.Fatal("trace spans should not be empty")
+	}
 }
 
 func TestRunWorkflow_DryRunSkipsExecution(t *testing.T) {
@@ -561,6 +564,77 @@ func TestRunWorkflow_DryRunSkipsExecution(t *testing.T) {
 	}
 	if resp.RunID == "" {
 		t.Fatal("dry run run_id should not be empty")
+	}
+}
+
+func TestRunTrace_BuildsFromEventStoreWithoutInMemoryRun(t *testing.T) {
+	store := NewMemoryStore()
+
+	srv := NewServer(ServerConfig{
+		Store:     store,
+		Providers: hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			return nil, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: bus.NewMemEventStore(),
+	})
+	handler := srv.Handler()
+
+	gd := map[string]any{
+		"id":      "trace-rebuild-test",
+		"version": "1.0",
+		"nodes": []map[string]any{
+			{"id": "echo", "type": "func"},
+		},
+		"edges": []map[string]any{},
+		"entry": "echo",
+	}
+	gdBytes, _ := json.Marshal(gd)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(gdBytes))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want %d; body=%s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	runBody, _ := json.Marshal(RunRequest{Inputs: map[string]any{"x": 1}})
+	r = httptest.NewRequest(http.MethodPost, "/api/workflows/trace-rebuild-test/run", bytes.NewReader(runBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("run: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var runResp RunResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &runResp); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+
+	// Simulate restart by dropping in-memory run cache while keeping persisted events.
+	srv.runsMu.Lock()
+	srv.runs = map[string]RunResponse{}
+	srv.runOrder = nil
+	srv.runsMu.Unlock()
+
+	r = httptest.NewRequest(http.MethodGet, "/api/runs/"+runResp.RunID+"/trace", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("trace: got %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var trace runTraceResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &trace); err != nil {
+		t.Fatalf("unmarshal trace response: %v", err)
+	}
+	if trace.RunID != runResp.RunID {
+		t.Fatalf("trace run_id = %q, want %q", trace.RunID, runResp.RunID)
+	}
+	if trace.WorkflowID != "trace-rebuild-test" {
+		t.Fatalf("trace workflow_id = %q, want %q", trace.WorkflowID, "trace-rebuild-test")
+	}
+	if len(trace.Spans) == 0 {
+		t.Fatal("trace spans should not be empty")
 	}
 }
 
