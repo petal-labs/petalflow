@@ -88,6 +88,104 @@ export function makeGraphNodeId(kind: string) {
   return `${kind}_${nodeCounter}`
 }
 
+const fallbackPortSchemas: Record<string, { inputs: PortHandle[]; outputs: PortHandle[] }> = {
+  llm_prompt: {
+    inputs: [
+      { name: "input", type: "string", required: true },
+      { name: "context", type: "string" },
+    ],
+    outputs: [{ name: "output", type: "string" }],
+  },
+  llm_router: {
+    inputs: [{ name: "input", type: "string", required: true }],
+    outputs: [
+      { name: "output", type: "string" },
+      { name: "decision", type: "object" },
+    ],
+  },
+  conditional: {
+    inputs: [{ name: "input", type: "any", required: true }],
+    outputs: [{ name: "output", type: "any" }],
+  },
+  gate: {
+    inputs: [{ name: "input", type: "any", required: true }],
+    outputs: [{ name: "output", type: "any" }],
+  },
+  human: {
+    inputs: [{ name: "input", type: "any", required: true }],
+    outputs: [
+      { name: "output", type: "any" },
+      { name: "response", type: "object" },
+    ],
+  },
+  merge: {
+    inputs: [{ name: "input", type: "any", required: true }],
+    outputs: [{ name: "output", type: "any" }],
+  },
+  transform: {
+    inputs: [{ name: "input", type: "any", required: true }],
+    outputs: [{ name: "output", type: "any" }],
+  },
+  filter: {
+    inputs: [{ name: "input", type: "array", required: true }],
+    outputs: [{ name: "output", type: "array" }],
+  },
+  tool: {
+    inputs: [{ name: "input", type: "object", required: true }],
+    outputs: [{ name: "output", type: "object" }],
+  },
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function normalizePorts(value: unknown): PortHandle[] {
+  if (!Array.isArray(value)) return []
+  const ports: PortHandle[] = []
+  for (const rawPort of value) {
+    const port = asRecord(rawPort)
+    if (!port) continue
+    const name = typeof port.name === "string" ? port.name.trim() : ""
+    if (!name) continue
+    const type =
+      typeof port.type === "string" && port.type.trim().length > 0
+        ? port.type
+        : "any"
+    const normalizedPort: PortHandle = { name, type }
+    if (typeof port.required === "boolean") {
+      normalizedPort.required = port.required
+    }
+    ports.push(normalizedPort)
+  }
+  return ports
+}
+
+function inferCategory(kind: string): string {
+  if (kind === "llm_prompt" || kind === "llm_router") return "LLM"
+  if (
+    kind === "conditional" ||
+    kind === "gate" ||
+    kind === "human" ||
+    kind === "merge"
+  ) {
+    return "Control Flow"
+  }
+  if (
+    kind === "transform" ||
+    kind === "filter" ||
+    kind === "json_parse" ||
+    kind === "json_format" ||
+    kind === "cache" ||
+    kind === "sink"
+  ) {
+    return "Processing"
+  }
+  if (kind === "tool" || kind.includes(".")) return "Tools"
+  return "Processing"
+}
+
 /** Save current state for undo. */
 function pushHistory(history: HistoryEntry[], nodes: Node<GraphNodeData>[], edges: Edge[]): HistoryEntry[] {
   const entry: HistoryEntry = {
@@ -281,16 +379,38 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const rawEdges = (graph.edges as Array<Record<string, unknown>>) ?? []
 
     const nodes: Node<GraphNodeData>[] = rawNodes.map((n, i) => {
-      const inputPorts = ((n.input_ports ?? n.inputs) as PortHandle[]) ?? []
-      const outputPorts = ((n.output_ports ?? n.outputs) as PortHandle[]) ?? []
+      const kind =
+        (typeof n.kind === "string" && n.kind.trim().length > 0
+          ? n.kind
+          : typeof n.type === "string" && n.type.trim().length > 0
+            ? n.type
+            : "unknown")
+      const category =
+        typeof n.category === "string" && n.category.trim().length > 0
+          ? n.category
+          : inferCategory(kind)
+      const fallbackPorts = fallbackPortSchemas[kind]
+      const normalizedInputPorts = normalizePorts(n.input_ports ?? n.inputs ?? null)
+      const normalizedOutputPorts = normalizePorts(n.output_ports ?? n.outputs ?? null)
+      const inputPorts =
+        normalizedInputPorts.length > 0
+          ? normalizedInputPorts
+          : fallbackPorts?.inputs ?? []
+      const outputPorts =
+        normalizedOutputPorts.length > 0
+          ? normalizedOutputPorts
+          : fallbackPorts?.outputs ?? []
       return {
         id: String(n.id),
         type: "graphNode",
         position: (n.position as { x: number; y: number }) ?? { x: 50, y: i * 120 + 50 },
         data: {
-          label: String(n.id),
-          kind: String(n.kind ?? "unknown"),
-          category: String(n.category ?? "Processing"),
+          label:
+            typeof n.label === "string" && n.label.trim().length > 0
+              ? n.label
+              : String(n.id),
+          kind,
+          category,
           config: (n.config as Record<string, unknown>) ?? {},
           inputPorts,
           outputPorts,
@@ -298,16 +418,67 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       }
     })
 
-    const edges: Edge[] = rawEdges.map((e, i) => ({
-      id: String(e.id ?? `e-${i}`),
-      source: String(e.source ?? e.from),
-      target: String(e.target ?? e.to),
-      sourceHandle: e.source_port ? String(e.source_port) : undefined,
-      targetHandle: e.target_port ? String(e.target_port) : undefined,
-      label: e.source_port && e.target_port
-        ? `${e.source_port} → ${e.target_port}`
-        : undefined,
-    }))
+    const inputHandlesByNode = new Map<string, Set<string>>()
+    const outputHandlesByNode = new Map<string, Set<string>>()
+    for (const node of nodes) {
+      inputHandlesByNode.set(
+        node.id,
+        new Set(node.data.inputPorts.map((port) => port.name)),
+      )
+      outputHandlesByNode.set(
+        node.id,
+        new Set(node.data.outputPorts.map((port) => port.name)),
+      )
+    }
+
+    const dedupedEdges = new Map<string, Edge>()
+    for (const [i, e] of rawEdges.entries()) {
+      const source = String(e.source ?? e.from)
+      const target = String(e.target ?? e.to)
+      const rawSourceHandle = e.source_port
+        ? String(e.source_port)
+        : e.sourceHandle
+          ? String(e.sourceHandle)
+          : undefined
+      const rawTargetHandle = e.target_port
+        ? String(e.target_port)
+        : e.targetHandle
+          ? String(e.targetHandle)
+          : undefined
+
+      const sourceHandles = outputHandlesByNode.get(source)
+      const targetHandles = inputHandlesByNode.get(target)
+      const sourceHandle = rawSourceHandle
+        ? sourceHandles?.has(rawSourceHandle)
+          ? rawSourceHandle
+          : sourceHandles?.has("output")
+            ? "output"
+            : undefined
+        : undefined
+      const targetHandle = rawTargetHandle
+        ? targetHandles?.has(rawTargetHandle)
+          ? rawTargetHandle
+          : targetHandles?.has("input")
+            ? "input"
+            : undefined
+        : undefined
+
+      const edge: Edge = {
+        id: String(e.id ?? `e-${i}`),
+        source,
+        target,
+        sourceHandle,
+        targetHandle,
+        label: sourceHandle && targetHandle
+          ? `${sourceHandle} → ${targetHandle}`
+          : undefined,
+      }
+      const edgeKey = `${source}|${sourceHandle ?? ""}|${target}|${targetHandle ?? ""}`
+      if (!dedupedEdges.has(edgeKey)) {
+        dedupedEdges.set(edgeKey, edge)
+      }
+    }
+    const edges = [...dedupedEdges.values()]
 
     // Reset counters
     nodeCounter = nodes.length

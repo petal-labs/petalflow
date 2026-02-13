@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/petal-labs/petalflow/loader"
@@ -16,6 +17,34 @@ type onboardingWorkflowSeed struct {
 	Description string
 	Tags        []string
 	Definition  map[string]any
+}
+
+type legacySampleTaskInputPatch struct {
+	WorkflowID       string
+	TaskID           string
+	InputKey         string
+	ExpectedTemplate string
+}
+
+var legacyOnboardingTaskInputPatches = []legacySampleTaskInputPatch{
+	{
+		WorkflowID:       "sample_research_brief",
+		TaskID:           "write_brief",
+		InputKey:         "facts",
+		ExpectedTemplate: "{{tasks.gather_facts.output}}",
+	},
+	{
+		WorkflowID:       "sample_meeting_actions",
+		TaskID:           "extract_actions",
+		InputKey:         "summary",
+		ExpectedTemplate: "{{tasks.summarize_meeting.output}}",
+	},
+	{
+		WorkflowID:       "sample_release_notes",
+		TaskID:           "draft_release_notes",
+		InputKey:         "changes",
+		ExpectedTemplate: "{{tasks.classify_changes.output}}",
+	},
 }
 
 func onboardingWorkflowSeeds() []onboardingWorkflowSeed {
@@ -73,9 +102,6 @@ func onboardingWorkflowSeeds() []onboardingWorkflowSeed {
 						"agent":           "researcher",
 						"expected_output": "A concise, decision-ready brief.",
 						"output_key":      "brief",
-						"inputs": map[string]string{
-							"facts": "{{tasks.gather_facts.output}}",
-						},
 					},
 				},
 				"execution": map[string]any{
@@ -138,9 +164,6 @@ func onboardingWorkflowSeeds() []onboardingWorkflowSeed {
 						"agent":           "coordinator",
 						"expected_output": "A markdown table of actionable tasks.",
 						"output_key":      "actions",
-						"inputs": map[string]string{
-							"summary": "{{tasks.summarize_meeting.output}}",
-						},
 					},
 				},
 				"execution": map[string]any{
@@ -207,9 +230,6 @@ func onboardingWorkflowSeeds() []onboardingWorkflowSeed {
 						"agent":           "release_writer",
 						"expected_output": "Polished markdown release notes ready for review.",
 						"output_key":      "release_notes",
-						"inputs": map[string]string{
-							"changes": "{{tasks.classify_changes.output}}",
-						},
 					},
 				},
 				"execution": map[string]any{
@@ -219,6 +239,131 @@ func onboardingWorkflowSeeds() []onboardingWorkflowSeed {
 			},
 		},
 	}
+}
+
+func (s *Server) patchLegacyOnboardingSampleWorkflows(ctx context.Context) error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+
+	for _, seed := range onboardingWorkflowSeeds() {
+		rec, ok, err := s.store.Get(ctx, seed.ID)
+		if err != nil {
+			return fmt.Errorf("get onboarding sample %q for patch: %w", seed.ID, err)
+		}
+		if !ok || rec.SchemaKind != loader.SchemaKindAgent {
+			continue
+		}
+
+		var definition map[string]any
+		if err := json.Unmarshal(rec.Source, &definition); err != nil {
+			return fmt.Errorf("unmarshal onboarding sample %q source for patch: %w", seed.ID, err)
+		}
+
+		changed := false
+		for _, patch := range legacyOnboardingTaskInputPatches {
+			if patch.WorkflowID != seed.ID {
+				continue
+			}
+			if removeLegacyTaskInput(definition, patch) {
+				changed = true
+			}
+		}
+		if !changed {
+			continue
+		}
+
+		defBytes, err := json.Marshal(definition)
+		if err != nil {
+			return fmt.Errorf("marshal patched onboarding sample %q: %w", seed.ID, err)
+		}
+
+		compiled, err := compileAgentWorkflowDefinition(defBytes, rec.ID, rec.Name)
+		if err != nil {
+			return fmt.Errorf("compile patched onboarding sample %q: %w", seed.ID, err)
+		}
+
+		rec.Source = json.RawMessage(defBytes)
+		rec.Compiled = compiled
+		rec.UpdatedAt = time.Now()
+		if err := s.store.Update(ctx, rec); err != nil {
+			return fmt.Errorf("update patched onboarding sample %q: %w", seed.ID, err)
+		}
+	}
+
+	return nil
+}
+
+func removeLegacyTaskInput(definition map[string]any, patch legacySampleTaskInputPatch) bool {
+	tasksRaw, ok := definition["tasks"]
+	if !ok {
+		return false
+	}
+
+	tasks, ok := tasksRaw.([]any)
+	if !ok {
+		return false
+	}
+
+	for i := range tasks {
+		task, ok := tasks[i].(map[string]any)
+		if !ok {
+			continue
+		}
+
+		taskID, _ := task["id"].(string)
+		if strings.TrimSpace(taskID) != patch.TaskID {
+			continue
+		}
+
+		inputsRaw, hasInputs := task["inputs"]
+		if !hasInputs {
+			return false
+		}
+		inputs, ok := toStringAnyMap(inputsRaw)
+		if !ok {
+			return false
+		}
+
+		currentRaw, hasKey := inputs[patch.InputKey]
+		if !hasKey {
+			return false
+		}
+
+		currentValue, ok := currentRaw.(string)
+		if !ok || strings.TrimSpace(currentValue) != patch.ExpectedTemplate {
+			return false
+		}
+
+		delete(inputs, patch.InputKey)
+		if len(inputs) == 0 {
+			delete(task, "inputs")
+		} else {
+			task["inputs"] = inputs
+		}
+		tasks[i] = task
+		definition["tasks"] = tasks
+		return true
+	}
+
+	return false
+}
+
+func toStringAnyMap(value any) (map[string]any, bool) {
+	if value == nil {
+		return nil, false
+	}
+	if m, ok := value.(map[string]any); ok {
+		return m, true
+	}
+	if m, ok := value.(map[string]string); ok {
+		out := make(map[string]any, len(m))
+		for key, v := range m {
+			out[key] = v
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 func (s *Server) seedOnboardingSampleWorkflows(ctx context.Context) error {

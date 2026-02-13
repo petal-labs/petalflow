@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -107,6 +108,9 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	if err := srv.loadState(); err != nil {
 		srv.logger.Warn("server: load persistent state failed", "error", err)
+	}
+	if err := srv.patchLegacyOnboardingSampleWorkflows(context.Background()); err != nil {
+		srv.logger.Warn("server: patch legacy onboarding samples failed", "error", err)
 	}
 	return srv
 }

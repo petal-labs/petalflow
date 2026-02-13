@@ -2,13 +2,98 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
   Background,
+  BackgroundVariant,
   type Node,
   type Edge,
+  type NodeProps,
+  type NodeTypes,
   Position,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { useEditorStore } from "@/stores/editor"
 import { useWorkflowStore } from "@/stores/workflows"
+
+interface PreviewNodeData extends Record<string, unknown> {
+  title: string
+  taskId: string
+  agentLabel: string
+  outputKey: string
+  inputCount: number
+  reviewRequired: boolean
+  summary: string
+  runtimeType: string
+}
+
+function firstLine(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length === 0) return ""
+  const idx = trimmed.indexOf("\n")
+  if (idx === -1) return trimmed
+  return trimmed.slice(0, idx).trim()
+}
+
+function clip(text: string, max = 120): string {
+  const clean = text.trim()
+  if (clean.length <= max) return clean
+  return `${clean.slice(0, Math.max(0, max - 1)).trimEnd()}\u2026`
+}
+
+function normalizeTaskIDFromNodeID(nodeID: string): string {
+  const trimmed = nodeID.trim()
+  if (trimmed.length === 0) return ""
+  if (!trimmed.includes("__")) return trimmed
+  return trimmed.split("__")[0].trim()
+}
+
+function TaskPreviewNode({ data }: NodeProps<Node<PreviewNodeData>>) {
+  const label = data.agentLabel.trim() || "Unassigned"
+  const outputKey = data.outputKey.trim() || "(auto)"
+  const title = data.title.trim() || "Untitled task"
+  const runtimeType = data.runtimeType.trim()
+  const summary = data.summary.trim()
+
+  return (
+    <div className="w-[268px] rounded-lg border border-border/85 bg-card text-card-foreground shadow-[0_8px_20px_-16px_rgba(0,0,0,0.35)]">
+      <div className="rounded-t-lg border-b border-border/75 bg-muted/25 px-3 py-2">
+        <div className="flex items-center justify-between gap-2">
+          <p className="truncate text-[10px] font-mono text-muted-foreground">
+            {data.taskId}
+          </p>
+          <div className="flex items-center gap-1">
+            {runtimeType && (
+              <span className="rounded-full border border-border/70 bg-background/70 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
+                {runtimeType}
+              </span>
+            )}
+            {data.reviewRequired && (
+              <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                Review
+              </span>
+            )}
+          </div>
+        </div>
+        <p className="mt-1 text-[13px] font-semibold leading-tight">
+          {title}
+        </p>
+      </div>
+
+      <div className="space-y-2 px-3 py-2.5">
+        <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">
+          {summary || "No expected output details yet."}
+        </p>
+        <div className="flex items-center justify-between gap-2 border-t border-border/65 pt-2 text-[10px] text-muted-foreground">
+          <span className="truncate">Agent: <span className="font-medium text-foreground/90">{label}</span></span>
+          <span className="truncate font-mono">out: {outputKey}</span>
+          <span>{data.inputCount} in</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const previewNodeTypes: NodeTypes = {
+  taskPreview: TaskPreviewNode,
+}
 
 export function GraphPreview() {
   const toDefinition = useEditorStore((s) => s.toDefinition)
@@ -21,24 +106,45 @@ export function GraphPreview() {
   const [compiledEdges, setCompiledEdges] = useState<Edge[]>([])
   const [error, setError] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null)
-  const previewNodeStyle = useMemo(
-    () => ({
-      backgroundColor: "var(--card)",
-      color: "var(--card-foreground)",
-      borderColor: "var(--border)",
-      borderWidth: 1,
-      borderStyle: "solid",
-      borderRadius: 8,
-      fontSize: 12,
-    }),
-    [],
-  )
+  const tasksByID = useMemo(() => {
+    const out = new Map<string, (typeof tasks)[number]>()
+    for (const task of tasks) {
+      out.set(task.id, task)
+    }
+    return out
+  }, [tasks])
+
+  const agentsByID = useMemo(() => {
+    const out = new Map<string, (typeof agents)[number]>()
+    for (const agent of agents) {
+      out.set(agent.id, agent)
+    }
+    return out
+  }, [agents])
+
+  const buildNodeData = useCallback((nodeID: string, runtimeType: string): PreviewNodeData => {
+    const taskID = normalizeTaskIDFromNodeID(nodeID)
+    const task = tasksByID.get(taskID)
+    const agent = task ? agentsByID.get(task.agent) : undefined
+    const title = task ? firstLine(task.description) : firstLine(nodeID)
+
+    return {
+      title: clip(title || taskID || nodeID || "Untitled task", 96),
+      taskId: taskID || nodeID || "task",
+      agentLabel: agent ? (agent.role.trim() || agent.id) : "",
+      outputKey: task?.output_key ?? "",
+      inputCount: task ? Object.keys(task.inputs ?? {}).length : 0,
+      reviewRequired: Boolean(task?.human_review),
+      summary: clip(firstLine(task?.expected_output ?? ""), 120),
+      runtimeType: runtimeType.trim(),
+    }
+  }, [agentsByID, tasksByID])
 
   // Build a simple fallback layout from the editor state directly
   const fallbackLayout = useMemo(() => {
     const nodes: Node[] = []
     const edges: Edge[] = []
-    const ySpacing = 100
+    const ySpacing = 170
     const xOffset = 50
     const usedNodeIDs = new Set<string>()
     const taskNodeIDs = tasks.map((task, i) => {
@@ -53,16 +159,13 @@ export function GraphPreview() {
       return nodeID
     })
 
-    tasks.forEach((task, i) => {
-      const agent = agents.find((a) => a.id === task.agent)
+    tasks.forEach((_, i) => {
       const taskID = taskNodeIDs[i]
       nodes.push({
         id: taskID,
+        type: "taskPreview",
         position: { x: xOffset, y: i * ySpacing + 50 },
-        data: {
-          label: `${taskID}${agent ? ` (${agent.role || agent.id})` : ""}`,
-        },
-        style: previewNodeStyle,
+        data: buildNodeData(taskID, "task"),
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
       })
@@ -79,7 +182,7 @@ export function GraphPreview() {
     })
 
     return { nodes, edges }
-  }, [agents, tasks, strategy, previewNodeStyle])
+  }, [tasks, strategy, buildNodeData])
 
   const doCompile = useCallback(async () => {
     if (tasks.length === 0) {
@@ -108,12 +211,24 @@ export function GraphPreview() {
           }
           usedNodeIDs.add(nodeID)
 
-          const rawKind = String(n.kind ?? "").trim()
+          const rawType = String(n.type ?? n.kind ?? "").trim()
           return {
             id: nodeID,
-            position: { x: 50, y: i * 100 + 50 },
-            data: { label: rawKind || rawID || `Node ${i + 1}` },
-            style: previewNodeStyle,
+            type: "taskPreview",
+            position: (() => {
+              const columns =
+                strategy === "sequential"
+                  ? 1
+                  : graphNodes.length > 6
+                    ? 3
+                    : graphNodes.length > 3
+                      ? 2
+                      : 1
+              const col = i % columns
+              const row = Math.floor(i / columns)
+              return { x: 50 + col * 320, y: 50 + row * 170 }
+            })(),
+            data: buildNodeData(nodeID, rawType),
             sourcePosition: Position.Bottom,
             targetPosition: Position.Top,
           }
@@ -147,7 +262,7 @@ export function GraphPreview() {
       setCompiledEdges(fallbackLayout.edges)
       setError(null) // Don't show compile errors in preview
     }
-  }, [toDefinition, compile, tasks.length, fallbackLayout, previewNodeStyle])
+  }, [toDefinition, compile, tasks.length, fallbackLayout, buildNodeData, strategy])
 
   // Debounced compile on every change
   useEffect(() => {
@@ -179,16 +294,17 @@ export function GraphPreview() {
       <ReactFlow
         nodes={displayNodes}
         edges={displayEdges}
-        nodesDraggable={false}
+        nodeTypes={previewNodeTypes}
+        nodesDraggable={true}
         nodesConnectable={false}
-        elementsSelectable={false}
+        elementsSelectable={true}
         panOnDrag={true}
         zoomOnScroll={true}
         fitView
         fitViewOptions={{ padding: 0.3 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background />
+        <Background variant={BackgroundVariant.Dots} gap={18} size={1} />
       </ReactFlow>
     </div>
   )
