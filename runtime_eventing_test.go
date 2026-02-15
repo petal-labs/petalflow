@@ -1,5 +1,3 @@
-//go:build integration
-
 package petalflow_test
 
 import (
@@ -16,7 +14,7 @@ import (
 	"github.com/petal-labs/petalflow/runtime"
 )
 
-// mockLLMClient is a deterministic LLM client for integration testing.
+// mockLLMClient is a deterministic LLM client for runtime eventing tests.
 type mockLLMClient struct {
 	response string
 }
@@ -34,7 +32,7 @@ func (m *mockLLMClient) Complete(_ context.Context, req core.LLMRequest) (core.L
 	}, nil
 }
 
-func TestIntegration_EventingPipeline(t *testing.T) {
+func TestRuntimeEventingPipeline(t *testing.T) {
 	// ---------------------------------------------------------------
 	// 1. Build a graph: LLM node -> Tool node
 	// ---------------------------------------------------------------

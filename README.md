@@ -49,6 +49,25 @@ func main() {
 }
 ```
 
+## Testing
+
+```bash
+# Unit and package tests (no external provider calls)
+go test ./... -count=1
+```
+
+```bash
+# External integration tests (requires OPENAI_API_KEY)
+go test -tags=integration ./tests/integration/... -count=1 -v
+```
+
+Optional integration provider coverage:
+
+```bash
+# Enables Anthropic provider integration tests
+export ANTHROPIC_API_KEY=...
+```
+
 ## Core Concepts
 
 ### Graph
