@@ -4,14 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/petal-labs/iris/providers"
 	anthropicprovider "github.com/petal-labs/iris/providers/anthropic"
 	ollamaprovider "github.com/petal-labs/iris/providers/ollama"
 	openaiprovider "github.com/petal-labs/iris/providers/openai"
-	"github.com/petal-labs/iris/providers"
-	// Auto-register common providers.
-	_ "github.com/petal-labs/iris/providers/anthropic"
-	_ "github.com/petal-labs/iris/providers/ollama"
-	_ "github.com/petal-labs/iris/providers/openai"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
