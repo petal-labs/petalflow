@@ -132,6 +132,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	workflowServer := server.NewServer(server.ServerConfig{
 		Store:     server.NewMemoryStore(),
+		ToolStore: toolStore,
 		Providers: providers,
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return llmprovider.NewClient(name, cfg)
