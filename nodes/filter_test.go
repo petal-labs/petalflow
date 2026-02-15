@@ -1041,3 +1041,76 @@ func TestExtractValue(t *testing.T) {
 		}
 	})
 }
+
+func TestGetArtifactField(t *testing.T) {
+	artifact := core.Artifact{
+		ID:       "a1",
+		Type:     "chunk",
+		MimeType: "text/plain",
+		Text:     "hello",
+		URI:      "file:///tmp/doc.txt",
+		Meta: map[string]any{
+			"score": 0.9,
+		},
+	}
+
+	tests := []struct {
+		field string
+		want  any
+	}{
+		{field: "id", want: "a1"},
+		{field: "ID", want: "a1"},
+		{field: "type", want: "chunk"},
+		{field: "mimeType", want: "text/plain"},
+		{field: "mime_type", want: "text/plain"},
+		{field: "text", want: "hello"},
+		{field: "uri", want: "file:///tmp/doc.txt"},
+		{field: "score", want: 0.9},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			if got := getArtifactField(artifact, tt.field); got != tt.want {
+				t.Fatalf("getArtifactField(%q) = %v, want %v", tt.field, got, tt.want)
+			}
+		})
+	}
+
+	if got := getArtifactField(artifact, "unknown"); got != nil {
+		t.Fatalf("getArtifactField(unknown) = %v, want nil", got)
+	}
+}
+
+func TestGetMessageField(t *testing.T) {
+	message := core.Message{
+		Role:    "assistant",
+		Content: "hello",
+		Name:    "bot",
+		Meta: map[string]any{
+			"tokens": 42,
+		},
+	}
+
+	tests := []struct {
+		field string
+		want  any
+	}{
+		{field: "role", want: "assistant"},
+		{field: "Role", want: "assistant"},
+		{field: "content", want: "hello"},
+		{field: "name", want: "bot"},
+		{field: "tokens", want: 42},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			if got := getMessageField(message, tt.field); got != tt.want {
+				t.Fatalf("getMessageField(%q) = %v, want %v", tt.field, got, tt.want)
+			}
+		})
+	}
+
+	if got := getMessageField(message, "unknown"); got != nil {
+		t.Fatalf("getMessageField(unknown) = %v, want nil", got)
+	}
+}

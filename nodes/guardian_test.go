@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/petal-labs/petalflow/core"
@@ -258,6 +259,104 @@ func TestGuardianNode_Length(t *testing.T) {
 		gr := result.Vars["result"].(GuardianResult)
 		if gr.Passed {
 			t.Errorf("expected validation to fail for array length 5 > 3")
+		}
+	})
+}
+
+func TestGuardianNode_CheckSchema(t *testing.T) {
+	node := NewGuardianNode("schema", GuardianNodeConfig{
+		InputVar: "payload",
+		Checks: []GuardianCheck{
+			{Name: "schema_check", Type: GuardianCheckSchema},
+		},
+	})
+
+	t.Run("requires schema", func(t *testing.T) {
+		_, err := node.checkSchema(GuardianCheck{
+			Name:  "missing_schema",
+			Type:  GuardianCheckSchema,
+			Field: "payload",
+		}, map[string]any{})
+		if err == nil {
+			t.Fatal("expected error for missing schema")
+		}
+		if !strings.Contains(err.Error(), "requires Schema") {
+			t.Fatalf("error = %q, want to contain %q", err.Error(), "requires Schema")
+		}
+	})
+
+	t.Run("type mismatch fails early", func(t *testing.T) {
+		failures, err := node.checkSchema(GuardianCheck{
+			Name:  "type_check",
+			Type:  GuardianCheckSchema,
+			Field: "payload",
+			Schema: map[string]any{
+				"type": "string",
+			},
+		}, 123)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(failures) != 1 {
+			t.Fatalf("len(failures) = %d, want 1", len(failures))
+		}
+		if failures[0].Field != "payload" {
+			t.Fatalf("failure field = %q, want payload", failures[0].Field)
+		}
+		if !strings.Contains(failures[0].Message, "expected type") {
+			t.Fatalf("failure message = %q, want type mismatch", failures[0].Message)
+		}
+	})
+
+	t.Run("nested constraints collect failures", func(t *testing.T) {
+		check := GuardianCheck{
+			Name:  "nested_schema",
+			Type:  GuardianCheckSchema,
+			Field: "payload",
+			Schema: map[string]any{
+				"type":     "object",
+				"required": []any{"name", "age", "tier"},
+				"properties": map[string]any{
+					"name": map[string]any{
+						"type":      "string",
+						"minLength": float64(3),
+						"maxLength": float64(5),
+						"pattern":   "^[A-Z]+$",
+					},
+					"age": map[string]any{
+						"type":    "number",
+						"minimum": float64(18),
+						"maximum": float64(99),
+					},
+					"tier": map[string]any{
+						"type": "string",
+						"enum": []any{"gold", "silver"},
+					},
+				},
+			},
+		}
+
+		failures, err := node.checkSchema(check, map[string]any{
+			"name": "abcdef", // maxLength + pattern
+			"age":  120,      // maximum
+			"tier": "bronze", // enum
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(failures) < 4 {
+			t.Fatalf("len(failures) = %d, want >= 4", len(failures))
+		}
+
+		foundName := false
+		for _, failure := range failures {
+			if strings.HasPrefix(failure.Field, "payload.name") {
+				foundName = true
+				break
+			}
+		}
+		if !foundName {
+			t.Fatalf("expected at least one failure for payload.name, got: %+v", failures)
 		}
 	})
 }
