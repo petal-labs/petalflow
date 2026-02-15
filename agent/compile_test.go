@@ -674,9 +674,9 @@ func TestCompile_HITL(t *testing.T) {
 		t.Error("expected edge from LLM node to HITL gate")
 	}
 
-	// Entry should be the HITL gate (as it's the "output" of the task)
-	if gd.Entry != expectedHITLID {
-		t.Errorf("Entry = %q, want %q", gd.Entry, expectedHITLID)
+	// Entry should be the task start node so the LLM runs before HITL review.
+	if gd.Entry != "research__researcher" {
+		t.Errorf("Entry = %q, want %q", gd.Entry, "research__researcher")
 	}
 }
 
@@ -911,6 +911,76 @@ func TestCompile_ToolActionReferencesAndToolConfig(t *testing.T) {
 	}
 	if toolCfg["region"] != "us-west-2" {
 		t.Fatalf("standalone tool_config.region = %v, want us-west-2", toolCfg["region"])
+	}
+
+	if gd.Entry != "research__s3_fetch.download" {
+		t.Fatalf("Entry = %q, want research__s3_fetch.download", gd.Entry)
+	}
+}
+
+func TestCompile_StandaloneToolDefaultArgsTemplate(t *testing.T) {
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     "http_fetch.fetch",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "standalone",
+		Ports: registry.PortSchema{
+			Inputs: []registry.PortDef{
+				{Name: "url", Type: "string", Required: true},
+				{Name: "method", Type: "string"},
+			},
+			Outputs: []registry.PortDef{
+				{Name: "output", Type: "object"},
+			},
+		},
+	})
+
+	wf := minimalWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "Researcher",
+		Goal:     "Research",
+		Provider: "anthropic",
+		Model:    "claude-sonnet-4-20250514",
+		Tools:    []string{"http_fetch.fetch"},
+	}
+
+	gd, err := Compile(wf)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	var standalone graph.NodeDef
+	for _, node := range gd.Nodes {
+		if node.Type == "http_fetch.fetch" {
+			standalone = node
+			break
+		}
+	}
+	if standalone.ID == "" {
+		t.Fatal("expected standalone node for http_fetch.fetch")
+	}
+
+	argsTemplate, ok := standalone.Config["args_template"].(map[string]string)
+	if !ok {
+		typed, ok := standalone.Config["args_template"].(map[string]any)
+		if !ok {
+			t.Fatalf("args_template type = %T, want map[string]string or map[string]any", standalone.Config["args_template"])
+		}
+		argsTemplate = make(map[string]string, len(typed))
+		for k, v := range typed {
+			s, _ := v.(string)
+			argsTemplate[k] = s
+		}
+	}
+	if argsTemplate["url"] != "url" {
+		t.Fatalf("args_template[url] = %q, want %q", argsTemplate["url"], "url")
+	}
+	if argsTemplate["method"] != "method" {
+		t.Fatalf("args_template[method] = %q, want %q", argsTemplate["method"], "method")
+	}
+
+	if gd.Entry != standalone.ID {
+		t.Fatalf("Entry = %q, want %q", gd.Entry, standalone.ID)
 	}
 }
 

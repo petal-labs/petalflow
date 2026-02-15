@@ -5,6 +5,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -234,7 +235,8 @@ func TestLLMNode_JSONSchema(t *testing.T) {
 	case string:
 		// Verify it parses as valid JSON with the expected shape.
 		var parsed map[string]any
-		if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+		candidate := trimJSONCodeFence(v)
+		if err := json.Unmarshal([]byte(candidate), &parsed); err != nil {
 			t.Fatalf("output is not valid JSON: %v\nraw: %s", err, v)
 		}
 		greeting, ok := parsed["greeting"].(string)
@@ -245,4 +247,26 @@ func TestLLMNode_JSONSchema(t *testing.T) {
 	default:
 		t.Fatalf("unexpected output type %T: %v", output, output)
 	}
+}
+
+func trimJSONCodeFence(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) == 0 {
+		return trimmed
+	}
+
+	// Drop opening fence line (``` or ```json).
+	lines = lines[1:]
+
+	// Drop closing fence if present.
+	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+		lines = lines[:len(lines)-1]
+	}
+
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
