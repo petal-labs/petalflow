@@ -3,6 +3,7 @@ package hydrate
 import (
 	"context"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/nodes"
 	condnode "github.com/petal-labs/petalflow/nodes/conditional"
+	"github.com/petal-labs/petalflow/registry"
 )
 
 // mockLLMClient implements core.LLMClient for testing.
@@ -933,6 +935,193 @@ func TestNewLiveNodeFactory_SinkNode(t *testing.T) {
 	}
 	if len(cfg.InputVars) != 2 || len(cfg.Sinks) != 1 {
 		t.Fatalf("unexpected sink config: input_vars=%v sinks=%d", cfg.InputVars, len(cfg.Sinks))
+	}
+}
+
+func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
+	providers := ProviderMap{
+		"anthropic": {APIKey: "sk-test"},
+	}
+	factory, _ := newMockClientFactory()
+	toolRegistry := core.NewToolRegistry()
+	toolRegistry.Register(&mockTool{name: "web_search"})
+	handler := &mockHumanHandler{}
+
+	nodeFactory := NewLiveNodeFactory(
+		providers,
+		factory,
+		WithToolRegistry(toolRegistry),
+		WithHumanHandler(handler),
+	)
+
+	type caseDef struct {
+		node            graph.NodeDef
+		expectErrSubstr string
+	}
+
+	cases := map[string]caseDef{
+		"llm_prompt": {
+			node: graph.NodeDef{
+				ID:   "n-llm-prompt",
+				Type: "llm_prompt",
+				Config: map[string]any{
+					"provider": "anthropic",
+					"model":    "claude-sonnet",
+				},
+			},
+		},
+		"llm_router": {
+			node: graph.NodeDef{
+				ID:   "n-llm-router",
+				Type: "llm_router",
+				Config: map[string]any{
+					"provider": "anthropic",
+					"model":    "claude-sonnet",
+				},
+			},
+		},
+		"rule_router": {
+			node: graph.NodeDef{
+				ID:   "n-rule-router",
+				Type: "rule_router",
+			},
+		},
+		"filter": {
+			node: graph.NodeDef{
+				ID:   "n-filter",
+				Type: "filter",
+			},
+		},
+		"transform": {
+			node: graph.NodeDef{
+				ID:   "n-transform",
+				Type: "transform",
+			},
+		},
+		"merge": {
+			node: graph.NodeDef{
+				ID:   "n-merge",
+				Type: "merge",
+			},
+		},
+		"tool": {
+			node: graph.NodeDef{
+				ID:   "n-tool",
+				Type: "tool",
+				Config: map[string]any{
+					"tool_name": "web_search",
+				},
+			},
+		},
+		"gate": {
+			node: graph.NodeDef{
+				ID:   "n-gate",
+				Type: "gate",
+			},
+		},
+		"guardian": {
+			node: graph.NodeDef{
+				ID:   "n-guardian",
+				Type: "guardian",
+			},
+		},
+		"human": {
+			node: graph.NodeDef{
+				ID:   "n-human",
+				Type: "human",
+				Config: map[string]any{
+					"mode": "approval",
+				},
+			},
+		},
+		"map": {
+			node: graph.NodeDef{
+				ID:   "n-map",
+				Type: "map",
+			},
+			expectErrSubstr: "requires a mapper binding",
+		},
+		"cache": {
+			node: graph.NodeDef{
+				ID:   "n-cache",
+				Type: "cache",
+			},
+			expectErrSubstr: "requires a wrapped node binding",
+		},
+		"sink": {
+			node: graph.NodeDef{
+				ID:   "n-sink",
+				Type: "sink",
+			},
+		},
+		"noop": {
+			node: graph.NodeDef{
+				ID:   "n-noop",
+				Type: "noop",
+			},
+		},
+		"func": {
+			node: graph.NodeDef{
+				ID:   "n-func",
+				Type: "func",
+			},
+		},
+		"conditional": {
+			node: graph.NodeDef{
+				ID:   "n-conditional",
+				Type: "conditional",
+				Config: map[string]any{
+					"default": "_skip",
+					"conditions": []any{
+						map[string]any{
+							"name":       "ok",
+							"expression": "input.score > 0.5",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	expected := make(map[string]struct{}, len(cases))
+	for nodeType := range cases {
+		expected[nodeType] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, len(cases))
+	for _, def := range registry.Global().All() {
+		// Ignore dynamic tool action entries, conformance here is for built-ins.
+		if strings.Contains(def.Type, ".") {
+			continue
+		}
+		c, ok := cases[def.Type]
+		if !ok {
+			t.Fatalf("missing conformance case for built-in type %q", def.Type)
+		}
+		seen[def.Type] = struct{}{}
+
+		node, err := nodeFactory(c.node)
+		if c.expectErrSubstr != "" {
+			if err == nil {
+				t.Fatalf("type %q: expected error containing %q, got nil", def.Type, c.expectErrSubstr)
+			}
+			if !strings.Contains(err.Error(), c.expectErrSubstr) {
+				t.Fatalf("type %q: error = %q, want substring %q", def.Type, err.Error(), c.expectErrSubstr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("type %q: unexpected hydration error: %v", def.Type, err)
+		}
+		if node == nil {
+			t.Fatalf("type %q: expected non-nil node", def.Type)
+		}
+	}
+
+	for nodeType := range expected {
+		if _, ok := seen[nodeType]; !ok {
+			t.Fatalf("conformance case for %q is not registered in global built-ins", nodeType)
+		}
 	}
 }
 
