@@ -1188,3 +1188,35 @@ func TestSinkNode_ConditionError(t *testing.T) {
 		t.Errorf("expected condition error, got: %v", err)
 	}
 }
+
+func TestSinkTemplateFuncs(t *testing.T) {
+	funcs := sinkTemplateFuncs()
+
+	jsonFn, ok := funcs["json"].(func(any) string)
+	if !ok {
+		t.Fatal("json template func has unexpected type")
+	}
+	prettyFn, ok := funcs["jsonPretty"].(func(any) string)
+	if !ok {
+		t.Fatal("jsonPretty template func has unexpected type")
+	}
+
+	compact := jsonFn(map[string]any{"name": "petalflow"})
+	if !strings.Contains(compact, `"name":"petalflow"`) {
+		t.Fatalf("json output = %q, want compact JSON payload", compact)
+	}
+
+	pretty := prettyFn(map[string]any{"name": "petalflow"})
+	if !strings.Contains(pretty, "\n") {
+		t.Fatalf("jsonPretty output = %q, want multiline JSON", pretty)
+	}
+
+	// Unsupported values should be reported as formatted errors, not panics.
+	unsupported := map[string]any{"ch": make(chan int)}
+	if got := jsonFn(unsupported); !strings.Contains(got, "error:") {
+		t.Fatalf("json error output = %q, want error prefix", got)
+	}
+	if got := prettyFn(unsupported); !strings.Contains(got, "error:") {
+		t.Fatalf("jsonPretty error output = %q, want error prefix", got)
+	}
+}
