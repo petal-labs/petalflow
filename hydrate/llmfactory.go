@@ -360,12 +360,60 @@ func configMapAnyMap(m map[string]any, key string) map[string]any {
 	return v
 }
 
+func configStringMap(m map[string]any, key string) map[string]string {
+	raw, ok := m[key]
+	if !ok {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case map[string]string:
+		if len(typed) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(typed))
+		for k, v := range typed {
+			out[k] = v
+		}
+		return out
+	case map[string]any:
+		if len(typed) == 0 {
+			return nil
+		}
+		out := make(map[string]string, len(typed))
+		for k, v := range typed {
+			if s, ok := v.(string); ok {
+				out[k] = s
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func cloneAnyMap(m map[string]any) map[string]any {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
 // buildToolNode creates a ToolNode from a NodeDef and a resolved tool.
 func buildToolNode(nd graph.NodeDef, tool core.PetalTool) *nodes.ToolNode {
 	cfg := nodes.ToolNodeConfig{
-		ToolName:  nd.Type,
-		OutputKey: configString(nd.Config, "output_key"),
-		Timeout:   configDuration(nd.Config, "timeout"),
+		ToolName:     nd.Type,
+		ArgsTemplate: configStringMap(nd.Config, "args_template"),
+		StaticArgs:   cloneAnyMap(configMapAnyMap(nd.Config, "static_args")),
+		OutputKey:    configString(nd.Config, "output_key"),
+		Timeout:      configDuration(nd.Config, "timeout"),
 	}
 
 	return nodes.NewToolNode(nd.ID, tool, cfg)
@@ -374,9 +422,11 @@ func buildToolNode(nd graph.NodeDef, tool core.PetalTool) *nodes.ToolNode {
 // buildToolNodeWithName creates a ToolNode from a NodeDef using an explicit tool name.
 func buildToolNodeWithName(nd graph.NodeDef, toolName string, tool core.PetalTool) *nodes.ToolNode {
 	cfg := nodes.ToolNodeConfig{
-		ToolName:  toolName,
-		OutputKey: configString(nd.Config, "output_key"),
-		Timeout:   configDuration(nd.Config, "timeout"),
+		ToolName:     toolName,
+		ArgsTemplate: configStringMap(nd.Config, "args_template"),
+		StaticArgs:   cloneAnyMap(configMapAnyMap(nd.Config, "static_args")),
+		OutputKey:    configString(nd.Config, "output_key"),
+		Timeout:      configDuration(nd.Config, "timeout"),
 	}
 
 	return nodes.NewToolNode(nd.ID, tool, cfg)

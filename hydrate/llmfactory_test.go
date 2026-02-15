@@ -546,7 +546,13 @@ func TestNewLiveNodeFactory_ToolNodeExplicitType(t *testing.T) {
 		ID:   "search",
 		Type: "tool",
 		Config: map[string]any{
-			"tool_name":  "web_search",
+			"tool_name": "web_search",
+			"args_template": map[string]any{
+				"query": "input.query",
+			},
+			"static_args": map[string]any{
+				"limit": float64(5),
+			},
 			"output_key": "results",
 			"timeout":    float64(2),
 		},
@@ -567,6 +573,12 @@ func TestNewLiveNodeFactory_ToolNodeExplicitType(t *testing.T) {
 	}
 	if cfg.OutputKey != "results" {
 		t.Fatalf("OutputKey = %q, want %q", cfg.OutputKey, "results")
+	}
+	if cfg.ArgsTemplate["query"] != "input.query" {
+		t.Fatalf("ArgsTemplate[query] = %q, want %q", cfg.ArgsTemplate["query"], "input.query")
+	}
+	if limit, ok := cfg.StaticArgs["limit"].(float64); !ok || limit != 5 {
+		t.Fatalf("StaticArgs[limit] = %v, want 5", cfg.StaticArgs["limit"])
 	}
 	if cfg.Timeout != 2*time.Second {
 		t.Fatalf("Timeout = %s, want 2s", cfg.Timeout)
@@ -824,12 +836,12 @@ func TestNewLiveNodeFactory_GuardianNode(t *testing.T) {
 		ID:   "guardian",
 		Type: "guardian",
 		Config: map[string]any{
-			"input_var":              "payload",
-			"on_fail":                "redirect",
-			"fail_message":           "validation failed",
-			"redirect_node_id":       "fallback",
-			"result_var":             "guardian_result",
-			"stop_on_first_failure":  true,
+			"input_var":             "payload",
+			"on_fail":               "redirect",
+			"fail_message":          "validation failed",
+			"redirect_node_id":      "fallback",
+			"result_var":            "guardian_result",
+			"stop_on_first_failure": true,
 			"checks": []any{
 				map[string]any{
 					"name":            "required",
