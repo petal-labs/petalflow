@@ -89,8 +89,8 @@ func TestNewLiveNodeFactory_LLMRouter(t *testing.T) {
 		ID:   "classifier",
 		Type: "llm_router",
 		Config: map[string]any{
-			"provider":     "openai",
-			"model":        "gpt-4",
+			"provider":      "openai",
+			"model":         "gpt-4",
 			"system_prompt": "Classify the input.",
 			"allowed_targets": map[string]any{
 				"positive": "happy_path",
@@ -134,13 +134,9 @@ func TestNewLiveNodeFactory_UnknownType(t *testing.T) {
 		Type: "some_unknown_type",
 	}
 
-	node, err := nodeFactory(nd)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, ok := node.(*core.FuncNode); !ok {
-		t.Errorf("expected *core.FuncNode placeholder, got %T", node)
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for unknown node type, got nil")
 	}
 }
 
@@ -441,13 +437,44 @@ func TestNewLiveNodeFactory_ToolNode_NotInRegistry(t *testing.T) {
 		Type: "web_search",
 	}
 
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error when tool type is not registered, got nil")
+	}
+}
+
+func TestNewLiveNodeFactory_FuncNode(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "fn",
+		Type: "func",
+	}
+
 	node, err := nodeFactory(nd)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// Falls back to FuncNode placeholder.
 	if _, ok := node.(*core.FuncNode); !ok {
-		t.Errorf("expected *core.FuncNode placeholder, got %T", node)
+		t.Fatalf("expected *core.FuncNode, got %T", node)
+	}
+}
+
+func TestNewLiveNodeFactory_NoopNode(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "noop",
+		Type: "noop",
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := node.(*core.NoopNode); !ok {
+		t.Fatalf("expected *core.NoopNode, got %T", node)
 	}
 }
