@@ -354,7 +354,10 @@ func compileCustom(gd *graph.GraphDefinition, wf *AgentWorkflow, taskNodeIDs map
 	}
 	condGroups := make(map[string][]condTarget) // key: sorted depIDs
 
-	for taskID, deps := range wf.Execution.Tasks {
+	execTaskIDs := sortedKeys(wf.Execution.Tasks)
+
+	for _, taskID := range execTaskIDs {
+		deps := wf.Execution.Tasks[taskID]
 		if deps.Condition == "" {
 			continue
 		}
@@ -368,7 +371,8 @@ func compileCustom(gd *graph.GraphDefinition, wf *AgentWorkflow, taskNodeIDs map
 		}
 	}
 
-	for taskID, deps := range wf.Execution.Tasks {
+	for _, taskID := range execTaskIDs {
+		deps := wf.Execution.Tasks[taskID]
 		dstNode, ok := taskNodeIDs[taskID]
 		if !ok {
 			continue
