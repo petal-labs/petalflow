@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/registry"
 )
 
 // Diagnostic represents a validation error or warning produced by schema
@@ -174,6 +175,90 @@ func (gd *GraphDefinition) Validate() []Diagnostic {
 	diags = append(diags, gd.validateConditionalNodes(nodeIDs)...)
 
 	return diags
+}
+
+// ValidateWithRegistry runs structural validation plus registry-dependent checks:
+//   - GR-003: node type must exist in the registry
+//   - GR-006: source handle should map to a declared output port when static
+//   - GR-008: function_call tools cannot be used as standalone graph nodes
+func (gd *GraphDefinition) ValidateWithRegistry(reg *registry.Registry) []Diagnostic {
+	diags := gd.Validate()
+	if reg == nil {
+		return diags
+	}
+
+	// Collect node definitions for edge validation.
+	nodesByID := make(map[string]NodeDef, len(gd.Nodes))
+	defsByNodeID := make(map[string]registry.NodeTypeDef, len(gd.Nodes))
+	dynamicOutputs := map[string]bool{
+		"conditional": true,
+	}
+
+	for i, node := range gd.Nodes {
+		nodesByID[node.ID] = node
+
+		def, ok := reg.Get(node.Type)
+		if !ok {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-003",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Node %q references unknown type %q", node.ID, node.Type),
+				Path:     fmt.Sprintf("nodes[%d].type", i),
+			})
+			continue
+		}
+		defsByNodeID[node.ID] = def
+
+		// function_call tools are intended for model-invoked tool use, not graph nodes.
+		if def.IsTool && def.ToolMode == "function_call" {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-008",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Node %q uses function_call tool type %q as a standalone graph node", node.ID, node.Type),
+				Path:     fmt.Sprintf("nodes[%d].type", i),
+			})
+		}
+	}
+
+	// Validate source handles where port sets are static.
+	for i, edge := range gd.Edges {
+		if edge.SourceHandle == "" {
+			continue
+		}
+
+		srcNode, ok := nodesByID[edge.Source]
+		if !ok {
+			continue
+		}
+		if dynamicOutputs[srcNode.Type] {
+			continue
+		}
+
+		srcDef, ok := defsByNodeID[edge.Source]
+		if !ok {
+			continue
+		}
+
+		if !hasPortName(srcDef.Ports.Outputs, edge.SourceHandle) {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-006",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Edge sourceHandle %q is not an output port on node %q (type %q)", edge.SourceHandle, edge.Source, srcNode.Type),
+				Path:     fmt.Sprintf("edges[%d].sourceHandle", i),
+			})
+		}
+	}
+
+	return diags
+}
+
+func hasPortName(ports []registry.PortDef, name string) bool {
+	for _, port := range ports {
+		if port.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ExprValidator is a function that checks expression syntax.

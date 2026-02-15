@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/registry"
 )
 
 func TestGraphDefinition_JSONRoundTrip(t *testing.T) {
@@ -342,6 +343,93 @@ func TestValidate_MultipleErrors(t *testing.T) {
 	errors := Errors(diags)
 	if len(errors) < 3 {
 		t.Errorf("expected at least 3 errors, got %d: %v", len(errors), errors)
+	}
+}
+
+func TestValidateWithRegistry_GR003_UnknownNodeType(t *testing.T) {
+	reg := registry.Global()
+
+	gd := GraphDefinition{
+		ID:      "unknown_type",
+		Version: "1.0",
+		Nodes: []NodeDef{
+			{ID: "a", Type: "definitely_not_registered"},
+		},
+		Edges: []EdgeDef{},
+		Entry: "a",
+	}
+
+	diags := gd.ValidateWithRegistry(reg)
+	found := findDiag(diags, "GR-003")
+	if found == nil {
+		t.Fatal("expected GR-003 diagnostic for unknown node type")
+	}
+	if found.Severity != SeverityError {
+		t.Errorf("GR-003 severity = %q, want %q", found.Severity, SeverityError)
+	}
+}
+
+func TestValidateWithRegistry_GR008_FunctionCallToolAsNode(t *testing.T) {
+	reg := registry.Global()
+	reg.Register(registry.NodeTypeDef{
+		Type:        "test_function_call_tool",
+		Category:    "tool",
+		DisplayName: "Test Function Tool",
+		Description: "for validation test",
+		IsTool:      true,
+		ToolMode:    "function_call",
+		Ports: registry.PortSchema{
+			Inputs:  []registry.PortDef{{Name: "input", Type: "string", Required: true}},
+			Outputs: []registry.PortDef{{Name: "output", Type: "string"}},
+		},
+	})
+	t.Cleanup(func() {
+		reg.Delete("test_function_call_tool")
+	})
+
+	gd := GraphDefinition{
+		ID:      "function_tool_node",
+		Version: "1.0",
+		Nodes: []NodeDef{
+			{ID: "a", Type: "test_function_call_tool"},
+		},
+		Edges: []EdgeDef{},
+		Entry: "a",
+	}
+
+	diags := gd.ValidateWithRegistry(reg)
+	found := findDiag(diags, "GR-008")
+	if found == nil {
+		t.Fatal("expected GR-008 diagnostic for function_call tool standalone node")
+	}
+	if found.Severity != SeverityError {
+		t.Errorf("GR-008 severity = %q, want %q", found.Severity, SeverityError)
+	}
+}
+
+func TestValidateWithRegistry_GR006_InvalidSourceHandle(t *testing.T) {
+	reg := registry.Global()
+
+	gd := GraphDefinition{
+		ID:      "bad_handle",
+		Version: "1.0",
+		Nodes: []NodeDef{
+			{ID: "a", Type: "noop"},
+			{ID: "b", Type: "noop"},
+		},
+		Edges: []EdgeDef{
+			{Source: "a", SourceHandle: "not_a_port", Target: "b", TargetHandle: "input"},
+		},
+		Entry: "a",
+	}
+
+	diags := gd.ValidateWithRegistry(reg)
+	found := findDiag(diags, "GR-006")
+	if found == nil {
+		t.Fatal("expected GR-006 diagnostic for invalid source handle")
+	}
+	if found.Severity != SeverityError {
+		t.Errorf("GR-006 severity = %q, want %q", found.Severity, SeverityError)
 	}
 }
 

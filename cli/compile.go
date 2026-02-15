@@ -11,6 +11,7 @@ import (
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/loader"
+	"github.com/petal-labs/petalflow/registry"
 )
 
 // NewCompileCmd creates the "compile" subcommand.
@@ -92,7 +93,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 7: Graph validation on compiled output
-	graphDiags := gd.Validate()
+	graphDiags := gd.ValidateWithRegistry(registry.Global())
 	if graph.HasErrors(graphDiags) {
 		printDiagnosticsText(stderr, graph.Errors(graphDiags))
 		return exitError(exitValidation, "compiled graph validation failed with %d error(s)", len(graph.Errors(graphDiags)))
