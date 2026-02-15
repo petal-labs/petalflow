@@ -46,6 +46,14 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Run irisadapter module tests
+        working-directory: irisadapter
+        run: go test -race ./...
+
+      - name: Run examples module tests
+        working-directory: examples
+        run: go test -race ./...
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -69,6 +77,14 @@ jobs:
       - name: Build packages
         run: go build ./...
 
+      - name: Build irisadapter module
+        working-directory: irisadapter
+        run: go build ./...
+
+      - name: Build examples module
+        working-directory: examples
+        run: go build ./...
+
   security:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -82,7 +98,16 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: Run gosec
-        uses: securego/gosec@v2.22.11
-        with:
-          args: -exclude-dir=examples -exclude-dir=irisadapter ./...
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11
+
+      - name: Run gosec (root module)
+        run: $(go env GOPATH)/bin/gosec ./...
+
+      - name: Run gosec (irisadapter module)
+        working-directory: irisadapter
+        run: $(go env GOPATH)/bin/gosec ./...
+
+      - name: Run gosec (examples module)
+        working-directory: examples
+        run: $(go env GOPATH)/bin/gosec ./...
