@@ -7,11 +7,13 @@ import (
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 // ServerConfig configures a Server instance.
 type ServerConfig struct {
 	Store         WorkflowStore
+	ToolStore     tool.Store
 	Providers     hydrate.ProviderMap
 	ClientFactory hydrate.ClientFactory
 	Bus           bus.EventBus
@@ -24,6 +26,7 @@ type ServerConfig struct {
 // Server is the PetalFlow HTTP API server.
 type Server struct {
 	store         WorkflowStore
+	toolStore     tool.Store
 	providers     hydrate.ProviderMap
 	clientFactory hydrate.ClientFactory
 	bus           bus.EventBus
@@ -49,6 +52,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	return &Server{
 		store:         cfg.Store,
+		toolStore:     cfg.ToolStore,
 		providers:     cfg.Providers,
 		clientFactory: cfg.ClientFactory,
 		bus:           cfg.Bus,

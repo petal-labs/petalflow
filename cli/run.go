@@ -47,6 +47,7 @@ func NewRunCmd() *cobra.Command {
 	cmd.Flags().Bool("dry-run", false, "Compile and validate only, do not execute")
 	cmd.Flags().StringArray("env", nil, "Set environment variable (repeatable)")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable, e.g. --provider-key anthropic=sk-...)")
+	cmd.Flags().String("store-path", "", "Path to tool registry store file (default: ~/.petalflow/tools.json)")
 	cmd.Flags().Bool("stream", false, "Enable streaming output via SSE to stdout")
 
 	return cmd
@@ -87,11 +88,20 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return exitError(exitProvider, "resolving providers: %v", err)
 	}
 
+	store, err := resolveToolStore(cmd)
+	if err != nil {
+		return exitError(exitRuntime, "loading tool store: %v", err)
+	}
+	toolRegistry, err := hydrate.BuildActionToolRegistry(cmd.Context(), store)
+	if err != nil {
+		return exitError(exitRuntime, "building tool registry: %v", err)
+	}
+
 	// Hydrate the graph (build executable graph from definition)
 	factory := hydrate.NewLiveNodeFactory(providers, func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 		return llmprovider.NewClient(name, cfg)
 	},
-		hydrate.WithToolRegistry(core.NewToolRegistry()),
+		hydrate.WithToolRegistry(toolRegistry),
 		hydrate.WithHumanHandler(&cliHumanHandler{w: cmd.ErrOrStderr()}),
 	)
 	execGraph, err := hydrate.HydrateGraph(gd, providers, factory)

@@ -328,8 +328,14 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hydrate graph
+	toolRegistry, err := hydrate.BuildActionToolRegistry(r.Context(), s.toolStore)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "TOOL_REGISTRY_ERROR", err.Error())
+		return
+	}
+
 	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory,
-		hydrate.WithToolRegistry(core.NewToolRegistry()),
+		hydrate.WithToolRegistry(toolRegistry),
 	)
 	execGraph, err := hydrate.HydrateGraph(rec.Compiled, s.providers, factory)
 	if err != nil {
