@@ -14,5 +14,3 @@ require github.com/google/uuid v1.6.0 // indirect
 replace github.com/petal-labs/petalflow => ../
 
 replace github.com/petal-labs/petalflow/irisadapter => ../irisadapter
-
-replace github.com/petal-labs/iris => /Users/erikhoward/src/github/petal-labs/iris
