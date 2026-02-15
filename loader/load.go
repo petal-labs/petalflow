@@ -7,6 +7,7 @@ import (
 
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/registry"
 )
 
 // LoadWorkflow is the unified entry point that loads a workflow file,
@@ -93,7 +94,7 @@ func loadGraphDefinition(data []byte, path string) (*graph.GraphDefinition, erro
 	}
 
 	// Validate
-	diags := gd.Validate()
+	diags := gd.ValidateWithRegistry(registry.Global())
 	if graph.HasErrors(diags) {
 		return nil, &DiagnosticError{Diagnostics: diags}
 	}

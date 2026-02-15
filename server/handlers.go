@@ -88,7 +88,7 @@ func (s *Server) handleCreateAgentWorkflow(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	gdDiags := gd.Validate()
+	gdDiags := gd.ValidateWithRegistry(registry.Global())
 	if graph.HasErrors(gdDiags) {
 		details := diagMessages(gdDiags)
 		writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "compiled graph validation failed", details...)
@@ -141,7 +141,7 @@ func (s *Server) handleCreateGraphWorkflow(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	diags := gd.Validate()
+	diags := gd.ValidateWithRegistry(registry.Global())
 	if graph.HasErrors(diags) {
 		details := diagMessages(diags)
 		writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "graph validation failed", details...)
@@ -229,7 +229,7 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
 			return
 		}
-		diags := gd.Validate()
+		diags := gd.ValidateWithRegistry(registry.Global())
 		if graph.HasErrors(diags) {
 			details := diagMessages(diags)
 			writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "graph validation failed", details...)

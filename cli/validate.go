@@ -15,6 +15,7 @@ import (
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/loader"
+	"github.com/petal-labs/petalflow/registry"
 )
 
 // NewValidateCmd creates the "validate" subcommand.
@@ -112,7 +113,7 @@ func validateAgentWorkflow(data []byte, filePath string) []graph.Diagnostic {
 				Message:  fmt.Sprintf("Compilation failed: %v", err),
 			})
 		} else {
-			graphDiags := gd.Validate()
+			graphDiags := gd.ValidateWithRegistry(registry.Global())
 			diags = append(diags, graphDiags...)
 		}
 	}
@@ -140,7 +141,7 @@ func validateGraphIR(data []byte, filePath string) []graph.Diagnostic {
 		}}
 	}
 
-	return gd.Validate()
+	return gd.ValidateWithRegistry(registry.Global())
 }
 
 // printValidateDiagnostics writes diagnostics to the writer in the requested
