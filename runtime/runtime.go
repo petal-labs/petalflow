@@ -318,6 +318,115 @@ type nodeResult struct {
 	err      error
 }
 
+type nodeState struct {
+	hopCount  int
+	completed bool
+	envelope  *core.Envelope // result envelope for this node
+}
+
+type workItem struct {
+	nodeID   string
+	envelope *core.Envelope
+}
+
+type mergeRunner interface {
+	MergeInputs(ctx context.Context, inputs []*core.Envelope) (*core.Envelope, error)
+}
+
+type parallelState struct {
+	states   map[string]*nodeState
+	statesMu sync.Mutex
+
+	recordedErrors []core.NodeError
+	errorsMu       sync.Mutex
+
+	// mergeInputs[mergeNodeID] = list of envelopes from predecessors
+	mergeInputs map[string][]*core.Envelope
+	mergeMu     sync.Mutex
+}
+
+func newParallelState(entryID string, entryEnv *core.Envelope) *parallelState {
+	return &parallelState{
+		states: map[string]*nodeState{
+			entryID: {
+				hopCount:  0,
+				completed: false,
+				envelope:  entryEnv,
+			},
+		},
+		mergeInputs: make(map[string][]*core.Envelope),
+	}
+}
+
+func (p *parallelState) incrementHop(nodeID string) (int, *core.Envelope) {
+	p.statesMu.Lock()
+	defer p.statesMu.Unlock()
+
+	state := p.states[nodeID]
+	if state == nil {
+		state = &nodeState{}
+		p.states[nodeID] = state
+	}
+	state.hopCount++
+	return state.hopCount, state.envelope
+}
+
+func (p *parallelState) markNodeCompleted(nodeID string, env *core.Envelope) {
+	p.statesMu.Lock()
+	defer p.statesMu.Unlock()
+
+	state := p.states[nodeID]
+	if state == nil {
+		state = &nodeState{}
+		p.states[nodeID] = state
+	}
+	state.completed = true
+	state.envelope = env
+}
+
+func (p *parallelState) resetNode(nodeID string, env *core.Envelope) {
+	p.statesMu.Lock()
+	defer p.statesMu.Unlock()
+	p.states[nodeID] = &nodeState{hopCount: 0, envelope: env}
+}
+
+func (p *parallelState) canScheduleSuccessor(nodeID string, maxHops int) bool {
+	p.statesMu.Lock()
+	defer p.statesMu.Unlock()
+
+	state := p.states[nodeID]
+	if state == nil {
+		state = &nodeState{}
+		p.states[nodeID] = state
+	}
+	return state.hopCount < maxHops
+}
+
+func (p *parallelState) addMergeInput(nodeID string, env *core.Envelope, expectedInputs int) ([]*core.Envelope, bool) {
+	p.mergeMu.Lock()
+	defer p.mergeMu.Unlock()
+
+	p.mergeInputs[nodeID] = append(p.mergeInputs[nodeID], env)
+	if len(p.mergeInputs[nodeID]) < expectedInputs {
+		return nil, false
+	}
+	return p.mergeInputs[nodeID], true
+}
+
+func (p *parallelState) addRecordedError(nodeErr core.NodeError) {
+	p.errorsMu.Lock()
+	defer p.errorsMu.Unlock()
+	p.recordedErrors = append(p.recordedErrors, nodeErr)
+}
+
+func (p *parallelState) appendRecordedErrors(target *core.Envelope) {
+	p.errorsMu.Lock()
+	defer p.errorsMu.Unlock()
+	for _, err := range p.recordedErrors {
+		target.AppendError(err)
+	}
+}
+
 // executeGraphParallel executes the graph with concurrent branches.
 func (r *BasicRuntime) executeGraphParallel(
 	ctx context.Context,
@@ -327,32 +436,9 @@ func (r *BasicRuntime) executeGraphParallel(
 	emit EventEmitter,
 	runStart time.Time,
 ) (*core.Envelope, error) {
-	// Track node states
-	type nodeState struct {
-		hopCount  int
-		completed bool
-		envelope  *core.Envelope // result envelope for this node
-	}
-
-	states := make(map[string]*nodeState)
-	var statesMu sync.Mutex
-
-	// Track errors across all branches
-	var recordedErrors []core.NodeError
-	var errorsMu sync.Mutex
-
-	// Track pending inputs for merge nodes
-	// mergeInputs[mergeNodeID] = list of envelopes from predecessors
-	mergeInputs := make(map[string][]*core.Envelope)
-	var mergeMu sync.Mutex
-
-	// Worker pool
-	type workItem struct {
-		nodeID   string
-		envelope *core.Envelope
-	}
 	workCh := make(chan workItem, opts.Concurrency*2)
 	resultCh := make(chan nodeResult, opts.Concurrency*2)
+	state := newParallelState(g.Entry(), env)
 
 	// Context with cancellation for worker shutdown
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
@@ -360,6 +446,69 @@ func (r *BasicRuntime) executeGraphParallel(
 
 	// Start workers
 	var wg sync.WaitGroup
+	r.startParallelWorkers(workerCtx, g, opts, emit, runStart, workCh, resultCh, &wg)
+
+	stoppedWorkers := false
+	stopWorkers := func() {
+		if stoppedWorkers {
+			return
+		}
+		stoppedWorkers = true
+		cancelWorkers()
+		close(workCh)
+		wg.Wait()
+	}
+	defer stopWorkers()
+
+	// Submit entry node
+	pendingCount := 1
+	workCh <- workItem{nodeID: g.Entry(), envelope: env}
+
+	// Track the final result
+	var finalEnvelope *core.Envelope
+
+	// Process results
+	for pendingCount > 0 {
+		select {
+		case <-ctx.Done():
+			stopWorkers()
+			return env, fmt.Errorf("%w: %v", ErrRunCanceled, ctx.Err())
+
+		case result := <-resultCh:
+			pendingCount--
+			resultEnvelope, addedPending, err := r.handleParallelResult(ctx, g, result, opts, emit, runStart, state, workCh)
+			if err != nil {
+				stopWorkers()
+				return env, err
+			}
+			finalEnvelope = resultEnvelope
+			pendingCount += addedPending
+		}
+	}
+
+	// Cleanup
+	stopWorkers()
+
+	if finalEnvelope == nil {
+		finalEnvelope = env
+	}
+
+	// Merge recorded errors into final envelope
+	state.appendRecordedErrors(finalEnvelope)
+
+	return finalEnvelope, nil
+}
+
+func (r *BasicRuntime) startParallelWorkers(
+	workerCtx context.Context,
+	g graph.Graph,
+	opts RunOptions,
+	emit EventEmitter,
+	runStart time.Time,
+	workCh <-chan workItem,
+	resultCh chan<- nodeResult,
+	wg *sync.WaitGroup,
+) {
 	for i := 0; i < opts.Concurrency; i++ {
 		wg.Add(1)
 		go func() {
@@ -391,195 +540,159 @@ func (r *BasicRuntime) executeGraphParallel(
 			}
 		}()
 	}
+}
 
-	// Initialize state for entry node
-	entryID := g.Entry()
-	states[entryID] = &nodeState{hopCount: 0, completed: false, envelope: env}
+func (r *BasicRuntime) handleParallelResult(
+	ctx context.Context,
+	g graph.Graph,
+	result nodeResult,
+	opts RunOptions,
+	emit EventEmitter,
+	runStart time.Time,
+	state *parallelState,
+	workCh chan<- workItem,
+) (*core.Envelope, int, error) {
+	attempt, previousEnvelope := state.incrementHop(result.nodeID)
+	resultEnvelope, err := resolveParallelResultEnvelope(g, result, opts, attempt, previousEnvelope, state)
+	if err != nil {
+		return nil, 0, err
+	}
 
-	// Submit entry node
-	pendingCount := 1
-	workCh <- workItem{nodeID: entryID, envelope: env}
+	state.markNodeCompleted(result.nodeID, resultEnvelope)
 
-	// Track the final result
-	var finalEnvelope *core.Envelope
-	var finalErr error
+	node, exists := g.NodeByID(result.nodeID)
+	if !exists {
+		return resultEnvelope, 0, nil
+	}
+	successors := r.determineSuccessors(g, node, resultEnvelope, emit, runStart, opts)
 
-	// Process results
-	for pendingCount > 0 {
-		select {
-		case <-ctx.Done():
-			cancelWorkers()
-			close(workCh)
-			wg.Wait()
-			return env, fmt.Errorf("%w: %v", ErrRunCanceled, ctx.Err())
+	addedPending, err := r.scheduleParallelSuccessors(ctx, g, resultEnvelope, successors, opts, state, workCh)
+	if err != nil {
+		return nil, 0, err
+	}
+	return resultEnvelope, addedPending, nil
+}
 
-		case result := <-resultCh:
-			pendingCount--
+func resolveParallelResultEnvelope(
+	g graph.Graph,
+	result nodeResult,
+	opts RunOptions,
+	attempt int,
+	previousEnvelope *core.Envelope,
+	state *parallelState,
+) (*core.Envelope, error) {
+	if result.err == nil {
+		return result.envelope, nil
+	}
+	if !opts.ContinueOnError {
+		return nil, fmt.Errorf("%w: node %s: %v", ErrNodeExecution, result.nodeID, result.err)
+	}
 
-			statesMu.Lock()
-			state := states[result.nodeID]
-			if state == nil {
-				state = &nodeState{}
-				states[result.nodeID] = state
-			}
-			state.hopCount++
-			statesMu.Unlock()
+	node, _ := g.NodeByID(result.nodeID)
+	state.addRecordedError(core.NodeError{
+		NodeID:  result.nodeID,
+		Kind:    nodeKindOrUnknown(node),
+		Message: result.err.Error(),
+		Attempt: attempt,
+		At:      opts.Now(),
+		Cause:   result.err,
+	})
+	return previousEnvelope, nil
+}
 
-			// Handle error
-			if result.err != nil {
-				if opts.ContinueOnError {
-					node, _ := g.NodeByID(result.nodeID)
-					nodeErr := core.NodeError{
-						NodeID:  result.nodeID,
-						Kind:    node.Kind(),
-						Message: result.err.Error(),
-						Attempt: state.hopCount,
-						At:      opts.Now(),
-						Cause:   result.err,
-					}
-					errorsMu.Lock()
-					recordedErrors = append(recordedErrors, nodeErr)
-					errorsMu.Unlock()
-					// Continue with original envelope
-					result.envelope = state.envelope
-				} else {
-					// Fatal error - stop execution
-					cancelWorkers()
-					close(workCh)
-					wg.Wait()
-					return env, fmt.Errorf("%w: node %s: %v", ErrNodeExecution, result.nodeID, result.err)
-				}
-			}
+func nodeKindOrUnknown(node core.Node) core.NodeKind {
+	if node == nil {
+		return core.NodeKind("unknown")
+	}
+	return node.Kind()
+}
 
-			// Update state
-			statesMu.Lock()
-			state.completed = true
-			state.envelope = result.envelope
-			statesMu.Unlock()
-
-			// Update final envelope (last completed node wins)
-			finalEnvelope = result.envelope
-
-			// Get the node to determine successors
-			node, _ := g.NodeByID(result.nodeID)
-			successors := r.determineSuccessors(g, node, result.envelope, emit, runStart, opts)
-
-			// Process each successor
-			for _, succID := range successors {
-				succNode, exists := g.NodeByID(succID)
-				if !exists {
-					continue
-				}
-
-				// Check if this is a merge node using the MergeCapable interface
-				if mergeNode, ok := succNode.(core.MergeCapable); ok {
-					mergeMu.Lock()
-					mergeInputs[succID] = append(mergeInputs[succID], result.envelope)
-
-					// Determine expected inputs
-					expectedInputs := mergeNode.ExpectedInputs()
-					if expectedInputs == 0 {
-						expectedInputs = len(g.Predecessors(succID))
-					}
-
-					// Check if all inputs have arrived
-					if len(mergeInputs[succID]) >= expectedInputs {
-						// All inputs ready, merge them
-						inputs := mergeInputs[succID]
-						mergeMu.Unlock()
-
-						// Call MergeInputs via type assertion to the full merge interface
-						type mergeRunner interface {
-							MergeInputs(ctx context.Context, inputs []*core.Envelope) (*core.Envelope, error)
-						}
-						merger, hasMerge := succNode.(mergeRunner)
-						if !hasMerge {
-							// Fallback: just use first input
-							statesMu.Lock()
-							states[succID] = &nodeState{hopCount: 0, envelope: inputs[0]}
-							statesMu.Unlock()
-
-							pendingCount++
-							workCh <- workItem{nodeID: succID, envelope: inputs[0]}
-							continue
-						}
-
-						mergedEnv, mergeErr := merger.MergeInputs(ctx, inputs)
-						if mergeErr != nil {
-							if opts.ContinueOnError {
-								nodeErr := core.NodeError{
-									NodeID:  succID,
-									Kind:    mergeNode.Kind(),
-									Message: mergeErr.Error(),
-									At:      opts.Now(),
-									Cause:   mergeErr,
-								}
-								errorsMu.Lock()
-								recordedErrors = append(recordedErrors, nodeErr)
-								errorsMu.Unlock()
-								mergedEnv = inputs[0] // fallback to first input
-							} else {
-								finalErr = fmt.Errorf("merge node %s failed: %w", succID, mergeErr)
-								cancelWorkers()
-								close(workCh)
-								wg.Wait()
-								return env, finalErr
-							}
-						}
-
-						// Submit merged result for the merge node to process
-						statesMu.Lock()
-						states[succID] = &nodeState{hopCount: 0, envelope: mergedEnv}
-						statesMu.Unlock()
-
-						pendingCount++
-						workCh <- workItem{nodeID: succID, envelope: mergedEnv}
-					} else {
-						mergeMu.Unlock()
-						// Still waiting for more inputs
-					}
-				} else {
-					// Not a merge node - submit with cloned envelope for parallel branches
-					statesMu.Lock()
-					succState := states[succID]
-					if succState == nil {
-						succState = &nodeState{}
-						states[succID] = succState
-					}
-
-					// Check max hops
-					if succState.hopCount >= opts.MaxHops {
-						statesMu.Unlock()
-						continue
-					}
-					statesMu.Unlock()
-
-					// Clone envelope for parallel branches
-					branchEnv := result.envelope.Clone()
-
-					pendingCount++
-					workCh <- workItem{nodeID: succID, envelope: branchEnv}
-				}
-			}
+func (r *BasicRuntime) scheduleParallelSuccessors(
+	ctx context.Context,
+	g graph.Graph,
+	resultEnvelope *core.Envelope,
+	successors []string,
+	opts RunOptions,
+	state *parallelState,
+	workCh chan<- workItem,
+) (int, error) {
+	addedPending := 0
+	for _, succID := range successors {
+		succNode, exists := g.NodeByID(succID)
+		if !exists {
+			continue
 		}
+
+		if mergeNode, ok := succNode.(core.MergeCapable); ok {
+			scheduled, err := scheduleMergeSuccessor(ctx, g, succID, succNode, mergeNode, resultEnvelope, opts, state, workCh)
+			if err != nil {
+				return addedPending, err
+			}
+			if scheduled {
+				addedPending++
+			}
+			continue
+		}
+
+		if !state.canScheduleSuccessor(succID, opts.MaxHops) {
+			continue
+		}
+
+		// Clone envelope for parallel branches.
+		branchEnv := resultEnvelope.Clone()
+		workCh <- workItem{nodeID: succID, envelope: branchEnv}
+		addedPending++
+	}
+	return addedPending, nil
+}
+
+func scheduleMergeSuccessor(
+	ctx context.Context,
+	g graph.Graph,
+	succID string,
+	succNode core.Node,
+	mergeNode core.MergeCapable,
+	resultEnvelope *core.Envelope,
+	opts RunOptions,
+	state *parallelState,
+	workCh chan<- workItem,
+) (bool, error) {
+	expectedInputs := mergeNode.ExpectedInputs()
+	if expectedInputs == 0 {
+		expectedInputs = len(g.Predecessors(succID))
 	}
 
-	// Cleanup
-	close(workCh)
-	wg.Wait()
-
-	if finalEnvelope == nil {
-		finalEnvelope = env
+	inputs, ready := state.addMergeInput(succID, resultEnvelope, expectedInputs)
+	if !ready {
+		return false, nil
 	}
 
-	// Merge recorded errors into final envelope
-	errorsMu.Lock()
-	for _, err := range recordedErrors {
-		finalEnvelope.AppendError(err)
+	merger, hasMerge := succNode.(mergeRunner)
+	if !hasMerge {
+		// Fallback: just use first input.
+		state.resetNode(succID, inputs[0])
+		workCh <- workItem{nodeID: succID, envelope: inputs[0]}
+		return true, nil
 	}
-	errorsMu.Unlock()
 
-	return finalEnvelope, finalErr
+	mergedEnv, mergeErr := merger.MergeInputs(ctx, inputs)
+	if mergeErr != nil {
+		if !opts.ContinueOnError {
+			return false, fmt.Errorf("merge node %s failed: %w", succID, mergeErr)
+		}
+		state.addRecordedError(core.NodeError{
+			NodeID:  succID,
+			Kind:    mergeNode.Kind(),
+			Message: mergeErr.Error(),
+			At:      opts.Now(),
+			Cause:   mergeErr,
+		})
+		mergedEnv = inputs[0] // fallback to first input
+	}
+
+	state.resetNode(succID, mergedEnv)
+	workCh <- workItem{nodeID: succID, envelope: mergedEnv}
+	return true, nil
 }
 
 // determineSuccessors decides which nodes to execute next after the current node.
