@@ -6,11 +6,121 @@ A lightweight Go workflow graph runtime for building AI agent workflows. Chain L
 
 ## Installation
 
+Library:
+
 ```bash
 go get github.com/petal-labs/petalflow
 ```
 
-## Quick Start
+CLI:
+
+```bash
+go install github.com/petal-labs/petalflow/cmd/petalflow@latest
+```
+
+## Quick Start (5 minutes)
+
+Run a graph with no external services:
+
+```bash
+petalflow run examples/06_cli_workflow/greeting.graph.json --input '{"name":"World"}'
+```
+
+Run an Agent/Task workflow with Anthropic:
+
+```bash
+export PETALFLOW_PROVIDER_ANTHROPIC_API_KEY=sk-ant-...
+petalflow run examples/06_cli_workflow/research.agent.yaml --input '{"topic":"Go concurrency patterns"}'
+```
+
+## Execution Modes
+
+| Mode | Best for | Entry point |
+|------|----------|-------------|
+| Go SDK | Programmatic graph construction in Go apps | `petalflow.NewGraph(...)` + `runtime.Run(...)` |
+| CLI | File-driven validation/compile/run workflows | `petalflow validate|compile|run ...` |
+| Daemon API | Tool catalog and workflow execution over HTTP | `petalflow serve --host 0.0.0.0 --port 8080` |
+
+Daemon docs and endpoints: [`docs/daemon-api.md`](./docs/daemon-api.md)
+
+## Provider Setup
+
+Provider resolution priority is:
+1. `--provider-key` CLI flags
+2. environment variables
+3. `~/.petalflow/config.json` (or `PETALFLOW_CONFIG`)
+
+Environment variable pattern:
+
+```bash
+PETALFLOW_PROVIDER_<PROVIDER>_API_KEY=...
+PETALFLOW_PROVIDER_<PROVIDER>_BASE_URL=...
+```
+
+Examples:
+
+```bash
+export PETALFLOW_PROVIDER_OPENAI_API_KEY=sk-...
+export PETALFLOW_PROVIDER_OPENAI_BASE_URL=https://api.openai.com/v1
+export PETALFLOW_PROVIDER_ANTHROPIC_API_KEY=sk-ant-...
+```
+
+CLI override example:
+
+```bash
+petalflow run workflow.yaml \
+  --provider-key openai=sk-... \
+  --input '{"topic":"LLM eval design"}'
+```
+
+Optional config file (`~/.petalflow/config.json`):
+
+```json
+{
+  "providers": {
+    "openai": {
+      "api_key": "sk-...",
+      "base_url": "https://api.openai.com/v1"
+    },
+    "anthropic": {
+      "api_key": "sk-ant-..."
+    }
+  }
+}
+```
+
+## Tool Execution (CLI/Daemon)
+
+Standalone tool nodes execute only when the referenced tool action exists in the runtime tool registry.
+For file/compiled workflows, that means:
+1. Register tools (`petalflow tools register ...`).
+2. Run with the same tool store (`--store-path` if not using the default).
+3. Ensure action names used by agents are valid (`tool_name.action_name`).
+
+Useful commands:
+
+```bash
+petalflow tools list
+petalflow tools inspect <tool_name> --actions
+petalflow tools test <tool_name> <action_name> --input key=value
+```
+
+Tooling quickstart: [`docs/tools-cli.md`](./docs/tools-cli.md)  
+MCP overlays: [`docs/mcp-overlay.md`](./docs/mcp-overlay.md)
+
+## Node Support Matrix (Graph IR via CLI/Server)
+
+| Node type | Registered in catalog | Hydrated and executable | Notes |
+|-----------|-----------------------|--------------------------|-------|
+| `llm_prompt`, `llm_router` | Yes | Yes | Requires configured provider credentials |
+| `rule_router`, `filter`, `transform`, `gate`, `guardian`, `sink` | Yes | Yes | Executable from Graph IR config |
+| `merge`, `conditional`, `noop`, `tool` | Yes | Yes | `tool` requires valid `config.tool_name` and tool registry entry |
+| `tool_name.action_name` | Dynamic | Yes | Compiled from agent tool actions and resolved from tool registry |
+| `human` | Yes | CLI: Yes, Server: Depends | Requires a `HumanHandler`; CLI wires one, server integrations must provide one |
+| `map`, `cache` | Yes | Partial | Require runtime bindings not encodable directly in Graph IR config |
+| `func` | Yes | Explicit no-op in Graph IR | Custom Go callbacks must be wired in SDK code, not serialized config |
+
+## SDK Quick Start
 
 ```go
 package main
@@ -57,14 +167,15 @@ go test ./... -count=1
 ```
 
 ```bash
-# External integration tests (requires OPENAI_API_KEY)
+# External integration tests (OpenAI required)
+export OPENAI_API_KEY=sk-...
 go test -tags=integration ./tests/integration/... -count=1 -v
 ```
 
-Optional integration provider coverage:
+Optional provider matrix expansion:
 
 ```bash
-# Enables Anthropic provider integration tests
+# Enables Anthropic integration tests in the same matrix
 export ANTHROPIC_API_KEY=...
 ```
 
@@ -101,14 +212,8 @@ Executes the graph. Handles node ordering, parallel branches, retries, and step-
 
 PetalFlow includes a CLI for working with workflow files without writing Go code. It supports two schema formats:
 
-- **Agent/Task** (YAML or JSON) — a high-level format that defines agents, tasks, and execution strategy
-- **Graph IR** (JSON) — the low-level graph definition consumed by the runtime
-
-### Install
-
-```bash
-go install github.com/petal-labs/petalflow/cmd/petalflow@latest
-```
+- **Agent/Task** (YAML or JSON): high-level format defining agents, tasks, and strategy.
+- **Graph IR** (JSON): low-level graph definition consumed by the runtime.
 
 ### Commands
 
@@ -131,9 +236,6 @@ petalflow tools list
 petalflow tools inspect echo_http
 ```
 
-Tooling quickstart and troubleshooting: [`docs/tools-cli.md`](./docs/tools-cli.md)
-MCP adapter and overlay workflow: [`docs/mcp-overlay.md`](./docs/mcp-overlay.md)
-Daemon API and migration notes: [`docs/daemon-api.md`](./docs/daemon-api.md)
 Phase 4 hardening behaviors (health/retries/secrets/observability): [`docs/phase4-hardening.md`](./docs/phase4-hardening.md)
 
 ### Agent/Task Schema
