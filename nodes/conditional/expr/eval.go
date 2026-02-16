@@ -85,45 +85,8 @@ func (ev *evaluator) evalUnary(n *UnaryExpr) (any, error) {
 }
 
 func (ev *evaluator) evalBinary(n *BinaryExpr) (any, error) {
-	// Short-circuit for logical operators
-	switch n.Op {
-	case TokenAnd:
-		left, err := ev.eval(n.Left)
-		if err != nil {
-			return nil, err
-		}
-		if !IsTruthy(left) {
-			return false, nil
-		}
-		right, err := ev.eval(n.Right)
-		if err != nil {
-			return nil, err
-		}
-		return IsTruthy(right), nil
-
-	case TokenOr:
-		left, err := ev.eval(n.Left)
-		if err != nil {
-			return nil, err
-		}
-		if IsTruthy(left) {
-			return true, nil
-		}
-		right, err := ev.eval(n.Right)
-		if err != nil {
-			return nil, err
-		}
-		return IsTruthy(right), nil
-
-	case TokenNullCoal:
-		left, err := ev.eval(n.Left)
-		if err != nil {
-			return nil, err
-		}
-		if left != nil {
-			return left, nil
-		}
-		return ev.eval(n.Right)
+	if result, handled, err := ev.evalShortCircuitBinary(n.Op, n.Left, n.Right); err != nil || handled {
+		return result, err
 	}
 
 	// Non-short-circuit: evaluate both sides
@@ -136,35 +99,65 @@ func (ev *evaluator) evalBinary(n *BinaryExpr) (any, error) {
 		return nil, err
 	}
 
-	switch n.Op {
+	return evalBinaryValues(n.Op, left, right)
+}
+
+func (ev *evaluator) evalShortCircuitBinary(op TokenKind, leftExpr, rightExpr Expr) (any, bool, error) {
+	switch op {
+	case TokenAnd:
+		left, err := ev.eval(leftExpr)
+		if err != nil {
+			return nil, true, err
+		}
+		if !IsTruthy(left) {
+			return false, true, nil
+		}
+		right, err := ev.eval(rightExpr)
+		if err != nil {
+			return nil, true, err
+		}
+		return IsTruthy(right), true, nil
+
+	case TokenOr:
+		left, err := ev.eval(leftExpr)
+		if err != nil {
+			return nil, true, err
+		}
+		if IsTruthy(left) {
+			return true, true, nil
+		}
+		right, err := ev.eval(rightExpr)
+		if err != nil {
+			return nil, true, err
+		}
+		return IsTruthy(right), true, nil
+
+	case TokenNullCoal:
+		left, err := ev.eval(leftExpr)
+		if err != nil {
+			return nil, true, err
+		}
+		if left != nil {
+			return left, true, nil
+		}
+		right, err := ev.eval(rightExpr)
+		if err != nil {
+			return nil, true, err
+		}
+		return right, true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+func evalBinaryValues(op TokenKind, left, right any) (any, error) {
+	switch op {
 	case TokenEq:
 		return isEqual(left, right), nil
 	case TokenNeq:
 		return !isEqual(left, right), nil
-	case TokenGt:
-		cmp, ok := compareNumeric(left, right)
-		if !ok {
-			return false, nil
-		}
-		return cmp > 0, nil
-	case TokenGte:
-		cmp, ok := compareNumeric(left, right)
-		if !ok {
-			return false, nil
-		}
-		return cmp >= 0, nil
-	case TokenLt:
-		cmp, ok := compareNumeric(left, right)
-		if !ok {
-			return false, nil
-		}
-		return cmp < 0, nil
-	case TokenLte:
-		cmp, ok := compareNumeric(left, right)
-		if !ok {
-			return false, nil
-		}
-		return cmp <= 0, nil
+	case TokenGt, TokenGte, TokenLt, TokenLte:
+		return evalNumericComparison(op, left, right), nil
 	case TokenIn:
 		return checkIn(left, right), nil
 	case TokenHas:
@@ -178,7 +171,27 @@ func (ev *evaluator) evalBinary(n *BinaryExpr) (any, error) {
 	case TokenMatches:
 		return checkMatches(left, right)
 	default:
-		return nil, fmt.Errorf("unknown binary operator %s", n.Op)
+		return nil, fmt.Errorf("unknown binary operator %s", op)
+	}
+}
+
+func evalNumericComparison(op TokenKind, left, right any) bool {
+	cmp, ok := compareNumeric(left, right)
+	if !ok {
+		return false
+	}
+
+	switch op {
+	case TokenGt:
+		return cmp > 0
+	case TokenGte:
+		return cmp >= 0
+	case TokenLt:
+		return cmp < 0
+	case TokenLte:
+		return cmp <= 0
+	default:
+		return false
 	}
 }
 
