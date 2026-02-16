@@ -116,9 +116,64 @@ MCP overlays: [`docs/mcp-overlay.md`](./docs/mcp-overlay.md)
 | `rule_router`, `filter`, `transform`, `gate`, `guardian`, `sink` | Yes | Yes | Executable from Graph IR config |
 | `merge`, `conditional`, `noop`, `tool` | Yes | Yes | `tool` requires valid `config.tool_name` and tool registry entry |
 | `tool_name.action_name` | Dynamic | Yes | Compiled from agent tool actions and resolved from tool registry |
-| `human` | Yes | CLI: Yes, Server: Depends | Requires a `HumanHandler`; CLI wires one, server integrations must provide one |
-| `map`, `cache` | Yes | Partial | Require runtime bindings not encodable directly in Graph IR config |
+| `human` | Yes | Yes | Daemon uses `options.human.mode` (`strict`, `auto_approve`, `auto_reject`) to wire a handler at run time |
+| `map`, `cache` | Yes | Yes | Require JSON binding config: `map.config.mapper_binding` and `cache.config.wrapped_binding` |
 | `func` | Yes | Explicit no-op in Graph IR | Custom Go callbacks must be wired in SDK code, not serialized config |
+
+### Daemon Run Bindings (human/map/cache)
+
+Daemon workflow runs accept optional human handler mode under `options.human`:
+
+```json
+{
+  "input": {"topic": "release"},
+  "options": {
+    "timeout": "30s",
+    "human": {
+      "mode": "auto_approve"
+    }
+  }
+}
+```
+
+`map` and `cache` bindings are encoded in graph node config via embedded node definitions:
+
+```json
+{
+  "id": "map_items",
+  "type": "map",
+  "config": {
+    "input_var": "items",
+    "output_var": "mapped",
+    "mapper_binding": {
+      "type": "transform",
+      "config": {
+        "transform": "template",
+        "template": "item={{.item.name}}",
+        "output_var": "label"
+      }
+    }
+  }
+}
+```
+
+```json
+{
+  "id": "cache_step",
+  "type": "cache",
+  "config": {
+    "output_var": "cache_meta",
+    "wrapped_binding": {
+      "type": "transform",
+      "config": {
+        "transform": "template",
+        "template": "cached",
+        "output_var": "cache_payload"
+      }
+    }
+  }
+}
+```
 
 ## SDK Quick Start
 
