@@ -151,6 +151,10 @@ func (e Event) WithPayload(key string, value any) Event {
 // The runtime provides an emitter to nodes that need to emit intermediate events.
 type EventEmitter func(Event)
 
+// EventEmitterDecorator wraps an emitter to add cross-cutting behavior.
+// Typical uses include enriching emitted events (for example with trace metadata).
+type EventEmitterDecorator func(EventEmitter) EventEmitter
+
 // EventPublisher can publish events to external subscribers.
 // This interface is satisfied by bus.EventBus, allowing the runtime
 // to distribute events without importing the bus package directly.

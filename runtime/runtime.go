@@ -47,6 +47,10 @@ type RunOptions struct {
 	// EventHandler receives events during execution.
 	EventHandler EventHandler
 
+	// EventEmitterDecorator wraps the internal event emitter.
+	// If nil, events are emitted without decoration.
+	EventEmitterDecorator EventEmitterDecorator
+
 	// StepController enables step-through debugging.
 	// If nil, execution proceeds without pausing.
 	StepController StepController
@@ -126,6 +130,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		default:
 			// Drop if channel is full
 		}
+	}
+	if opts.EventEmitterDecorator != nil {
+		emit = opts.EventEmitterDecorator(emit)
 	}
 
 	// Emit run started

@@ -7,6 +7,7 @@ import (
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
+	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/tool"
 )
 
@@ -18,6 +19,8 @@ type ServerConfig struct {
 	ClientFactory hydrate.ClientFactory
 	Bus           bus.EventBus
 	EventStore    bus.EventStore
+	RuntimeEvents runtime.EventHandler
+	EmitDecorator runtime.EventEmitterDecorator
 	CORSOrigin    string
 	MaxBody       int64
 	Logger        *slog.Logger
@@ -31,6 +34,8 @@ type Server struct {
 	clientFactory hydrate.ClientFactory
 	bus           bus.EventBus
 	eventStore    bus.EventStore
+	runtimeEvents runtime.EventHandler
+	emitDecorator runtime.EventEmitterDecorator
 	corsOrigin    string
 	maxBody       int64
 	logger        *slog.Logger
@@ -57,6 +62,8 @@ func NewServer(cfg ServerConfig) *Server {
 		clientFactory: cfg.ClientFactory,
 		bus:           cfg.Bus,
 		eventStore:    cfg.EventStore,
+		runtimeEvents: cfg.RuntimeEvents,
+		emitDecorator: cfg.EmitDecorator,
 		corsOrigin:    corsOrigin,
 		maxBody:       maxBody,
 		logger:        logger,

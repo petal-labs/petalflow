@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +16,11 @@ import (
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/daemon"
 	"github.com/petal-labs/petalflow/hydrate"
+	petalotel "github.com/petal-labs/petalflow/otel"
 	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/runtime"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 type workflowLifecycleLLMClient struct {
@@ -47,7 +52,11 @@ func (c *workflowLifecycleLLMClient) Complete(_ context.Context, req core.LLMReq
 }
 
 func newWorkflowLifecycleServer() *Server {
-	return NewServer(ServerConfig{
+	return NewServer(workflowLifecycleServerConfig())
+}
+
+func workflowLifecycleServerConfig() ServerConfig {
+	return ServerConfig{
 		Store:     NewMemoryStore(),
 		ToolStore: daemon.NewMemoryToolStore(),
 		Providers: hydrate.ProviderMap{
@@ -60,7 +69,28 @@ func newWorkflowLifecycleServer() *Server {
 		EventStore: bus.NewMemEventStore(),
 		CORSOrigin: "*",
 		MaxBody:    1 << 20,
+	}
+}
+
+func newWorkflowLifecycleServerWithTracing(t *testing.T) (*Server, *tracetest.SpanRecorder) {
+	t.Helper()
+
+	spanRecorder := tracetest.NewSpanRecorder()
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(spanRecorder),
+	)
+	t.Cleanup(func() {
+		_ = tracerProvider.Shutdown(context.Background())
 	})
+
+	tracing := petalotel.NewTracingHandler(tracerProvider.Tracer("workflow-lifecycle-test"))
+	cfg := workflowLifecycleServerConfig()
+	cfg.RuntimeEvents = tracing.Handle
+	cfg.EmitDecorator = func(emit runtime.EventEmitter) runtime.EventEmitter {
+		return petalotel.EnrichEmitter(emit, tracing)
+	}
+
+	return NewServer(cfg), spanRecorder
 }
 
 func TestWorkflowLifecycle_SimpleAgent(t *testing.T) {
@@ -118,7 +148,6 @@ func TestWorkflowLifecycle_SimpleAgent(t *testing.T) {
 	if run.Status != "completed" {
 		t.Fatalf("run status = %q, want %q", run.Status, "completed")
 	}
-	fmt.Printf("hard workflow vars=%#v\n", run.Output.Vars)
 	if run.RunID == "" {
 		t.Fatal("run_id should not be empty")
 	}
@@ -130,6 +159,10 @@ func TestWorkflowLifecycle_SimpleAgent(t *testing.T) {
 	if !strings.Contains(strings.ToLower(output), "workflow lifecycle testing") {
 		t.Fatalf("draft output should contain topic, got: %q", output)
 	}
+
+	events := getRunEvents(t, handler, run.RunID)
+	assertRunLifecycleEvents(t, events, run.RunID)
+	assertEventKindsPresent(t, events, runtime.EventNodeOutputFinal)
 }
 
 func TestWorkflowLifecycle_MediumSequentialAgent(t *testing.T) {
@@ -210,6 +243,12 @@ func TestWorkflowLifecycle_MediumSequentialAgent(t *testing.T) {
 	summary := run.Output.Vars["c_summary__writer_output"].(string)
 	if !strings.Contains(strings.ToLower(summary), "petalflow") {
 		t.Fatalf("summary output should include topic context, got: %q", summary)
+	}
+
+	events := getRunEvents(t, handler, run.RunID)
+	assertRunLifecycleEvents(t, events, run.RunID)
+	if got := countEventKind(events, runtime.EventNodeFinished); got < 3 {
+		t.Fatalf("node.finished count = %d, want >= 3", got)
 	}
 }
 
@@ -348,6 +387,84 @@ func TestWorkflowLifecycle_HardCustomAgentWithStandaloneTool(t *testing.T) {
 			t.Fatalf("%s missing/invalid in output vars: %v (all vars=%#v)", key, run.Output.Vars[key], run.Output.Vars)
 		}
 	}
+
+	events := getRunEvents(t, handler, run.RunID)
+	assertRunLifecycleEvents(t, events, run.RunID)
+	assertEventKindsPresent(t, events, runtime.EventNodeOutputFinal)
+	if got := countEventKind(events, runtime.EventNodeFinished); got < 5 {
+		t.Fatalf("node.finished count = %d, want >= 5 (standalone tool + 4 agent tasks)", got)
+	}
+}
+
+func TestWorkflowLifecycle_EventsIncludeTraceMetadataWhenTracingEnabled(t *testing.T) {
+	srv, spans := newWorkflowLifecycleServerWithTracing(t)
+	handler := srv.Handler()
+
+	wf := agent.AgentWorkflow{
+		Version: "1.0",
+		Kind:    "agent_workflow",
+		ID:      "simple_workflow_with_tracing",
+		Name:    "Simple Workflow With Tracing",
+		Agents: map[string]agent.Agent{
+			"writer": {
+				Role:     "Writer",
+				Goal:     "Write concise responses",
+				Provider: "openai",
+				Model:    "gpt-4o-mini",
+			},
+		},
+		Tasks: map[string]agent.Task{
+			"draft": {
+				Description:    "Write one sentence about {{input.topic}}",
+				Agent:          "writer",
+				ExpectedOutput: "One sentence response",
+			},
+		},
+		Execution: agent.ExecutionConfig{
+			Strategy:  "sequential",
+			TaskOrder: []string{"draft"},
+		},
+	}
+
+	postAgentWorkflow(t, handler, wf)
+
+	run := runWorkflow(t, handler, wf.ID, map[string]any{
+		"topic": "OpenTelemetry coverage",
+	})
+	if run.Status != "completed" {
+		t.Fatalf("run status = %q, want %q", run.Status, "completed")
+	}
+
+	events := getRunEvents(t, handler, run.RunID)
+	assertRunLifecycleEvents(t, events, run.RunID)
+
+	var traced []runtime.Event
+	for _, e := range events {
+		if e.TraceID != "" || e.SpanID != "" {
+			traced = append(traced, e)
+		}
+	}
+	if len(traced) == 0 {
+		t.Fatal("expected at least one event with trace metadata")
+	}
+
+	traceID := traced[0].TraceID
+	for i, e := range traced {
+		if e.TraceID == "" {
+			t.Fatalf("traced event[%d] kind=%s missing TraceID", i, e.Kind)
+		}
+		if e.SpanID == "" {
+			t.Fatalf("traced event[%d] kind=%s missing SpanID", i, e.Kind)
+		}
+		if traceID != "" && e.TraceID != traceID {
+			t.Fatalf("traced event[%d] trace_id=%q, want %q", i, e.TraceID, traceID)
+		}
+	}
+
+	endedSpans := spans.Ended()
+	if len(endedSpans) < 2 {
+		t.Fatalf("ended span count = %d, want >= 2", len(endedSpans))
+	}
 }
 
 func postAgentWorkflow(t *testing.T, handler http.Handler, wf agent.AgentWorkflow) WorkflowRecord {
@@ -405,6 +522,127 @@ func runWorkflow(t *testing.T, handler http.Handler, id string, input map[string
 		t.Fatalf("unmarshal run response: %v", err)
 	}
 	return resp
+}
+
+func getRunEvents(t *testing.T, handler http.Handler, runID string) []runtime.Event {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/events", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("get run events failed: status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	contentType := w.Header().Get("Content-Type")
+	switch {
+	case strings.Contains(contentType, "application/json"):
+		var events []runtime.Event
+		if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
+			t.Fatalf("unmarshal run events JSON response: %v", err)
+		}
+		return events
+	case strings.Contains(contentType, "text/event-stream"):
+		return parseRunEventsSSE(t, w.Body.String())
+	default:
+		t.Fatalf("unexpected events content-type %q body=%s", contentType, w.Body.String())
+		return nil
+	}
+}
+
+func parseRunEventsSSE(t *testing.T, body string) []runtime.Event {
+	t.Helper()
+
+	var events []runtime.Event
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		if payload == "" {
+			continue
+		}
+
+		var event runtime.Event
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			t.Fatalf("unmarshal SSE event payload %q: %v", payload, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func assertRunLifecycleEvents(t *testing.T, events []runtime.Event, runID string) {
+	t.Helper()
+
+	if len(events) == 0 {
+		t.Fatal("expected at least one run event")
+	}
+	if events[0].Kind != runtime.EventRunStarted {
+		t.Fatalf("first event kind = %q, want %q", events[0].Kind, runtime.EventRunStarted)
+	}
+	if events[len(events)-1].Kind != runtime.EventRunFinished {
+		t.Fatalf("last event kind = %q, want %q", events[len(events)-1].Kind, runtime.EventRunFinished)
+	}
+
+	var prevSeq uint64
+	for i, event := range events {
+		if event.RunID != runID {
+			t.Fatalf("event[%d].RunID = %q, want %q", i, event.RunID, runID)
+		}
+		if event.Seq == 0 {
+			t.Fatalf("event[%d].Seq = 0, want > 0", i)
+		}
+		if i > 0 && event.Seq <= prevSeq {
+			t.Fatalf("event[%d].Seq = %d, want > %d", i, event.Seq, prevSeq)
+		}
+		prevSeq = event.Seq
+	}
+
+	assertEventKindsPresent(
+		t,
+		events,
+		runtime.EventRunStarted,
+		runtime.EventNodeStarted,
+		runtime.EventNodeFinished,
+		runtime.EventRunFinished,
+	)
+}
+
+func assertEventKindsPresent(t *testing.T, events []runtime.Event, kinds ...runtime.EventKind) {
+	t.Helper()
+
+	found := make(map[runtime.EventKind]bool, len(kinds))
+	for _, event := range events {
+		found[event.Kind] = true
+	}
+	for _, kind := range kinds {
+		if !found[kind] {
+			t.Fatalf("missing expected event kind %q; got=%v", kind, eventKinds(events))
+		}
+	}
+}
+
+func countEventKind(events []runtime.Event, kind runtime.EventKind) int {
+	count := 0
+	for _, event := range events {
+		if event.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func eventKinds(events []runtime.Event) []runtime.EventKind {
+	kinds := make([]runtime.EventKind, 0, len(events))
+	for _, event := range events {
+		if !slices.Contains(kinds, event.Kind) {
+			kinds = append(kinds, event.Kind)
+		}
+	}
+	return kinds
 }
 
 func mustJSON(t *testing.T, v any) []byte {
