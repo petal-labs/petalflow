@@ -46,6 +46,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().Duration("read-timeout", 30*time.Second, "HTTP read timeout")
 	cmd.Flags().Duration("write-timeout", 60*time.Second, "HTTP write timeout")
 	cmd.Flags().Int64("max-body", 1<<20, "Max request body size in bytes")
+	cmd.Flags().Duration("workflow-schedule-poll", 5*time.Second, "Workflow schedule poll interval")
 
 	return cmd
 }
@@ -57,6 +58,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	readTimeout, _ := cmd.Flags().GetDuration("read-timeout")
 	writeTimeout, _ := cmd.Flags().GetDuration("write-timeout")
 	maxBody, _ := cmd.Flags().GetInt64("max-body")
+	workflowSchedulePoll, _ := cmd.Flags().GetDuration("workflow-schedule-poll")
 	tlsCert, _ := cmd.Flags().GetString("tls-cert")
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
@@ -153,9 +155,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	logger := slog.Default()
 
 	workflowServer := server.NewServer(server.ServerConfig{
-		Store:     workflowStore,
-		ToolStore: toolStore,
-		Providers: providers,
+		Store:         workflowStore,
+		ScheduleStore: workflowStore,
+		ToolStore:     toolStore,
+		Providers:     providers,
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return llmprovider.NewClient(name, cfg)
 		},
@@ -165,6 +168,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		MaxBody:    maxBody,
 		Logger:     logger,
 	})
+
+	workflowScheduler, err := server.NewWorkflowScheduler(server.WorkflowSchedulerConfig{
+		Runner:       workflowServer,
+		Store:        workflowStore,
+		PollInterval: workflowSchedulePoll,
+		Logger:       logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating workflow scheduler: %w", err)
+	}
+	if err := workflowScheduler.Start(cmd.Context()); err != nil {
+		return fmt.Errorf("starting workflow scheduler: %w", err)
+	}
+	defer func() {
+		_ = workflowScheduler.Stop(context.Background())
+	}()
 
 	// Compose both handlers on one mux.
 	// Workflow routes: /health, /api/workflows/*, /api/runs/*, /api/node-types

@@ -16,10 +16,12 @@ import (
 // testServer creates a Server with defaults suitable for testing.
 func testServer(t *testing.T) *Server {
 	t.Helper()
+	workflowStore := newTestSQLiteStore(t)
 
 	return NewServer(ServerConfig{
-		Store:     newTestWorkflowStore(t),
-		Providers: hydrate.ProviderMap{},
+		Store:         workflowStore,
+		ScheduleStore: workflowStore,
+		Providers:     hydrate.ProviderMap{},
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return nil, nil
 		},

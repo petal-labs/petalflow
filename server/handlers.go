@@ -16,7 +16,6 @@ import (
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
-	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/loader"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/registry"
@@ -311,20 +310,6 @@ type RunResponse struct {
 func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	rec, ok, err := s.store.Get(r.Context(), id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
-		return
-	}
-	if !ok {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("workflow %q not found", id))
-		return
-	}
-	if rec.Compiled == nil {
-		writeError(w, http.StatusBadRequest, "NOT_COMPILED", "workflow has no compiled graph")
-		return
-	}
-
 	// Parse request body (optional)
 	var req RunRequest
 	if r.ContentLength > 0 {
@@ -334,50 +319,19 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build timeout
-	timeout := 5 * time.Minute
-	if req.Options.Timeout != "" {
-		d, err := time.ParseDuration(req.Options.Timeout)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_TIMEOUT", err.Error())
-			return
-		}
-		timeout = d
-	}
-
-	humanHandler, err := buildRunHumanHandler(req.Options.Human)
+	plan, err := s.planWorkflowRun(r.Context(), id, req)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "INVALID_HUMAN_OPTIONS", err.Error())
+		writeRunAPIError(w, err)
 		return
 	}
-
-	// Hydrate graph
-	toolRegistry, err := hydrate.BuildActionToolRegistry(r.Context(), s.toolStore)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "TOOL_REGISTRY_ERROR", err.Error())
-		return
-	}
-
-	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory,
-		hydrate.WithToolRegistry(toolRegistry),
-		hydrate.WithHumanHandler(humanHandler),
-	)
-	execGraph, err := hydrate.HydrateGraph(rec.Compiled, s.providers, factory)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "HYDRATE_ERROR", err.Error())
-		return
-	}
-
-	// Build envelope
-	env := EnvelopeFromJSON(req.Input)
 
 	// Handle streaming vs non-streaming
 	if req.Options.Stream {
-		s.handleRunStreaming(w, r, id, execGraph, env, timeout)
+		s.handleRunStreaming(w, r, id, plan.execGraph, plan.env, plan.timeout)
 		return
 	}
 
-	s.handleRunSync(w, r, id, execGraph, env, timeout)
+	s.handleRunSync(w, r, id, plan.execGraph, plan.env, plan.timeout)
 }
 
 type strictRunHumanHandler struct{}
@@ -439,56 +393,15 @@ func (s *Server) handleRunSync(
 	env *core.Envelope,
 	timeout time.Duration,
 ) {
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-
-	rt := runtime.NewRuntime()
-	opts := runtime.DefaultRunOptions()
-	opts.EventEmitterDecorator = s.emitDecorator
-
-	if s.bus != nil {
-		opts.EventBus = s.bus
-	}
-	if s.runtimeEvents != nil {
-		opts.EventHandler = runtime.MultiEventHandler(opts.EventHandler, s.runtimeEvents)
-	}
-
-	// Attach store subscriber for event persistence
-	if s.eventStore != nil && s.bus != nil {
-		sub := bus.NewStoreSubscriber(s.eventStore, s.logger)
-		opts.EventHandler = runtime.MultiEventHandler(opts.EventHandler, sub.Handle)
-	}
-
-	startedAt := time.Now()
-	result, err := rt.Run(ctx, execGraph, env, opts)
-	completedAt := time.Now()
-
+	resp, err := s.executeWorkflowRunSync(r.Context(), id, &workflowRunPlan{
+		execGraph: execGraph,
+		env:       env,
+		timeout:   timeout,
+	}, nil)
 	if err != nil {
-		status := http.StatusInternalServerError
-		code := "RUNTIME_ERROR"
-		if ctx.Err() == context.DeadlineExceeded {
-			status = http.StatusGatewayTimeout
-			code = "TIMEOUT"
-		}
-		writeError(w, status, code, err.Error())
+		writeRunAPIError(w, err)
 		return
 	}
-
-	runID := ""
-	if result != nil {
-		runID = result.Trace.RunID
-	}
-
-	resp := RunResponse{
-		ID:          id,
-		RunID:       runID,
-		Status:      "completed",
-		StartedAt:   startedAt,
-		CompletedAt: completedAt,
-		DurationMs:  completedAt.Sub(startedAt).Milliseconds(),
-		Output:      EnvelopeToJSON(result),
-	}
-
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -730,4 +643,13 @@ func diagMessages(diags []graph.Diagnostic) []string {
 func isMaxBytesError(err error) bool {
 	var maxBytesErr *http.MaxBytesError
 	return errors.As(err, &maxBytesErr)
+}
+
+func writeRunAPIError(w http.ResponseWriter, err error) {
+	var runErr *runAPIError
+	if errors.As(err, &runErr) {
+		writeError(w, runErr.Status, runErr.Code, runErr.Message)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "RUNTIME_ERROR", err.Error())
 }
