@@ -246,6 +246,107 @@ func TestMergeMCPOverlay(t *testing.T) {
 	}
 }
 
+func TestMergeMCPOverlay_UnknownGroupAction(t *testing.T) {
+	base := NewManifest("s3_fetch")
+	base.Transport = NewMCPTransport(MCPTransport{Mode: MCPModeStdio, Command: "server"})
+	base.Actions["list_s3_objects"] = ActionSpec{MCPToolName: "list_s3_objects"}
+
+	overlay := MCPOverlay{
+		OverlayVersion: MCPOverlayVersionV1,
+		GroupActions: map[string]string{
+			"list": "missing_action",
+		},
+	}
+
+	_, diags, err := MergeMCPOverlay(base, overlay)
+	if err == nil {
+		t.Fatal("expected validation error for unknown grouped action")
+	}
+	fields := make([]string, 0, len(diags))
+	for _, diag := range diags {
+		fields = append(fields, diag.Field)
+	}
+	if !contains(fields, "group_actions.list") {
+		t.Fatalf("expected group_actions.list diagnostic, got %v", fields)
+	}
+}
+
+func TestMergeMCPOverlay_MetadataConfigHealthAndFallbacks(t *testing.T) {
+	base := NewManifest("s3_fetch")
+	base.Transport = NewMCPTransport(MCPTransport{Mode: MCPModeStdio, Command: "server"})
+	base.Actions["list_s3_objects"] = ActionSpec{
+		Inputs: map[string]FieldSpec{
+			"bucket": {Type: TypeString},
+		},
+	}
+
+	overlay := MCPOverlay{
+		OverlayVersion: MCPOverlayVersionV1,
+		DescriptionOverrides: map[string]string{
+			"list_s3_objects": "List bucket objects",
+		},
+		InputOverrides: map[string]map[string]FieldSpec{
+			"list_s3_objects": {
+				"prefix": {Type: TypeString},
+			},
+		},
+		Config: map[string]MCPOverlayConfigField{
+			"token": {FieldSpec: FieldSpec{Type: TypeString, Sensitive: true}},
+		},
+		Metadata: MCPOverlayMetadata{
+			Author:   "Petal Labs",
+			Version:  "1.2.3",
+			Homepage: "https://docs.petallabs.io",
+			Tags:     []string{"mcp", "storage"},
+		},
+		Health: MCPOverlayHealth{
+			Strategy:           "endpoint",
+			Endpoint:           "https://example.com/health",
+			Method:             "GET",
+			IntervalSeconds:    30,
+			TimeoutMS:          500,
+			UnhealthyThreshold: 2,
+		},
+	}
+
+	merged, _, err := MergeMCPOverlay(base, overlay)
+	if err != nil {
+		t.Fatalf("MergeMCPOverlay() error = %v", err)
+	}
+
+	spec := merged.Actions["list_s3_objects"]
+	if spec.MCPToolName != "list_s3_objects" {
+		t.Fatalf("MCPToolName = %q, want list_s3_objects fallback", spec.MCPToolName)
+	}
+	if spec.Description != "List bucket objects" {
+		t.Fatalf("description = %q, want override", spec.Description)
+	}
+	if _, ok := spec.Inputs["prefix"]; !ok {
+		t.Fatalf("expected input override to include prefix field")
+	}
+	if _, ok := merged.Config["token"]; !ok {
+		t.Fatalf("expected config override token field")
+	}
+	if merged.Tool.Author != "Petal Labs" || merged.Tool.Version != "1.2.3" {
+		t.Fatalf("metadata overrides not applied: %#v", merged.Tool)
+	}
+	if merged.Tool.Homepage != "https://docs.petallabs.io" {
+		t.Fatalf("homepage = %q, want override", merged.Tool.Homepage)
+	}
+	if len(merged.Tool.Tags) != 2 || merged.Tool.Tags[0] != "mcp" || merged.Tool.Tags[1] != "storage" {
+		t.Fatalf("tags = %#v, want [mcp storage]", merged.Tool.Tags)
+	}
+	if merged.Health == nil {
+		t.Fatal("expected health override to initialize health config")
+	}
+	if merged.Health.Endpoint != "https://example.com/health" || merged.Health.Method != "GET" {
+		t.Fatalf("health endpoint/method not applied: %#v", merged.Health)
+	}
+	if merged.Health.IntervalSeconds != 30 || merged.Health.TimeoutMS != 500 || merged.Health.UnhealthyThreshold != 2 {
+		t.Fatalf("health numeric overrides not applied: %#v", merged.Health)
+	}
+}
+
 func TestParseMCPOverlayYAML_ActionModesValidation(t *testing.T) {
 	_, diags, err := ParseMCPOverlayYAML([]byte(`
 overlay_version: "1.0"
