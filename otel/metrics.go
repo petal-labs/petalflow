@@ -96,8 +96,15 @@ func (h *MetricsHandler) handleNodeFailed(e runtime.Event) {
 // handleRunFinished records the workflow run duration.
 func (h *MetricsHandler) handleRunFinished(e runtime.Event) {
 	ctx := context.Background()
-	attrs := metric.WithAttributes(
+	attrList := []attribute.KeyValue{
 		attribute.String("run_id", e.RunID),
-	)
+	}
+	if trigger, ok := e.Payload["trigger"].(string); ok && trigger != "" {
+		attrList = append(attrList, attribute.String("trigger", trigger))
+	}
+	if scheduleID, ok := e.Payload["schedule_id"].(string); ok && scheduleID != "" {
+		attrList = append(attrList, attribute.String("schedule_id", scheduleID))
+	}
+	attrs := metric.WithAttributes(attrList...)
 	h.runDuration.Record(ctx, e.Elapsed.Seconds(), attrs)
 }

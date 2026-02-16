@@ -43,6 +43,9 @@ petalflow run examples/06_cli_workflow/research.agent.yaml --input '{"topic":"Go
 
 Daemon docs and endpoints: [`docs/daemon-api.md`](./docs/daemon-api.md)
 
+Workflow cron scheduling is available in daemon mode via
+`/api/workflows/{id}/schedules` (UTC-only, standard Unix 5-field cron).
+
 ## Provider Setup
 
 Provider resolution priority is:

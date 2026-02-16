@@ -63,6 +63,11 @@ Example registration:
 | `PUT` | `/api/workflows/{id}` | Update workflow source and recompile |
 | `DELETE` | `/api/workflows/{id}` | Delete workflow |
 | `POST` | `/api/workflows/{id}/run` | Execute workflow |
+| `GET` | `/api/workflows/{id}/schedules` | List workflow cron schedules |
+| `POST` | `/api/workflows/{id}/schedules` | Create workflow cron schedule |
+| `GET` | `/api/workflows/{id}/schedules/{schedule_id}` | Get workflow cron schedule |
+| `PUT` | `/api/workflows/{id}/schedules/{schedule_id}` | Update workflow cron schedule |
+| `DELETE` | `/api/workflows/{id}/schedules/{schedule_id}` | Delete workflow cron schedule |
 | `GET` | `/api/runs/{run_id}/events` | Fetch persisted run events |
 
 ## Workflow Run Bindings
@@ -104,6 +109,42 @@ Example run request:
 }
 ```
 
+## Workflow Scheduling (Cron)
+
+Schedules use standard Unix 5-field cron expressions:
+
+`minute hour day-of-month month day-of-week`
+
+Example:
+
+```json
+{
+  "cron": "*/15 * * * *",
+  "enabled": true,
+  "input": {
+    "topic": "release notes"
+  },
+  "options": {
+    "timeout": "45s",
+    "human": {
+      "mode": "strict"
+    }
+  }
+}
+```
+
+Scheduling behavior:
+
+- Scheduling is UTC-only. Timezone prefixes (`CRON_TZ=...`, `TZ=...`) are rejected.
+- Missed runs during daemon downtime are skipped (no backfill).
+- If a schedule is due while its previous run is still active, that due run is skipped.
+- Scheduled runs default to `options.human.mode = strict` unless explicitly overridden.
+- `options.stream` is not allowed on schedules.
+
+Known limitation:
+
+- Multi-daemon scheduling against the same SQLite DB is not coordinated yet. Run one scheduler instance per DB for now.
+
 ### `map` and `cache` Node Binding Config
 
 `map` and `cache` execute via embedded node bindings in `config`:
@@ -120,7 +161,7 @@ Both bindings are object node definitions with:
 ## Security and Error Semantics
 
 - Sensitive tool config values are always masked in API responses (`**********`).
-- File-backed stores persist sensitive config values encrypted at rest.
+- SQLite-backed stores persist sensitive config values encrypted at rest.
 - Invocation/adapter failures are returned as structured error payloads:
 
 ```json
@@ -144,6 +185,12 @@ Both bindings are object node definitions with:
 - Check cadence is controlled per tool by `manifest.health.interval_seconds`.
 - Unhealthy transitions respect `manifest.health.unhealthy_threshold`.
 - `GET /api/tools/{name}/health` still triggers an explicit on-demand check.
+
+## Background Workflow Scheduler
+
+- `petalflow serve` runs a background workflow scheduler loop.
+- Poll interval is configurable via `--workflow-schedule-poll`.
+- Due schedules execute through the same runtime path as manual `POST /api/workflows/{id}/run` calls.
 
 ## Unified Catalog Endpoint
 

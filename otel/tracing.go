@@ -64,6 +64,30 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 			graphName = s
 		}
 	}
+	trigger := ""
+	if value, ok := e.Payload["trigger"]; ok {
+		if s, ok := value.(string); ok {
+			trigger = s
+		}
+	}
+	scheduleID := ""
+	if value, ok := e.Payload["schedule_id"]; ok {
+		if s, ok := value.(string); ok {
+			scheduleID = s
+		}
+	}
+	workflowID := ""
+	if value, ok := e.Payload["workflow_id"]; ok {
+		if s, ok := value.(string); ok {
+			workflowID = s
+		}
+	}
+	scheduledAt := ""
+	if value, ok := e.Payload["scheduled_at"]; ok {
+		if s, ok := value.(string); ok {
+			scheduledAt = s
+		}
+	}
 
 	spanName := "run:" + e.RunID
 	if graphName != "" {
@@ -79,6 +103,18 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 
 	if graphName != "" {
 		span.SetAttributes(attribute.String("petalflow.graph", graphName))
+	}
+	if trigger != "" {
+		span.SetAttributes(attribute.String("petalflow.trigger", trigger))
+	}
+	if scheduleID != "" {
+		span.SetAttributes(attribute.String("petalflow.schedule_id", scheduleID))
+	}
+	if workflowID != "" {
+		span.SetAttributes(attribute.String("petalflow.workflow_id", workflowID))
+	}
+	if scheduledAt != "" {
+		span.SetAttributes(attribute.String("petalflow.scheduled_at", scheduledAt))
 	}
 
 	h.mu.Lock()

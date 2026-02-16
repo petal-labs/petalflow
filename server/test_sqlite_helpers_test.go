@@ -8,7 +8,7 @@ import (
 	"github.com/petal-labs/petalflow/tool"
 )
 
-func newTestWorkflowStore(t *testing.T) WorkflowStore {
+func newTestSQLiteStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "workflows.sqlite")
@@ -18,6 +18,11 @@ func newTestWorkflowStore(t *testing.T) WorkflowStore {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func newTestWorkflowStore(t *testing.T) WorkflowStore {
+	t.Helper()
+	return newTestSQLiteStore(t)
 }
 
 func newTestEventStore(t *testing.T) bus.EventStore {

@@ -14,6 +14,7 @@ import (
 // ServerConfig configures a Server instance.
 type ServerConfig struct {
 	Store         WorkflowStore
+	ScheduleStore WorkflowScheduleStore
 	ToolStore     tool.Store
 	Providers     hydrate.ProviderMap
 	ClientFactory hydrate.ClientFactory
@@ -29,6 +30,7 @@ type ServerConfig struct {
 // Server is the PetalFlow HTTP API server.
 type Server struct {
 	store         WorkflowStore
+	scheduleStore WorkflowScheduleStore
 	toolStore     tool.Store
 	providers     hydrate.ProviderMap
 	clientFactory hydrate.ClientFactory
@@ -57,6 +59,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	return &Server{
 		store:         cfg.Store,
+		scheduleStore: cfg.ScheduleStore,
 		toolStore:     cfg.ToolStore,
 		providers:     cfg.Providers,
 		clientFactory: cfg.ClientFactory,
@@ -95,6 +98,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
+	mux.HandleFunc("GET /api/workflows/{id}/schedules", s.handleListWorkflowSchedules)
+	mux.HandleFunc("POST /api/workflows/{id}/schedules", s.handleCreateWorkflowSchedule)
+	mux.HandleFunc("GET /api/workflows/{id}/schedules/{schedule_id}", s.handleGetWorkflowSchedule)
+	mux.HandleFunc("PUT /api/workflows/{id}/schedules/{schedule_id}", s.handleUpdateWorkflowSchedule)
+	mux.HandleFunc("DELETE /api/workflows/{id}/schedules/{schedule_id}", s.handleDeleteWorkflowSchedule)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
 }
 
