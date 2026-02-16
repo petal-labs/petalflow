@@ -28,6 +28,11 @@ type liveFactoryOptions struct {
 	humanHandler nodes.HumanHandler
 }
 
+type liveFactoryRuntime struct {
+	options   liveFactoryOptions
+	getClient func(string) (core.LLMClient, error)
+}
+
 // LiveNodeOption configures optional dependencies for NewLiveNodeFactory.
 type LiveNodeOption func(*liveFactoryOptions)
 
@@ -47,15 +52,25 @@ func WithHumanHandler(h nodes.HumanHandler) LiveNodeOption {
 // supported graph node types. Unsupported node types fail fast so wiring
 // issues are surfaced during hydration instead of silently no-oping.
 func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts ...LiveNodeOption) NodeFactory {
+	runtime := liveFactoryRuntime{
+		options:   collectLiveFactoryOptions(opts),
+		getClient: newLiveFactoryClientGetter(providers, clientFactory),
+	}
+	return runtime.buildNode
+}
+
+func collectLiveFactoryOptions(opts []LiveNodeOption) liveFactoryOptions {
 	var options liveFactoryOptions
 	for _, o := range opts {
 		o(&options)
 	}
+	return options
+}
 
+func newLiveFactoryClientGetter(providers ProviderMap, clientFactory ClientFactory) func(string) (core.LLMClient, error) {
 	// Cache one client per provider name so multiple nodes sharing a provider reuse it.
 	clients := make(map[string]core.LLMClient)
-
-	getClient := func(providerName string) (core.LLMClient, error) {
+	return func(providerName string) (core.LLMClient, error) {
 		if c, ok := clients[providerName]; ok {
 			return c, nil
 		}
@@ -70,63 +85,76 @@ func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts
 		clients[providerName] = c
 		return c, nil
 	}
+}
 
-	return func(nd graph.NodeDef) (core.Node, error) {
-		switch nd.Type {
-		case "llm_prompt":
-			return buildLLMNode(nd, getClient)
-		case "llm_router":
-			return buildLLMRouter(nd, getClient)
-		case "rule_router":
-			return buildRuleRouter(nd)
-		case "filter":
-			return buildFilterNode(nd)
-		case "transform":
-			return buildTransformNode(nd)
-		case "gate":
-			return buildGateNode(nd)
-		case "guardian":
-			return buildGuardianNode(nd)
-		case "sink":
-			return buildSinkNode(nd)
-		case "map":
-			return nil, fmt.Errorf("node %q: map node hydration requires a mapper binding", nd.ID)
-		case "cache":
-			return nil, fmt.Errorf("node %q: cache node hydration requires a wrapped node binding", nd.ID)
-		case "merge":
-			return buildMergeNode(nd)
-		case "human":
-			return buildHumanNode(nd, options.humanHandler)
-		case "conditional":
-			return buildConditionalNode(nd)
-		case "noop":
-			return core.NewNoopNode(nd.ID), nil
-		case "func":
-			// Graph IR cannot encode arbitrary Go callbacks; this is an explicit no-op.
-			return core.NewFuncNode(nd.ID, nil), nil
-		case "tool":
-			if options.toolRegistry == nil {
-				return nil, fmt.Errorf("node %q: tool node requires a tool registry", nd.ID)
-			}
-			toolName := configString(nd.Config, "tool_name")
-			if toolName == "" {
-				return nil, fmt.Errorf("node %q: tool node requires config.tool_name", nd.ID)
-			}
-			tool, ok := options.toolRegistry.Get(toolName)
-			if !ok {
-				return nil, fmt.Errorf("node %q: tool %q not found in registry", nd.ID, toolName)
-			}
-			return buildToolNodeWithName(nd, toolName, tool), nil
-		default:
-			// Check if the type matches a registered tool.
-			if options.toolRegistry != nil {
-				if tool, ok := options.toolRegistry.Get(nd.Type); ok {
-					return buildToolNode(nd, tool), nil
-				}
-			}
-			return nil, fmt.Errorf("node %q: unsupported node type %q", nd.ID, nd.Type)
+func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
+	if builder, ok := staticLiveNodeBuilders[nd.Type]; ok {
+		return builder(r, nd)
+	}
+	return r.buildDynamicToolNode(nd)
+}
+
+func (r liveFactoryRuntime) buildDynamicToolNode(nd graph.NodeDef) (core.Node, error) {
+	// Check if the type matches a registered tool.
+	if r.options.toolRegistry != nil {
+		if tool, ok := r.options.toolRegistry.Get(nd.Type); ok {
+			return buildToolNode(nd, tool), nil
 		}
 	}
+	return nil, fmt.Errorf("node %q: unsupported node type %q", nd.ID, nd.Type)
+}
+
+var staticLiveNodeBuilders = map[string]func(liveFactoryRuntime, graph.NodeDef) (core.Node, error){
+	"llm_prompt": func(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildLLMNode(nd, r.getClient) },
+	"llm_router": func(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+		return buildLLMRouter(nd, r.getClient)
+	},
+	"rule_router": func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildRuleRouter(nd) },
+	"filter":      func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildFilterNode(nd) },
+	"transform":   func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildTransformNode(nd) },
+	"gate":        func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildGateNode(nd) },
+	"guardian":    func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildGuardianNode(nd) },
+	"sink":        func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildSinkNode(nd) },
+	"map":         buildMapNodeUnsupported,
+	"cache":       buildCacheNodeUnsupported,
+	"merge":       func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildMergeNode(nd) },
+	"human": func(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+		return buildHumanNode(nd, r.options.humanHandler)
+	},
+	"conditional": func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildConditionalNode(nd) },
+	"noop":        func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return core.NewNoopNode(nd.ID), nil },
+	"func":        buildFuncPlaceholderNode,
+	"tool":        buildConfiguredToolNode,
+}
+
+func buildMapNodeUnsupported(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	return nil, fmt.Errorf("node %q: map node hydration requires a mapper binding", nd.ID)
+}
+
+func buildCacheNodeUnsupported(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	return nil, fmt.Errorf("node %q: cache node hydration requires a wrapped node binding", nd.ID)
+}
+
+func buildFuncPlaceholderNode(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	// Graph IR cannot encode arbitrary Go callbacks; this is an explicit no-op.
+	return core.NewFuncNode(nd.ID, nil), nil
+}
+
+func buildConfiguredToolNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	if r.options.toolRegistry == nil {
+		return nil, fmt.Errorf("node %q: tool node requires a tool registry", nd.ID)
+	}
+
+	toolName := configString(nd.Config, "tool_name")
+	if toolName == "" {
+		return nil, fmt.Errorf("node %q: tool node requires config.tool_name", nd.ID)
+	}
+
+	tool, ok := r.options.toolRegistry.Get(toolName)
+	if !ok {
+		return nil, fmt.Errorf("node %q: tool %q not found in registry", nd.ID, toolName)
+	}
+	return buildToolNodeWithName(nd, toolName, tool), nil
 }
 
 // buildLLMNode extracts config from a NodeDef and returns an LLMNode.
