@@ -217,13 +217,13 @@ func TestWorkflowLifecycle_DaemonAPI_EventsIncludeTraceMetadataWhenTracingEnable
 func newDaemonWorkflowLifecycleHandler(t *testing.T) http.Handler {
 	t.Helper()
 
-	toolStore := daemon.NewMemoryToolStore()
+	toolStore := newTestToolStore(t)
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{Store: toolStore})
 	if err != nil {
 		t.Fatalf("new daemon server: %v", err)
 	}
 
-	cfg := workflowLifecycleServerConfig()
+	cfg := workflowLifecycleServerConfig(t)
 	cfg.ToolStore = toolStore
 	workflowServer := NewServer(cfg)
 
@@ -239,7 +239,7 @@ func newDaemonWorkflowLifecycleHandler(t *testing.T) http.Handler {
 func newDaemonWorkflowLifecycleHandlerWithTracing(t *testing.T) (http.Handler, *tracetest.SpanRecorder) {
 	t.Helper()
 
-	toolStore := daemon.NewMemoryToolStore()
+	toolStore := newTestToolStore(t)
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{Store: toolStore})
 	if err != nil {
 		t.Fatalf("new daemon server: %v", err)
@@ -254,7 +254,7 @@ func newDaemonWorkflowLifecycleHandlerWithTracing(t *testing.T) (http.Handler, *
 	})
 
 	tracing := petalotel.NewTracingHandler(tracerProvider.Tracer("workflow-lifecycle-daemon-test"))
-	cfg := workflowLifecycleServerConfig()
+	cfg := workflowLifecycleServerConfig(t)
 	cfg.ToolStore = toolStore
 	cfg.RuntimeEvents = tracing.Handle
 	cfg.EmitDecorator = func(emit runtime.EventEmitter) runtime.EventEmitter {

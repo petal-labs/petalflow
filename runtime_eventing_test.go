@@ -2,6 +2,7 @@ package petalflow_test
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,18 @@ func (m *mockLLMClient) Complete(_ context.Context, req core.LLMRequest) (core.L
 			TotalTokens:  15,
 		},
 	}, nil
+}
+
+func newSQLiteEventStore(t *testing.T) bus.EventStore {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "events.sqlite")
+	store, err := bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteEventStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 func TestRuntimeEventingPipeline(t *testing.T) {
@@ -79,12 +92,12 @@ func TestRuntimeEventingPipeline(t *testing.T) {
 	}
 
 	// ---------------------------------------------------------------
-	// 2. Set up MemBus + MemEventStore + StoreSubscriber
+	// 2. Set up MemBus + SQLiteEventStore + StoreSubscriber
 	// ---------------------------------------------------------------
 	memBus := bus.NewMemBus(bus.MemBusConfig{})
 	defer memBus.Close()
 
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	storeSub := bus.NewStoreSubscriber(store, nil)
 
 	// Subscribe globally so StoreSubscriber receives every event.

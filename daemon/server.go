@@ -31,7 +31,7 @@ type Server struct {
 	dynamicTypes map[string]struct{}
 }
 
-// NewServer constructs a daemon API server with default in-memory storage.
+// NewServer constructs a daemon API server with default SQLite-backed storage.
 func NewServer(cfg ServerConfig) (*Server, error) {
 	reg := cfg.Registry
 	if reg == nil {
@@ -42,7 +42,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if service == nil {
 		store := cfg.Store
 		if store == nil {
-			store = NewMemoryToolStore()
+			sqliteStore, err := tool.NewDefaultSQLiteStore()
+			if err != nil {
+				return nil, fmt.Errorf("create default sqlite tool store: %w", err)
+			}
+			store = sqliteStore
 		}
 
 		var err error

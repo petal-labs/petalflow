@@ -9,7 +9,7 @@ import (
 )
 
 func TestStoreSubscriber_PersistsEvents(t *testing.T) {
-	store := NewMemEventStore()
+	store := newTestStore(t)
 	sub := NewStoreSubscriber(store, slog.Default())
 
 	for i := 1; i <= 3; i++ {
@@ -28,8 +28,7 @@ func TestStoreSubscriber_PersistsEvents(t *testing.T) {
 }
 
 func TestStoreSubscriber_HandleContinuesOnError(t *testing.T) {
-	// Use a store that never errors (MemEventStore doesn't error)
-	store := NewMemEventStore()
+	store := newTestStore(t)
 	sub := NewStoreSubscriber(store, slog.Default())
 
 	// Handle should not panic
@@ -44,7 +43,7 @@ func TestStoreSubscriber_HandleContinuesOnError(t *testing.T) {
 }
 
 func TestStoreSubscriber_NilLogger(t *testing.T) {
-	store := NewMemEventStore()
+	store := newTestStore(t)
 	sub := NewStoreSubscriber(store, nil)
 
 	e := runtime.NewEvent(runtime.EventRunStarted, "run-1")

@@ -49,7 +49,7 @@ func NewRunCmd() *cobra.Command {
 	cmd.Flags().Bool("dry-run", false, "Compile and validate only, do not execute")
 	cmd.Flags().StringArray("env", nil, "Set environment variable (repeatable)")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable, e.g. --provider-key anthropic=sk-...)")
-	cmd.Flags().String("store-path", "", "Path to tool registry store file (default: ~/.petalflow/tools.json)")
+	cmd.Flags().String("store-path", "", "Path to SQLite store for tool registry (default: ~/.petalflow/petalflow.db)")
 	cmd.Flags().Bool("stream", false, "Enable streaming output via SSE to stdout")
 
 	return cmd
@@ -74,18 +74,19 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Build input envelope before store hydration so input validation errors are
+	// deterministic and not masked by external store state.
+	env, err := buildInputEnvelope(cmd)
+	if err != nil {
+		return err
+	}
+
 	toolRegistry, err := buildRunToolRegistry(cmd)
 	if err != nil {
 		return err
 	}
 
 	execGraph, err := hydrateRunGraph(cmd, gd, providers, toolRegistry)
-	if err != nil {
-		return err
-	}
-
-	// Build input envelope.
-	env, err := buildInputEnvelope(cmd)
 	if err != nil {
 		return err
 	}

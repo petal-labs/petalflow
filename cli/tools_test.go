@@ -13,7 +13,7 @@ import (
 )
 
 func TestToolsRegisterListInspectUnregister(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	manifest := map[string]any{
@@ -81,7 +81,7 @@ func TestToolsRegisterListInspectUnregister(t *testing.T) {
 }
 
 func TestToolsConfigMasksSensitiveValues(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	root := newTestRoot()
@@ -117,7 +117,7 @@ func TestToolsConfigMasksSensitiveValues(t *testing.T) {
 }
 
 func TestToolsTestInvokesNativeBuiltin(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	root := newTestRoot()
@@ -142,7 +142,7 @@ func TestToolsTestInvokesNativeBuiltin(t *testing.T) {
 }
 
 func TestToolsRegisterDuplicateNameShowsValidationCode(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	manifest := map[string]any{
@@ -179,7 +179,7 @@ func TestToolsRegisterDuplicateNameShowsValidationCode(t *testing.T) {
 }
 
 func TestToolsRegisterNativeBuiltinWithoutManifest(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	root := newTestRoot()
@@ -193,7 +193,7 @@ func TestToolsRegisterNativeBuiltinWithoutManifest(t *testing.T) {
 }
 
 func TestToolsRegisterManifestNameMismatch(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	manifest := map[string]any{
@@ -222,7 +222,7 @@ func TestToolsRegisterManifestNameMismatch(t *testing.T) {
 }
 
 func TestToolsRegisterMCPRefreshOverlayAndHealth(t *testing.T) {
-	storePath := filepath.Join(t.TempDir(), "tools.json")
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
 
 	overlayPath := writeTestFile(t, "overlay.yaml", `
@@ -373,7 +373,14 @@ func mustRawJSONForCLI(t *testing.T, value any) json.RawMessage {
 }
 
 func TestResolveStoredRegistration(t *testing.T) {
-	store := tool.NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	path := filepath.Join(t.TempDir(), "tools.db")
+	store, err := tool.NewSQLiteStore(tool.SQLiteStoreConfig{DSN: path, Scope: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	ctx := context.Background()
 	reg := tool.ToolRegistration{
 		Name:     "x",

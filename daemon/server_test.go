@@ -17,6 +17,18 @@ import (
 	"github.com/petal-labs/petalflow/tool"
 )
 
+func newSQLiteToolStore(t *testing.T) tool.Store {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "tools.sqlite")
+	store, err := tool.NewSQLiteStore(tool.SQLiteStoreConfig{DSN: path, Scope: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(tools): %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
 func TestServer_ToolCRUDEndpoints(t *testing.T) {
 	server := newTestServer(t)
 
@@ -360,7 +372,7 @@ tools:
 	}
 
 	service, err := tool.NewDaemonToolService(tool.DaemonToolServiceConfig{
-		Store:               NewMemoryToolStore(),
+		Store:               newSQLiteToolStore(t),
 		ReachabilityChecker: noopReachabilityChecker{},
 	})
 	if err != nil {
@@ -504,7 +516,7 @@ func newTestServer(t *testing.T) *Server {
 	}
 
 	service, err := tool.NewDaemonToolService(tool.DaemonToolServiceConfig{
-		Store:               NewMemoryToolStore(),
+		Store:               newSQLiteToolStore(t),
 		ReachabilityChecker: noopReachabilityChecker{},
 		MCPBuilder:          mcpBuilder,
 		MCPRefresher:        mcpRefresher,
