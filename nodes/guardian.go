@@ -575,143 +575,188 @@ func (n *GuardianNode) checkSchema(check GuardianCheck, value any) ([]GuardianFa
 
 // validateSchema performs simplified JSON schema validation.
 func validateSchema(schema map[string]any, value any, path string, checkName string) []GuardianFailure {
-	var failures []GuardianFailure
-
-	// Check type
-	if expectedType, ok := schema["type"].(string); ok {
-		actualType := getTypeString(value)
-		if actualType != expectedType {
-			failures = append(failures, GuardianFailure{
-				CheckName: checkName,
-				CheckType: string(GuardianCheckSchema),
-				Field:     path,
-				Message:   fmt.Sprintf("expected type %q, got %q", expectedType, actualType),
-				Expected:  expectedType,
-				Actual:    actualType,
-			})
-			return failures // Type mismatch, skip other checks
-		}
+	if typeFailures, typeMatched := validateSchemaType(schema, value, path, checkName); !typeMatched {
+		return typeFailures // Type mismatch, skip other checks.
 	}
 
-	// Check required properties (for objects)
-	if required, ok := schema["required"].([]any); ok {
-		if objMap, ok := toMap(value); ok {
-			for _, r := range required {
-				reqField := fmt.Sprintf("%v", r)
-				if _, found := objMap[reqField]; !found {
-					fieldPath := reqField
-					if path != "" {
-						fieldPath = path + "." + reqField
-					}
-					failures = append(failures, GuardianFailure{
-						CheckName: checkName,
-						CheckType: string(GuardianCheckSchema),
-						Field:     fieldPath,
-						Message:   fmt.Sprintf("required property %q is missing", reqField),
-					})
-				}
-			}
-		}
-	}
-
-	// Check properties (for objects)
-	if properties, ok := schema["properties"].(map[string]any); ok {
-		if objMap, ok := toMap(value); ok {
-			for propName, propSchema := range properties {
-				propSchemaMap, ok := propSchema.(map[string]any)
-				if !ok {
-					continue
-				}
-				if propValue, found := objMap[propName]; found {
-					propPath := propName
-					if path != "" {
-						propPath = path + "." + propName
-					}
-					failures = append(failures, validateSchema(propSchemaMap, propValue, propPath, checkName)...)
-				}
-			}
-		}
-	}
-
-	// Check minLength/maxLength (for strings)
-	if str, ok := value.(string); ok {
-		if minLen, ok := schema["minLength"].(float64); ok {
-			if len(str) < int(minLen) {
-				failures = append(failures, GuardianFailure{
-					CheckName: checkName,
-					CheckType: string(GuardianCheckSchema),
-					Field:     path,
-					Message:   fmt.Sprintf("string length %d is below minimum %d", len(str), int(minLen)),
-				})
-			}
-		}
-		if maxLen, ok := schema["maxLength"].(float64); ok {
-			if len(str) > int(maxLen) {
-				failures = append(failures, GuardianFailure{
-					CheckName: checkName,
-					CheckType: string(GuardianCheckSchema),
-					Field:     path,
-					Message:   fmt.Sprintf("string length %d exceeds maximum %d", len(str), int(maxLen)),
-				})
-			}
-		}
-		if pattern, ok := schema["pattern"].(string); ok {
-			re, err := regexp.Compile(pattern)
-			if err == nil && !re.MatchString(str) {
-				failures = append(failures, GuardianFailure{
-					CheckName: checkName,
-					CheckType: string(GuardianCheckSchema),
-					Field:     path,
-					Message:   fmt.Sprintf("string does not match pattern %q", pattern),
-				})
-			}
-		}
-	}
-
-	// Check minimum/maximum (for numbers)
-	if num, ok := toFloat64(value); ok {
-		if min, ok := schema["minimum"].(float64); ok {
-			if num < min {
-				failures = append(failures, GuardianFailure{
-					CheckName: checkName,
-					CheckType: string(GuardianCheckSchema),
-					Field:     path,
-					Message:   fmt.Sprintf("value %v is below minimum %v", num, min),
-				})
-			}
-		}
-		if max, ok := schema["maximum"].(float64); ok {
-			if num > max {
-				failures = append(failures, GuardianFailure{
-					CheckName: checkName,
-					CheckType: string(GuardianCheckSchema),
-					Field:     path,
-					Message:   fmt.Sprintf("value %v exceeds maximum %v", num, max),
-				})
-			}
-		}
-	}
-
-	// Check enum
-	if enum, ok := schema["enum"].([]any); ok {
-		found := false
-		for _, allowed := range enum {
-			if valuesEqual(value, allowed) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			failures = append(failures, GuardianFailure{
-				CheckName: checkName,
-				CheckType: string(GuardianCheckSchema),
-				Field:     path,
-				Message:   fmt.Sprintf("value %v is not in enum %v", value, enum),
-			})
-		}
-	}
-
+	failures := make([]GuardianFailure, 0)
+	failures = append(failures, validateSchemaRequired(schema, value, path, checkName)...)
+	failures = append(failures, validateSchemaProperties(schema, value, path, checkName)...)
+	failures = append(failures, validateSchemaStringConstraints(schema, value, path, checkName)...)
+	failures = append(failures, validateSchemaNumericConstraints(schema, value, path, checkName)...)
+	failures = append(failures, validateSchemaEnum(schema, value, path, checkName)...)
 	return failures
+}
+
+func validateSchemaType(schema map[string]any, value any, path string, checkName string) ([]GuardianFailure, bool) {
+	expectedType, ok := schema["type"].(string)
+	if !ok {
+		return nil, true
+	}
+
+	actualType := getTypeString(value)
+	if actualType == expectedType {
+		return nil, true
+	}
+
+	return []GuardianFailure{{
+		CheckName: checkName,
+		CheckType: string(GuardianCheckSchema),
+		Field:     path,
+		Message:   fmt.Sprintf("expected type %q, got %q", expectedType, actualType),
+		Expected:  expectedType,
+		Actual:    actualType,
+	}}, false
+}
+
+func validateSchemaRequired(schema map[string]any, value any, path string, checkName string) []GuardianFailure {
+	required, ok := schema["required"].([]any)
+	if !ok {
+		return nil
+	}
+	objMap, ok := toMap(value)
+	if !ok {
+		return nil
+	}
+
+	failures := make([]GuardianFailure, 0)
+	for _, r := range required {
+		reqField := fmt.Sprintf("%v", r)
+		if _, found := objMap[reqField]; found {
+			continue
+		}
+		fieldPath := reqField
+		if path != "" {
+			fieldPath = path + "." + reqField
+		}
+		failures = append(failures, GuardianFailure{
+			CheckName: checkName,
+			CheckType: string(GuardianCheckSchema),
+			Field:     fieldPath,
+			Message:   fmt.Sprintf("required property %q is missing", reqField),
+		})
+	}
+	return failures
+}
+
+func validateSchemaProperties(schema map[string]any, value any, path string, checkName string) []GuardianFailure {
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	objMap, ok := toMap(value)
+	if !ok {
+		return nil
+	}
+
+	failures := make([]GuardianFailure, 0)
+	for propName, propSchema := range properties {
+		propSchemaMap, ok := propSchema.(map[string]any)
+		if !ok {
+			continue
+		}
+		propValue, found := objMap[propName]
+		if !found {
+			continue
+		}
+		propPath := propName
+		if path != "" {
+			propPath = path + "." + propName
+		}
+		failures = append(failures, validateSchema(propSchemaMap, propValue, propPath, checkName)...)
+	}
+	return failures
+}
+
+func validateSchemaStringConstraints(schema map[string]any, value any, path string, checkName string) []GuardianFailure {
+	str, ok := value.(string)
+	if !ok {
+		return nil
+	}
+
+	failures := make([]GuardianFailure, 0)
+	if minLen, ok := schema["minLength"].(float64); ok {
+		if len(str) < int(minLen) {
+			failures = append(failures, GuardianFailure{
+				CheckName: checkName,
+				CheckType: string(GuardianCheckSchema),
+				Field:     path,
+				Message:   fmt.Sprintf("string length %d is below minimum %d", len(str), int(minLen)),
+			})
+		}
+	}
+	if maxLen, ok := schema["maxLength"].(float64); ok {
+		if len(str) > int(maxLen) {
+			failures = append(failures, GuardianFailure{
+				CheckName: checkName,
+				CheckType: string(GuardianCheckSchema),
+				Field:     path,
+				Message:   fmt.Sprintf("string length %d exceeds maximum %d", len(str), int(maxLen)),
+			})
+		}
+	}
+	if pattern, ok := schema["pattern"].(string); ok {
+		re, err := regexp.Compile(pattern)
+		if err == nil && !re.MatchString(str) {
+			failures = append(failures, GuardianFailure{
+				CheckName: checkName,
+				CheckType: string(GuardianCheckSchema),
+				Field:     path,
+				Message:   fmt.Sprintf("string does not match pattern %q", pattern),
+			})
+		}
+	}
+	return failures
+}
+
+func validateSchemaNumericConstraints(schema map[string]any, value any, path string, checkName string) []GuardianFailure {
+	num, ok := toFloat64(value)
+	if !ok {
+		return nil
+	}
+
+	failures := make([]GuardianFailure, 0)
+	if min, ok := schema["minimum"].(float64); ok {
+		if num < min {
+			failures = append(failures, GuardianFailure{
+				CheckName: checkName,
+				CheckType: string(GuardianCheckSchema),
+				Field:     path,
+				Message:   fmt.Sprintf("value %v is below minimum %v", num, min),
+			})
+		}
+	}
+	if max, ok := schema["maximum"].(float64); ok {
+		if num > max {
+			failures = append(failures, GuardianFailure{
+				CheckName: checkName,
+				CheckType: string(GuardianCheckSchema),
+				Field:     path,
+				Message:   fmt.Sprintf("value %v exceeds maximum %v", num, max),
+			})
+		}
+	}
+	return failures
+}
+
+func validateSchemaEnum(schema map[string]any, value any, path string, checkName string) []GuardianFailure {
+	enum, ok := schema["enum"].([]any)
+	if !ok {
+		return nil
+	}
+
+	for _, allowed := range enum {
+		if valuesEqual(value, allowed) {
+			return nil
+		}
+	}
+
+	return []GuardianFailure{{
+		CheckName: checkName,
+		CheckType: string(GuardianCheckSchema),
+		Field:     path,
+		Message:   fmt.Sprintf("value %v is not in enum %v", value, enum),
+	}}
 }
 
 // checkCustom runs a custom validation function.
