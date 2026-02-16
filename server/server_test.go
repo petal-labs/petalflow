@@ -324,6 +324,90 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 	}
 }
 
+func TestRunWorkflow_StreamNoBus_EmitsCompletionEvent(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store:     NewMemoryStore(),
+		Providers: hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			return nil, nil
+		},
+		CORSOrigin: "*",
+		MaxBody:    1 << 20,
+	})
+	handler := srv.Handler()
+
+	workflowBody := validGraphJSON("stream-no-bus")
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(workflowBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	runBody, _ := json.Marshal(RunRequest{
+		Options: RunReqOptions{Stream: true},
+	})
+	r = httptest.NewRequest(http.MethodPost, "/api/workflows/stream-no-bus/run", bytes.NewReader(runBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("stream run: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", ct)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: run.started") {
+		t.Fatalf("expected run.started event in stream body: %s", body)
+	}
+	if !strings.Contains(body, "event: run.finished") {
+		t.Fatalf("expected run.finished event in stream body: %s", body)
+	}
+	if strings.Contains(body, "event: run.error") {
+		t.Fatalf("did not expect run.error event in stream body: %s", body)
+	}
+}
+
+func TestRunWorkflow_StreamWithBus_EmitsCompletionEvent(t *testing.T) {
+	srv := testServer()
+	handler := srv.Handler()
+
+	workflowBody := validGraphJSON("stream-with-bus")
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(workflowBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	runBody, _ := json.Marshal(RunRequest{
+		Options: RunReqOptions{Stream: true},
+	})
+	r = httptest.NewRequest(http.MethodPost, "/api/workflows/stream-with-bus/run", bytes.NewReader(runBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("stream run: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("content-type = %q, want text/event-stream", ct)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: run.started") {
+		t.Fatalf("expected run.started event in stream body: %s", body)
+	}
+	if !strings.Contains(body, "event: run.finished") {
+		t.Fatalf("expected run.finished event in stream body: %s", body)
+	}
+	if strings.Contains(body, "event: run.error") {
+		t.Fatalf("did not expect run.error event in stream body: %s", body)
+	}
+}
+
 func TestRunEvents_NoStore(t *testing.T) {
 	srv := NewServer(ServerConfig{
 		Store:     NewMemoryStore(),

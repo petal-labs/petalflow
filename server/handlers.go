@@ -422,7 +422,7 @@ func (s *Server) handleRunStreaming(
 	env *core.Envelope,
 	timeout time.Duration,
 ) {
-	flusher, ok := w.(http.Flusher)
+	writer, ok := newSSEWriter(w)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, "STREAMING_ERROR", "streaming not supported")
 		return
@@ -430,105 +430,170 @@ func (s *Server) handleRunStreaming(
 
 	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	writer.startResponse()
 
 	runID := uuid.New().String()
-
-	// Subscribe to bus for this run
-	var sub bus.Subscription
-	if s.bus != nil {
-		sub = s.bus.Subscribe(runID)
+	sub := s.subscribeRun(runID)
+	if sub != nil {
 		defer sub.Close()
 	}
 
+	doneCh := s.startStreamingRuntime(ctx, execGraph, env, runID)
+	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
+
+	if sub == nil {
+		s.streamWithoutSubscription(writer, doneCh, runID)
+		return
+	}
+	s.streamWithSubscription(ctx, writer, sub, doneCh, runID)
+}
+
+type sseWriter struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func newSSEWriter(w http.ResponseWriter) (*sseWriter, bool) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		return nil, false
+	}
+	return &sseWriter{
+		w:       w,
+		flusher: flusher,
+	}, true
+}
+
+func (s *sseWriter) startResponse() {
+	s.w.Header().Set("Content-Type", "text/event-stream")
+	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("Connection", "keep-alive")
+	s.w.WriteHeader(http.StatusOK)
+	s.flusher.Flush()
+}
+
+func (s *sseWriter) writeEvent(event string, data any) {
+	jsonData, _ := json.Marshal(data)
+	fmt.Fprintf(s.w, "event: %s\ndata: %s\n\n", event, jsonData)
+	s.flusher.Flush()
+}
+
+func (s *sseWriter) writeHeartbeat() {
+	fmt.Fprintf(s.w, ": heartbeat\n\n")
+	s.flusher.Flush()
+}
+
+func (s *Server) subscribeRun(runID string) bus.Subscription {
+	if s.bus == nil {
+		return nil
+	}
+	return s.bus.Subscribe(runID)
+}
+
+func (s *Server) startStreamingRuntime(
+	ctx context.Context,
+	execGraph *graph.BasicGraph,
+	env *core.Envelope,
+	runID string,
+) <-chan error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
 	if s.bus != nil {
 		opts.EventBus = s.bus
 	}
 
-	// Attach store subscriber
+	// Attach store subscriber.
 	if s.eventStore != nil {
 		storeSub := bus.NewStoreSubscriber(s.eventStore, s.logger)
 		opts.EventHandler = runtime.MultiEventHandler(opts.EventHandler, storeSub.Handle)
 	}
 
-	// Set run ID on envelope
+	// Set run ID on envelope before runtime execution.
 	env.Trace.RunID = runID
 
-	// Run in goroutine
 	doneCh := make(chan error, 1)
 	go func() {
 		_, err := rt.Run(ctx, execGraph, env, opts)
 		doneCh <- err
 	}()
+	return doneCh
+}
 
-	// Stream events
+func (s *Server) streamWithoutSubscription(writer *sseWriter, doneCh <-chan error, runID string) {
+	err := <-doneCh
+	if err != nil {
+		writer.writeEvent("run.error", map[string]string{"error": err.Error()})
+		return
+	}
+	writer.writeEvent("run.finished", map[string]string{"run_id": runID, "status": "completed"})
+}
+
+func (s *Server) streamWithSubscription(
+	ctx context.Context,
+	writer *sseWriter,
+	sub bus.Subscription,
+	doneCh <-chan error,
+	runID string,
+) {
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 
-	writeSSE := func(event string, data any) {
-		jsonData, _ := json.Marshal(data)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, jsonData)
-		flusher.Flush()
-	}
-
-	// Send initial event
-	writeSSE("run.started", map[string]string{"run_id": runID, "workflow_id": id})
-
-	if sub != nil {
-		for {
-			select {
-			case evt, ok := <-sub.Events():
-				if !ok {
-					return
-				}
-				writeSSE(string(evt.Kind), evt)
-				if evt.Kind == runtime.EventRunFinished {
-					return
-				}
-			case err := <-doneCh:
-				if err != nil {
-					writeSSE("run.error", map[string]string{"error": err.Error()})
-				}
-				// Drain remaining events briefly
-				drainTimer := time.NewTimer(100 * time.Millisecond)
-				for {
-					select {
-					case evt, ok := <-sub.Events():
-						if !ok {
-							drainTimer.Stop()
-							return
-						}
-						writeSSE(string(evt.Kind), evt)
-						if evt.Kind == runtime.EventRunFinished {
-							drainTimer.Stop()
-							return
-						}
-					case <-drainTimer.C:
-						return
-					}
-				}
-			case <-heartbeat.C:
-				fmt.Fprintf(w, ": heartbeat\n\n")
-				flusher.Flush()
-			case <-ctx.Done():
-				writeSSE("run.error", map[string]string{"error": "timeout"})
+	for {
+		select {
+		case evt, ok := <-sub.Events():
+			if !ok {
 				return
 			}
+			writer.writeEvent(string(evt.Kind), evt)
+			if evt.Kind == runtime.EventRunFinished {
+				return
+			}
+		case err := <-doneCh:
+			s.handleStreamingCompletionWithDrain(writer, sub, err, runID)
+			return
+		case <-heartbeat.C:
+			writer.writeHeartbeat()
+		case <-ctx.Done():
+			writer.writeEvent("run.error", map[string]string{"error": "timeout"})
+			return
 		}
-	} else {
-		// No bus — just wait for completion
-		err := <-doneCh
-		if err != nil {
-			writeSSE("run.error", map[string]string{"error": err.Error()})
-		} else {
-			writeSSE("run.finished", map[string]string{"run_id": runID, "status": "completed"})
+	}
+}
+
+func (s *Server) handleStreamingCompletionWithDrain(
+	writer *sseWriter,
+	sub bus.Subscription,
+	runErr error,
+	runID string,
+) {
+	if runErr != nil {
+		writer.writeEvent("run.error", map[string]string{"error": runErr.Error()})
+	}
+
+	sawRunFinished := s.drainSubscriptionEvents(writer, sub)
+	// In fallback cases where no bus run events were captured, still close
+	// the stream with an explicit completion event.
+	if runErr == nil && !sawRunFinished {
+		writer.writeEvent("run.finished", map[string]string{"run_id": runID, "status": "completed"})
+	}
+}
+
+func (s *Server) drainSubscriptionEvents(writer *sseWriter, sub bus.Subscription) bool {
+	drainTimer := time.NewTimer(100 * time.Millisecond)
+	defer drainTimer.Stop()
+
+	for {
+		select {
+		case evt, ok := <-sub.Events():
+			if !ok {
+				return false
+			}
+			writer.writeEvent(string(evt.Kind), evt)
+			if evt.Kind == runtime.EventRunFinished {
+				return true
+			}
+		case <-drainTimer.C:
+			return false
 		}
 	}
 }
