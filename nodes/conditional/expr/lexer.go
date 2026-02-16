@@ -132,41 +132,12 @@ func (l *Lexer) lexAll() error {
 			return nil
 		}
 
-		ch, size := utf8.DecodeRuneInString(l.src[l.pos:])
+		ch, _ := utf8.DecodeRuneInString(l.src[l.pos:])
+		if l.tryEmitDoubleCharToken(ch) || l.tryEmitSingleCharToken(ch) {
+			continue
+		}
 
 		switch {
-		case ch == '=' && l.peekNext() == '=':
-			l.emit2(TokenEq)
-		case ch == '!' && l.peekNext() == '=':
-			l.emit2(TokenNeq)
-		case ch == '>' && l.peekNext() == '=':
-			l.emit2(TokenGte)
-		case ch == '<' && l.peekNext() == '=':
-			l.emit2(TokenLte)
-		case ch == '&' && l.peekNext() == '&':
-			l.emit2(TokenAnd)
-		case ch == '|' && l.peekNext() == '|':
-			l.emit2(TokenOr)
-		case ch == '?' && l.peekNext() == '?':
-			l.emit2(TokenNullCoal)
-		case ch == '>':
-			l.emit1(TokenGt)
-		case ch == '<':
-			l.emit1(TokenLt)
-		case ch == '!':
-			l.emit1(TokenNot)
-		case ch == '.':
-			l.emit1(TokenDot)
-		case ch == '[':
-			l.emit1(TokenLBracket)
-		case ch == ']':
-			l.emit1(TokenRBracket)
-		case ch == '(':
-			l.emit1(TokenLParen)
-		case ch == ')':
-			l.emit1(TokenRParen)
-		case ch == ',':
-			l.emit1(TokenComma)
 		case ch == '"':
 			if err := l.lexString(); err != nil {
 				return err
@@ -178,8 +149,55 @@ func (l *Lexer) lexAll() error {
 		default:
 			return fmt.Errorf("unexpected character %q at position %d", string(ch), l.pos)
 		}
-		_ = size
 	}
+}
+
+func (l *Lexer) tryEmitDoubleCharToken(ch rune) bool {
+	switch {
+	case ch == '=' && l.peekNext() == '=':
+		l.emit2(TokenEq)
+	case ch == '!' && l.peekNext() == '=':
+		l.emit2(TokenNeq)
+	case ch == '>' && l.peekNext() == '=':
+		l.emit2(TokenGte)
+	case ch == '<' && l.peekNext() == '=':
+		l.emit2(TokenLte)
+	case ch == '&' && l.peekNext() == '&':
+		l.emit2(TokenAnd)
+	case ch == '|' && l.peekNext() == '|':
+		l.emit2(TokenOr)
+	case ch == '?' && l.peekNext() == '?':
+		l.emit2(TokenNullCoal)
+	default:
+		return false
+	}
+	return true
+}
+
+func (l *Lexer) tryEmitSingleCharToken(ch rune) bool {
+	switch ch {
+	case '>':
+		l.emit1(TokenGt)
+	case '<':
+		l.emit1(TokenLt)
+	case '!':
+		l.emit1(TokenNot)
+	case '.':
+		l.emit1(TokenDot)
+	case '[':
+		l.emit1(TokenLBracket)
+	case ']':
+		l.emit1(TokenRBracket)
+	case '(':
+		l.emit1(TokenLParen)
+	case ')':
+		l.emit1(TokenRParen)
+	case ',':
+		l.emit1(TokenComma)
+	default:
+		return false
+	}
+	return true
 }
 
 func (l *Lexer) peekNext() byte {
