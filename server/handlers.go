@@ -369,9 +369,13 @@ func (s *Server) handleRunSync(
 
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
+	opts.EventEmitterDecorator = s.emitDecorator
 
 	if s.bus != nil {
 		opts.EventBus = s.bus
+	}
+	if s.runtimeEvents != nil {
+		opts.EventHandler = runtime.MultiEventHandler(opts.EventHandler, s.runtimeEvents)
 	}
 
 	// Attach store subscriber for event persistence
@@ -498,8 +502,12 @@ func (s *Server) startStreamingRuntime(
 ) <-chan error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
+	opts.EventEmitterDecorator = s.emitDecorator
 	if s.bus != nil {
 		opts.EventBus = s.bus
+	}
+	if s.runtimeEvents != nil {
+		opts.EventHandler = runtime.MultiEventHandler(opts.EventHandler, s.runtimeEvents)
 	}
 
 	// Attach store subscriber.

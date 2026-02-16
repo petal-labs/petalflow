@@ -45,7 +45,7 @@
         "conditions": [
           {
             "expression": "analyze__analyzer_output.confidence \u003c 0.7",
-            "name": "deep_dive"
+            "name": "deep_dive__deep_diver"
           }
         ],
         "default": "_skip",
@@ -60,7 +60,7 @@
         "conditions": [
           {
             "expression": "analyze__analyzer_output.confidence \u003e= 0.7",
-            "name": "write_report"
+            "name": "write_report__reporter"
           }
         ],
         "default": "_skip",
@@ -84,13 +84,13 @@
     },
     {
       "source": "analyze__cond__deep_dive",
-      "sourceHandle": "deep_dive",
+      "sourceHandle": "deep_dive__deep_diver",
       "target": "deep_dive__deep_diver",
       "targetHandle": "input"
     },
     {
       "source": "analyze__cond__write_report",
-      "sourceHandle": "write_report",
+      "sourceHandle": "write_report__reporter",
       "target": "write_report__reporter",
       "targetHandle": "input"
     }
