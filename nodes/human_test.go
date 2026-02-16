@@ -495,6 +495,33 @@ func TestHumanNode_Kind(t *testing.T) {
 	}
 }
 
+func TestHumanNode_Config(t *testing.T) {
+	handler := NewAutoApproveHandler()
+
+	node := NewHumanNode("human1", HumanNodeConfig{
+		Prompt:    "Approve this",
+		Handler:   handler,
+		OutputVar: "human_response",
+	})
+
+	cfg := node.Config()
+	if cfg.RequestType != HumanRequestApproval {
+		t.Fatalf("RequestType = %q, want %q default", cfg.RequestType, HumanRequestApproval)
+	}
+	if cfg.OnTimeout != HumanTimeoutFail {
+		t.Fatalf("OnTimeout = %q, want %q default", cfg.OnTimeout, HumanTimeoutFail)
+	}
+	if cfg.Prompt != "Approve this" {
+		t.Fatalf("Prompt = %q, want prompt value", cfg.Prompt)
+	}
+	if cfg.Handler != handler {
+		t.Fatal("Handler mismatch")
+	}
+	if cfg.OutputVar != "human_response" {
+		t.Fatalf("OutputVar = %q, want human_response", cfg.OutputVar)
+	}
+}
+
 // ChannelHumanHandler tests
 
 func TestChannelHumanHandler_RequestResponse(t *testing.T) {
@@ -576,6 +603,42 @@ func TestChannelHumanHandler_PendingCount(t *testing.T) {
 
 	if handler.PendingCount() != 0 {
 		t.Errorf("expected 0 pending after response, got %d", handler.PendingCount())
+	}
+}
+
+func TestChannelHumanHandler_GetPending(t *testing.T) {
+	handler := NewChannelHumanHandler(10)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = handler.Request(context.Background(), &HumanRequest{
+			ID:     "req-42",
+			Type:   HumanRequestApproval,
+			Prompt: "Test",
+		})
+	}()
+
+	req := <-handler.Requests()
+	pending, ok := handler.GetPending(req.ID)
+	if !ok {
+		t.Fatalf("GetPending(%q) = not found, want found", req.ID)
+	}
+	if pending == nil || pending.ID != req.ID {
+		t.Fatalf("pending request = %#v, want ID %q", pending, req.ID)
+	}
+
+	if err := handler.Respond(&HumanResponse{
+		RequestID:   req.ID,
+		Approved:    true,
+		RespondedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("Respond() error = %v", err)
+	}
+	<-done
+
+	if _, ok := handler.GetPending(req.ID); ok {
+		t.Fatalf("GetPending(%q) = found after response, want not found", req.ID)
 	}
 }
 

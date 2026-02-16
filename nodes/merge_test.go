@@ -99,6 +99,15 @@ func TestMergeNode_ExpectedInputs(t *testing.T) {
 	}
 }
 
+func TestMergeNode_SetExpectedInputs(t *testing.T) {
+	node := NewMergeNode("test", MergeNodeConfig{})
+	node.SetExpectedInputs(5)
+
+	if node.ExpectedInputs() != 5 {
+		t.Fatalf("ExpectedInputs() = %d, want 5", node.ExpectedInputs())
+	}
+}
+
 // JSONMergeStrategy tests
 
 func TestJSONMergeStrategy_Name(t *testing.T) {
