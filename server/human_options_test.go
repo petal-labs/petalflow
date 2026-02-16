@@ -95,7 +95,7 @@ func TestBuildRunHumanHandler_InvalidOptions(t *testing.T) {
 
 func TestRunWorkflow_InvalidHumanOptions(t *testing.T) {
 	srv := NewServer(ServerConfig{
-		Store:     NewMemoryStore(),
+		Store:     newTestWorkflowStore(t),
 		Providers: hydrate.ProviderMap{},
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return nil, nil

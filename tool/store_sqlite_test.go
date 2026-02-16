@@ -2,28 +2,32 @@ package tool
 
 import (
 	"context"
-	"encoding/json"
-	"os"
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestFileStoreListEmptyWhenMissing(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+func newSQLiteToolStore(t *testing.T) *SQLiteStore {
+	t.Helper()
 
-	regs, err := store.List(context.Background())
+	path := filepath.Join(t.TempDir(), "tools.db")
+	store, err := NewSQLiteStore(SQLiteStoreConfig{
+		DSN:   path,
+		Scope: path,
+	})
 	if err != nil {
-		t.Fatalf("List() error = %v", err)
+		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
-	if len(regs) != 0 {
-		t.Fatalf("len(List()) = %d, want 0", len(regs))
-	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	return store
 }
 
-func TestFileStoreUpsertGetDeleteRoundTrip(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+func TestSQLiteStoreUpsertGetDeleteRoundTrip(t *testing.T) {
+	store := newSQLiteToolStore(t)
 	ctx := context.Background()
 
 	reg := ToolRegistration{
@@ -82,9 +86,8 @@ func TestFileStoreUpsertGetDeleteRoundTrip(t *testing.T) {
 	}
 }
 
-func TestFileStoreDeterministicOrderAndVersionedDocument(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tools.json")
-	store := NewFileStore(path)
+func TestSQLiteStoreListOrder(t *testing.T) {
+	store := newSQLiteToolStore(t)
 	ctx := context.Background()
 
 	regA := ToolRegistration{
@@ -120,34 +123,20 @@ func TestFileStoreDeterministicOrderAndVersionedDocument(t *testing.T) {
 	if list[0].Name != "alpha" || list[1].Name != "beta" {
 		t.Fatalf("List order = [%s, %s], want [alpha, beta]", list[0].Name, list[1].Name)
 	}
+}
 
-	raw, err := os.ReadFile(path)
+func TestSQLiteStoreEncryptsSensitiveConfigAtRest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tools.db")
+	store, err := NewSQLiteStore(SQLiteStoreConfig{
+		DSN:   path,
+		Scope: path,
+	})
 	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
+		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
-
-	var doc fileStoreDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		t.Fatalf("Unmarshal() error = %v", err)
-	}
-	if doc.Version != fileStoreVersionV1 {
-		t.Fatalf("version = %q, want %q", doc.Version, fileStoreVersionV1)
-	}
-	if len(doc.Tools) != 2 {
-		t.Fatalf("len(doc.Tools) = %d, want 2", len(doc.Tools))
-	}
-}
-
-func TestFileStoreEmptyPathError(t *testing.T) {
-	store := NewFileStore("")
-	if err := store.Upsert(context.Background(), ToolRegistration{Name: "x", Manifest: NewManifest("x")}); err == nil {
-		t.Fatal("Upsert() error = nil, want non-nil for empty path")
-	}
-}
-
-func TestFileStoreEncryptsSensitiveConfigAtRest(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tools.json")
-	store := NewFileStore(path)
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
 	ctx := context.Background()
 
 	manifest := NewManifest("secure_tool")
@@ -176,15 +165,21 @@ func TestFileStoreEncryptsSensitiveConfigAtRest(t *testing.T) {
 		t.Fatalf("Upsert() error = %v", err)
 	}
 
-	raw, err := os.ReadFile(path)
+	db, err := sql.Open("sqlite", path)
 	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
+		t.Fatalf("sql.Open() error = %v", err)
 	}
-	if strings.Contains(string(raw), "super-secret-value") {
-		t.Fatalf("store file leaked plaintext secret: %s", string(raw))
+	defer db.Close()
+
+	var payload string
+	if err := db.QueryRow(`SELECT payload FROM tool_registrations WHERE name = ?`, "secure_tool").Scan(&payload); err != nil {
+		t.Fatalf("query payload error = %v", err)
 	}
-	if !strings.Contains(string(raw), encryptedValuePrefix) {
-		t.Fatalf("store file missing encrypted value prefix %q", encryptedValuePrefix)
+	if strings.Contains(payload, "super-secret-value") {
+		t.Fatalf("sqlite payload leaked plaintext secret: %s", payload)
+	}
+	if !strings.Contains(payload, encryptedValuePrefix) {
+		t.Fatalf("sqlite payload missing encrypted value prefix %q", encryptedValuePrefix)
 	}
 
 	got, ok, err := store.Get(ctx, "secure_tool")
@@ -196,5 +191,56 @@ func TestFileStoreEncryptsSensitiveConfigAtRest(t *testing.T) {
 	}
 	if got.Config["api_key"] != "super-secret-value" {
 		t.Fatalf("decrypted api_key = %q, want super-secret-value", got.Config["api_key"])
+	}
+}
+
+func TestSQLiteStorePersistenceAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "tools.db")
+
+	store1, err := NewSQLiteStore(SQLiteStoreConfig{
+		DSN:   path,
+		Scope: path,
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(store1): %v", err)
+	}
+
+	reg := ToolRegistration{
+		Name:     "persisted_tool",
+		Manifest: NewManifest("persisted_tool"),
+		Origin:   OriginNative,
+		Status:   StatusReady,
+	}
+	reg.Manifest.Transport = NewNativeTransport()
+	reg.Manifest.Actions["run"] = ActionSpec{}
+
+	if err := store1.Upsert(ctx, reg); err != nil {
+		t.Fatalf("store1.Upsert: %v", err)
+	}
+	if err := store1.Close(); err != nil {
+		t.Fatalf("store1.Close: %v", err)
+	}
+
+	store2, err := NewSQLiteStore(SQLiteStoreConfig{
+		DSN:   path,
+		Scope: path,
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(store2): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store2.Close()
+	})
+
+	got, ok, err := store2.Get(ctx, "persisted_tool")
+	if err != nil {
+		t.Fatalf("store2.Get: %v", err)
+	}
+	if !ok {
+		t.Fatal("store2.Get: expected persisted registration")
+	}
+	if got.Name != "persisted_tool" {
+		t.Fatalf("store2.Get.Name = %q, want %q", got.Name, "persisted_tool")
 	}
 }

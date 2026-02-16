@@ -14,7 +14,6 @@ import (
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/core"
-	"github.com/petal-labs/petalflow/daemon"
 	"github.com/petal-labs/petalflow/hydrate"
 	petalotel "github.com/petal-labs/petalflow/otel"
 	"github.com/petal-labs/petalflow/registry"
@@ -51,14 +50,17 @@ func (c *workflowLifecycleLLMClient) Complete(_ context.Context, req core.LLMReq
 	}, nil
 }
 
-func newWorkflowLifecycleServer() *Server {
-	return NewServer(workflowLifecycleServerConfig())
+func newWorkflowLifecycleServer(t *testing.T) *Server {
+	t.Helper()
+	return NewServer(workflowLifecycleServerConfig(t))
 }
 
-func workflowLifecycleServerConfig() ServerConfig {
+func workflowLifecycleServerConfig(t *testing.T) ServerConfig {
+	t.Helper()
+
 	return ServerConfig{
-		Store:     NewMemoryStore(),
-		ToolStore: daemon.NewMemoryToolStore(),
+		Store:     newTestWorkflowStore(t),
+		ToolStore: newTestToolStore(t),
 		Providers: hydrate.ProviderMap{
 			"openai": {},
 		},
@@ -66,7 +68,7 @@ func workflowLifecycleServerConfig() ServerConfig {
 			return &workflowLifecycleLLMClient{provider: name}, nil
 		},
 		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
-		EventStore: bus.NewMemEventStore(),
+		EventStore: newTestEventStore(t),
 		CORSOrigin: "*",
 		MaxBody:    1 << 20,
 	}
@@ -84,7 +86,7 @@ func newWorkflowLifecycleServerWithTracing(t *testing.T) (*Server, *tracetest.Sp
 	})
 
 	tracing := petalotel.NewTracingHandler(tracerProvider.Tracer("workflow-lifecycle-test"))
-	cfg := workflowLifecycleServerConfig()
+	cfg := workflowLifecycleServerConfig(t)
 	cfg.RuntimeEvents = tracing.Handle
 	cfg.EmitDecorator = func(emit runtime.EventEmitter) runtime.EventEmitter {
 		return petalotel.EnrichEmitter(emit, tracing)
@@ -94,7 +96,7 @@ func newWorkflowLifecycleServerWithTracing(t *testing.T) (*Server, *tracetest.Sp
 }
 
 func TestWorkflowLifecycle_SimpleAgent(t *testing.T) {
-	srv := newWorkflowLifecycleServer()
+	srv := newWorkflowLifecycleServer(t)
 	handler := srv.Handler()
 
 	wf := agent.AgentWorkflow{
@@ -166,7 +168,7 @@ func TestWorkflowLifecycle_SimpleAgent(t *testing.T) {
 }
 
 func TestWorkflowLifecycle_MediumSequentialAgent(t *testing.T) {
-	srv := newWorkflowLifecycleServer()
+	srv := newWorkflowLifecycleServer(t)
 	handler := srv.Handler()
 
 	wf := agent.AgentWorkflow{
@@ -270,7 +272,7 @@ func TestWorkflowLifecycle_HardCustomAgentWithStandaloneTool(t *testing.T) {
 		},
 	})
 
-	srv := newWorkflowLifecycleServer()
+	srv := newWorkflowLifecycleServer(t)
 	handler := srv.Handler()
 
 	wf := agent.AgentWorkflow{

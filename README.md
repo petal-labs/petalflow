@@ -94,7 +94,7 @@ Optional config file (`~/.petalflow/config.json`):
 Standalone tool nodes execute only when the referenced tool action exists in the runtime tool registry.
 For file/compiled workflows, that means:
 1. Register tools (`petalflow tools register ...`).
-2. Run with the same tool store (`--store-path` if not using the default).
+2. Run with the same SQLite store (`--store-path` if not using the default).
 3. Ensure action names used by agents are valid (`tool_name.action_name`).
 
 Useful commands:

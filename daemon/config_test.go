@@ -95,7 +95,7 @@ tools:
 	}
 
 	service, err := tool.NewDaemonToolService(tool.DaemonToolServiceConfig{
-		Store:               NewMemoryToolStore(),
+		Store:               newSQLiteToolStore(t),
 		ReachabilityChecker: noopReachabilityChecker{},
 	})
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,18 @@ import (
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/sse"
 )
+
+func newSQLiteEventStore(t *testing.T) bus.EventStore {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "events.sqlite")
+	store, err := bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteEventStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
 
 // helper to create a test event with the given sequence number and kind.
 func testEvent(runID string, seq uint64, kind runtime.EventKind) runtime.Event {
@@ -81,7 +94,7 @@ func setupTestServer(store bus.EventStore, eb bus.EventBus) *httptest.Server {
 }
 
 func TestSSEHandler_ReplayFromStore(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -166,7 +179,7 @@ func TestSSEHandler_ReplayFromStore(t *testing.T) {
 }
 
 func TestSSEHandler_LiveSubscription(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -239,7 +252,7 @@ func TestSSEHandler_LiveSubscription(t *testing.T) {
 }
 
 func TestSSEHandler_AfterCursor(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -293,7 +306,7 @@ func TestSSEHandler_AfterCursor(t *testing.T) {
 }
 
 func TestSSEHandler_SequenceDedup(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -381,7 +394,7 @@ func TestSSEHandler_SequenceDedup(t *testing.T) {
 }
 
 func TestSSEHandler_Heartbeat(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -448,7 +461,7 @@ func TestSSEHandler_HeartbeatSent(t *testing.T) {
 	// by checking raw body content. We use a custom transport that supports
 	// streaming reads.
 
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -512,7 +525,7 @@ func TestSSEHandler_HeartbeatSent(t *testing.T) {
 }
 
 func TestSSEHandler_ClientDisconnect(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -550,7 +563,7 @@ func TestSSEHandler_ClientDisconnect(t *testing.T) {
 }
 
 func TestSSEHandler_StreamClosesOnRunFinished(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -625,7 +638,7 @@ func TestSSEHandler_StreamClosesOnRunFinished(t *testing.T) {
 }
 
 func TestSSEHandler_MissingRunID(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -643,7 +656,7 @@ func TestSSEHandler_MissingRunID(t *testing.T) {
 }
 
 func TestSSEHandler_InvalidAfterParam(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -662,7 +675,7 @@ func TestSSEHandler_InvalidAfterParam(t *testing.T) {
 }
 
 func TestSSEHandler_SSEFormat(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -670,17 +683,17 @@ func TestSSEHandler_SSEFormat(t *testing.T) {
 	ctx := context.Background()
 
 	evt := runtime.Event{
-		Kind:    runtime.EventNodeStarted,
-		RunID:   runID,
-		NodeID:  "node-1",
+		Kind:     runtime.EventNodeStarted,
+		RunID:    runID,
+		NodeID:   "node-1",
 		NodeKind: "llm",
-		Time:    time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
-		Attempt: 2,
-		Elapsed: 1500 * time.Millisecond,
-		Payload: map[string]any{"model": "gpt-4"},
-		Seq:     42,
-		TraceID: "abc123",
-		SpanID:  "def456",
+		Time:     time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
+		Attempt:  2,
+		Elapsed:  1500 * time.Millisecond,
+		Payload:  map[string]any{"model": "gpt-4"},
+		Seq:      42,
+		TraceID:  "abc123",
+		SpanID:   "def456",
 	}
 
 	if err := store.Append(ctx, evt); err != nil {
@@ -773,7 +786,7 @@ func TestSSEHandler_SSEFormat(t *testing.T) {
 func TestSSEHandler_ReplayThenLive(t *testing.T) {
 	// Test the full flow: replay stored events, then receive live events,
 	// with proper deduplication.
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 
@@ -859,7 +872,7 @@ func TestSSEHandler_ReplayThenLive(t *testing.T) {
 }
 
 func TestSSEHandler_AfterCursorWithLive(t *testing.T) {
-	store := bus.NewMemEventStore()
+	store := newSQLiteEventStore(t)
 	eb := bus.NewMemBus(bus.MemBusConfig{})
 	defer eb.Close()
 

@@ -26,8 +26,20 @@ func (s stubReachabilityChecker) CheckMCP(ctx context.Context, reg Registration)
 	return s.mcpErr
 }
 
+func newSQLiteValidationStore(t *testing.T) Store {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "tools.sqlite")
+	store, err := NewSQLiteStore(SQLiteStoreConfig{DSN: path, Scope: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
 func TestValidateNewRegistrationSuccess(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	store := newSQLiteValidationStore(t)
 	reg := ToolRegistration{
 		Name:     "http_probe",
 		Origin:   OriginHTTP,
@@ -89,7 +101,7 @@ func TestValidateNewRegistrationInvalidName(t *testing.T) {
 }
 
 func TestValidateNewRegistrationDuplicateName(t *testing.T) {
-	store := NewFileStore(filepath.Join(t.TempDir(), "tools.json"))
+	store := newSQLiteValidationStore(t)
 	existing := ToolRegistration{
 		Name:     "duplicate_tool",
 		Origin:   OriginNative,

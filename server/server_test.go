@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,22 +14,24 @@ import (
 )
 
 // testServer creates a Server with defaults suitable for testing.
-func testServer() *Server {
+func testServer(t *testing.T) *Server {
+	t.Helper()
+
 	return NewServer(ServerConfig{
-		Store:     NewMemoryStore(),
+		Store:     newTestWorkflowStore(t),
 		Providers: hydrate.ProviderMap{},
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return nil, nil
 		},
 		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
-		EventStore: bus.NewMemEventStore(),
+		EventStore: newTestEventStore(t),
 		CORSOrigin: "*",
 		MaxBody:    1 << 20,
 	})
 }
 
 func TestHealth(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	r := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, r)
@@ -49,7 +50,7 @@ func TestHealth(t *testing.T) {
 }
 
 func TestCORSHeaders(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	r := httptest.NewRequest(http.MethodGet, "/health", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, r)
@@ -60,7 +61,7 @@ func TestCORSHeaders(t *testing.T) {
 }
 
 func TestCORSPreflight(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	r := httptest.NewRequest(http.MethodOptions, "/api/workflows", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, r)
@@ -72,7 +73,7 @@ func TestCORSPreflight(t *testing.T) {
 
 func TestMaxBody(t *testing.T) {
 	srv := NewServer(ServerConfig{
-		Store:     NewMemoryStore(),
+		Store:     newTestWorkflowStore(t),
 		Providers: hydrate.ProviderMap{},
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return nil, nil
@@ -93,7 +94,7 @@ func TestMaxBody(t *testing.T) {
 }
 
 func TestNodeTypes(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	r := httptest.NewRequest(http.MethodGet, "/api/node-types", nil)
 	w := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(w, r)
@@ -127,7 +128,7 @@ func validGraphJSON(id string) []byte {
 }
 
 func TestGraphWorkflow_CRUD(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	handler := srv.Handler()
 
 	// POST /api/workflows/graph → 201
@@ -214,7 +215,7 @@ func TestGraphWorkflow_CRUD(t *testing.T) {
 }
 
 func TestGraphWorkflow_ValidationError(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 
 	// Graph with edge referencing unknown node -> validation error
 	bad := map[string]any{
@@ -239,7 +240,7 @@ func TestGraphWorkflow_ValidationError(t *testing.T) {
 }
 
 func TestGraphWorkflow_InvalidJSON(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 
 	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", strings.NewReader("not json"))
 	w := httptest.NewRecorder()
@@ -251,7 +252,7 @@ func TestGraphWorkflow_InvalidJSON(t *testing.T) {
 }
 
 func TestRunWorkflow_NotFound(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 
 	r := httptest.NewRequest(http.MethodPost, "/api/workflows/missing/run", nil)
 	w := httptest.NewRecorder()
@@ -263,7 +264,7 @@ func TestRunWorkflow_NotFound(t *testing.T) {
 }
 
 func TestRunWorkflow_WithFuncNode(t *testing.T) {
-	store := NewMemoryStore()
+	store := newTestWorkflowStore(t)
 
 	// Create a graph with a single FuncNode that sets output
 	gd := map[string]any{
@@ -284,7 +285,7 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 			return nil, nil
 		},
 		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
-		EventStore: bus.NewMemEventStore(),
+		EventStore: newTestEventStore(t),
 	})
 	handler := srv.Handler()
 
@@ -326,7 +327,7 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 
 func TestRunWorkflow_StreamNoBus_EmitsCompletionEvent(t *testing.T) {
 	srv := NewServer(ServerConfig{
-		Store:     NewMemoryStore(),
+		Store:     newTestWorkflowStore(t),
 		Providers: hydrate.ProviderMap{},
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return nil, nil
@@ -371,7 +372,7 @@ func TestRunWorkflow_StreamNoBus_EmitsCompletionEvent(t *testing.T) {
 }
 
 func TestRunWorkflow_StreamWithBus_EmitsCompletionEvent(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	handler := srv.Handler()
 
 	workflowBody := validGraphJSON("stream-with-bus")
@@ -410,7 +411,7 @@ func TestRunWorkflow_StreamWithBus_EmitsCompletionEvent(t *testing.T) {
 
 func TestRunEvents_NoStore(t *testing.T) {
 	srv := NewServer(ServerConfig{
-		Store:     NewMemoryStore(),
+		Store:     newTestWorkflowStore(t),
 		Providers: hydrate.ProviderMap{},
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return nil, nil
@@ -427,7 +428,7 @@ func TestRunEvents_NoStore(t *testing.T) {
 }
 
 func TestIntegrationFlow(t *testing.T) {
-	srv := testServer()
+	srv := testServer(t)
 	handler := srv.Handler()
 
 	// 1. POST workflow
@@ -477,6 +478,3 @@ func TestIntegrationFlow(t *testing.T) {
 		t.Fatalf("get after delete: %d", w.Code)
 	}
 }
-
-// Suppress unused import warnings — bus.EventStore is used via bus.NewMemEventStore.
-var _ = context.Background
