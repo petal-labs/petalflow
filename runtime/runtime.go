@@ -197,107 +197,52 @@ func (r *BasicRuntime) executeGraphSequential(
 		nodeID := queue[0]
 		queue = queue[1:]
 
-		// Skip if already visited in this execution path
-		// (this prevents infinite loops in non-router cases)
-		if visited[nodeID] && hopCount[nodeID] > 0 {
-			// For cycles, check max hops
-			if hopCount[nodeID] >= opts.MaxHops {
-				continue
-			}
+		if shouldSkipVisitedNode(nodeID, visited, hopCount, opts.MaxHops) {
+			continue
 		}
 
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return current, fmt.Errorf("%w: %v", ErrRunCanceled, ctx.Err())
-		default:
+		if err := checkRunContext(ctx); err != nil {
+			return current, err
 		}
 
-		// Check max hops
-		hopCount[nodeID]++
-		if hopCount[nodeID] > opts.MaxHops {
-			return current, fmt.Errorf("%w: node %s executed %d times", ErrMaxHopsExceeded, nodeID, hopCount[nodeID])
+		attempt, err := incrementAndValidateHop(nodeID, hopCount, opts.MaxHops)
+		if err != nil {
+			return current, err
 		}
 
-		// Get node
 		node, ok := g.NodeByID(nodeID)
 		if !ok {
 			return current, fmt.Errorf("%w: %s", graph.ErrNodeNotFound, nodeID)
 		}
 
-		// Step before node execution (if step controller is configured)
-		if opts.StepController != nil {
-			action, modifiedEnv, stepErr := r.handleStepPoint(
-				ctx, g, node, current, opts, emit, runStart,
-				StepPointBeforeNode, hopCount[nodeID], nil,
-			)
-			if stepErr != nil {
-				return current, stepErr
-			}
-			if modifiedEnv != nil {
-				current = modifiedEnv
-			}
-			switch action {
-			case StepActionAbort:
-				emit(NewEvent(EventStepAborted, current.Trace.RunID).
-					WithNode(nodeID, node.Kind()).
-					WithElapsed(opts.Now().Sub(runStart)).
-					WithPayload("reason", "controller_abort"))
-				return current, ErrStepAborted
-			case StepActionSkipNode:
-				emit(NewEvent(EventStepSkipped, current.Trace.RunID).
-					WithNode(nodeID, node.Kind()).
-					WithElapsed(opts.Now().Sub(runStart)).
-					WithPayload("reason", "controller_skip"))
-				visited[nodeID] = true
-				// Determine successors even when skipping
-				nextNodes := r.determineSuccessors(g, node, current, emit, runStart, opts)
-				queue = append(queue, nextNodes...)
-				continue
-			}
+		var skipNode bool
+		current, skipNode, err = r.handleSequentialBeforeStep(
+			ctx, g, node, current, opts, emit, runStart, attempt,
+		)
+		if err != nil {
+			return current, err
+		}
+		if skipNode {
+			visited[nodeID] = true
+			queue = append(queue, r.determineSuccessors(g, node, current, emit, runStart, opts)...)
+			continue
 		}
 
 		// Execute node
-		result, err := r.executeNode(ctx, node, current, opts, emit, runStart)
+		result, nodeErr := r.executeNode(ctx, node, current, opts, emit, runStart)
 
-		// Step after node execution (if step controller is configured)
-		if opts.StepController != nil {
-			// Use result if available, otherwise use current (for failed nodes)
-			envForStep := result
-			if envForStep == nil {
-				envForStep = current
-			}
-			action, _, stepErr := r.handleStepPoint(
-				ctx, g, node, envForStep, opts, emit, runStart,
-				StepPointAfterNode, hopCount[nodeID], err,
-			)
-			if stepErr != nil {
-				return current, stepErr
-			}
-			if action == StepActionAbort {
-				emit(NewEvent(EventStepAborted, current.Trace.RunID).
-					WithNode(nodeID, node.Kind()).
-					WithElapsed(opts.Now().Sub(runStart)).
-					WithPayload("reason", "controller_abort"))
-				return current, ErrStepAborted
-			}
+		err = r.handleSequentialAfterStep(
+			ctx, g, node, current, result, nodeErr, opts, emit, runStart, attempt,
+		)
+		if err != nil {
+			return current, err
 		}
 
+		current, err = resolveSequentialNodeOutcome(
+			current, result, node, nodeErr, attempt, opts, nodeID,
+		)
 		if err != nil {
-			if opts.ContinueOnError {
-				current.AppendError(core.NodeError{
-					NodeID:  nodeID,
-					Kind:    node.Kind(),
-					Message: err.Error(),
-					Attempt: hopCount[nodeID],
-					At:      opts.Now(),
-					Cause:   err,
-				})
-			} else {
-				return current, fmt.Errorf("%w: node %s: %v", ErrNodeExecution, nodeID, err)
-			}
-		} else {
-			current = result
+			return current, err
 		}
 
 		// Mark as visited
@@ -308,6 +253,155 @@ func (r *BasicRuntime) executeGraphSequential(
 		queue = append(queue, nextNodes...)
 	}
 
+	return current, nil
+}
+
+func shouldSkipVisitedNode(nodeID string, visited map[string]bool, hopCount map[string]int, maxHops int) bool {
+	if !visited[nodeID] || hopCount[nodeID] == 0 {
+		return false
+	}
+	return hopCount[nodeID] >= maxHops
+}
+
+func checkRunContext(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("%w: %v", ErrRunCanceled, ctx.Err())
+	default:
+		return nil
+	}
+}
+
+func incrementAndValidateHop(nodeID string, hopCount map[string]int, maxHops int) (int, error) {
+	hopCount[nodeID]++
+	attempt := hopCount[nodeID]
+	if attempt > maxHops {
+		return attempt, fmt.Errorf("%w: node %s executed %d times", ErrMaxHopsExceeded, nodeID, attempt)
+	}
+	return attempt, nil
+}
+
+func (r *BasicRuntime) handleSequentialBeforeStep(
+	ctx context.Context,
+	g graph.Graph,
+	node core.Node,
+	current *core.Envelope,
+	opts RunOptions,
+	emit EventEmitter,
+	runStart time.Time,
+	attempt int,
+) (*core.Envelope, bool, error) {
+	if opts.StepController == nil {
+		return current, false, nil
+	}
+
+	action, modifiedEnv, stepErr := r.handleStepPoint(
+		ctx, g, node, current, opts, emit, runStart,
+		StepPointBeforeNode, attempt, nil,
+	)
+	if stepErr != nil {
+		return current, false, stepErr
+	}
+	if modifiedEnv != nil {
+		current = modifiedEnv
+	}
+
+	switch action {
+	case StepActionAbort:
+		emitStepControlEvent(
+			emit, opts, runStart, current.Trace.RunID, node,
+			EventStepAborted, "controller_abort",
+		)
+		return current, false, ErrStepAborted
+	case StepActionSkipNode:
+		emitStepControlEvent(
+			emit, opts, runStart, current.Trace.RunID, node,
+			EventStepSkipped, "controller_skip",
+		)
+		return current, true, nil
+	default:
+		return current, false, nil
+	}
+}
+
+func (r *BasicRuntime) handleSequentialAfterStep(
+	ctx context.Context,
+	g graph.Graph,
+	node core.Node,
+	current *core.Envelope,
+	result *core.Envelope,
+	nodeErr error,
+	opts RunOptions,
+	emit EventEmitter,
+	runStart time.Time,
+	attempt int,
+) error {
+	if opts.StepController == nil {
+		return nil
+	}
+
+	envForStep := result
+	if envForStep == nil {
+		envForStep = current
+	}
+
+	action, _, stepErr := r.handleStepPoint(
+		ctx, g, node, envForStep, opts, emit, runStart,
+		StepPointAfterNode, attempt, nodeErr,
+	)
+	if stepErr != nil {
+		return stepErr
+	}
+	if action != StepActionAbort {
+		return nil
+	}
+
+	emitStepControlEvent(
+		emit, opts, runStart, current.Trace.RunID, node,
+		EventStepAborted, "controller_abort",
+	)
+	return ErrStepAborted
+}
+
+func emitStepControlEvent(
+	emit EventEmitter,
+	opts RunOptions,
+	runStart time.Time,
+	runID string,
+	node core.Node,
+	kind EventKind,
+	reason string,
+) {
+	emit(NewEvent(kind, runID).
+		WithNode(node.ID(), node.Kind()).
+		WithElapsed(opts.Now().Sub(runStart)).
+		WithPayload("reason", reason))
+}
+
+func resolveSequentialNodeOutcome(
+	current *core.Envelope,
+	result *core.Envelope,
+	node core.Node,
+	nodeErr error,
+	attempt int,
+	opts RunOptions,
+	nodeID string,
+) (*core.Envelope, error) {
+	if nodeErr == nil {
+		return result, nil
+	}
+	if !opts.ContinueOnError {
+		return current, fmt.Errorf("%w: node %s: %v", ErrNodeExecution, nodeID, nodeErr)
+	}
+
+	current.AppendError(core.NodeError{
+		NodeID:  nodeID,
+		Kind:    node.Kind(),
+		Message: nodeErr.Error(),
+		Attempt: attempt,
+		At:      opts.Now(),
+		Cause:   nodeErr,
+	})
 	return current, nil
 }
 
