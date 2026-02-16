@@ -122,6 +122,69 @@ func TestValidateManifestJSONRequiredFieldErrors(t *testing.T) {
 	}
 }
 
+func TestValidateManifestJSONTransportTypeSpecificRequirements(t *testing.T) {
+	tests := []struct {
+		name       string
+		transport  string
+		wantFields []string
+	}{
+		{
+			name:       "http requires endpoint",
+			transport:  `{"type":"http"}`,
+			wantFields: []string{"transport.endpoint"},
+		},
+		{
+			name:       "stdio requires command",
+			transport:  `{"type":"stdio"}`,
+			wantFields: []string{"transport.command"},
+		},
+		{
+			name:       "mcp requires mode",
+			transport:  `{"type":"mcp"}`,
+			wantFields: []string{"transport.mode"},
+		},
+		{
+			name:       "mcp stdio requires command",
+			transport:  `{"type":"mcp","mode":"stdio"}`,
+			wantFields: []string{"transport.command"},
+		},
+		{
+			name:       "mcp sse requires endpoint",
+			transport:  `{"type":"mcp","mode":"sse"}`,
+			wantFields: []string{"transport.endpoint"},
+		},
+		{
+			name:       "invalid mcp mode rejected",
+			transport:  `{"type":"mcp","mode":"socket"}`,
+			wantFields: []string{"transport.mode"},
+		},
+		{
+			name:       "invalid transport type rejected",
+			transport:  `{"type":"socket"}`,
+			wantFields: []string{"transport.type"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := `{
+  "manifest_version": "1.0",
+  "tool": { "name": "x" },
+  "transport": ` + tt.transport + `,
+  "actions": { "run": {} }
+}`
+			result := ValidateManifestJSON([]byte(manifest))
+			fields := diagnosticFields(result.Diagnostics)
+			for _, field := range tt.wantFields {
+				if slices.Contains(fields, field) {
+					continue
+				}
+				t.Fatalf("expected error on field %q, got fields: %v", field, fields)
+			}
+		})
+	}
+}
+
 func TestSchemaManifestValidatorImplementsInterface(t *testing.T) {
 	var _ ManifestValidator = SchemaManifestValidator{}
 }
