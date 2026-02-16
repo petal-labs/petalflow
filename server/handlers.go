@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ import (
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/loader"
+	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -274,8 +276,24 @@ type RunRequest struct {
 
 // RunReqOptions holds optional run configuration.
 type RunReqOptions struct {
-	Timeout string `json:"timeout,omitempty"`
-	Stream  bool   `json:"stream,omitempty"`
+	Timeout string              `json:"timeout,omitempty"`
+	Stream  bool                `json:"stream,omitempty"`
+	Human   *RunReqHumanOptions `json:"human,omitempty"`
+}
+
+// RunReqHumanOptions controls how daemon run requests handle human node prompts.
+type RunReqHumanOptions struct {
+	// Mode controls handling strategy:
+	// - "strict": fail at runtime when a human node requests input
+	// - "auto_approve": auto-approve requests
+	// - "auto_reject": auto-reject requests
+	Mode string `json:"mode,omitempty"`
+
+	// Optional response overrides for auto modes.
+	Choice      string `json:"choice,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	RespondedBy string `json:"responded_by,omitempty"`
+	Delay       string `json:"delay,omitempty"`
 }
 
 // RunResponse is the JSON response for a completed run.
@@ -327,6 +345,12 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 		timeout = d
 	}
 
+	humanHandler, err := buildRunHumanHandler(req.Options.Human)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_HUMAN_OPTIONS", err.Error())
+		return
+	}
+
 	// Hydrate graph
 	toolRegistry, err := hydrate.BuildActionToolRegistry(r.Context(), s.toolStore)
 	if err != nil {
@@ -336,6 +360,7 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory,
 		hydrate.WithToolRegistry(toolRegistry),
+		hydrate.WithHumanHandler(humanHandler),
 	)
 	execGraph, err := hydrate.HydrateGraph(rec.Compiled, s.providers, factory)
 	if err != nil {
@@ -353,6 +378,56 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.handleRunSync(w, r, id, execGraph, env, timeout)
+}
+
+type strictRunHumanHandler struct{}
+
+func (strictRunHumanHandler) Request(_ context.Context, req *nodes.HumanRequest) (*nodes.HumanResponse, error) {
+	return nil, fmt.Errorf(
+		"human request %q (%s) requires external handling; set options.human.mode to auto_approve or auto_reject",
+		req.ID,
+		req.Type,
+	)
+}
+
+func buildRunHumanHandler(cfg *RunReqHumanOptions) (nodes.HumanHandler, error) {
+	mode := "strict"
+	if cfg != nil && strings.TrimSpace(cfg.Mode) != "" {
+		mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	}
+
+	switch mode {
+	case "strict":
+		return strictRunHumanHandler{}, nil
+	case "auto_approve", "auto_reject":
+		var handler *nodes.AutoApproveHandler
+		if mode == "auto_approve" {
+			handler = nodes.NewAutoApproveHandler()
+		} else {
+			handler = nodes.NewAutoRejectHandler()
+		}
+		if cfg != nil {
+			if strings.TrimSpace(cfg.Choice) != "" {
+				handler.Choice = cfg.Choice
+			}
+			if strings.TrimSpace(cfg.Notes) != "" {
+				handler.Notes = cfg.Notes
+			}
+			if strings.TrimSpace(cfg.RespondedBy) != "" {
+				handler.RespondedBy = cfg.RespondedBy
+			}
+			if strings.TrimSpace(cfg.Delay) != "" {
+				d, err := time.ParseDuration(cfg.Delay)
+				if err != nil {
+					return nil, fmt.Errorf("options.human.delay: %w", err)
+				}
+				handler.Delay = d
+			}
+		}
+		return handler, nil
+	default:
+		return nil, fmt.Errorf("options.human.mode must be one of: strict, auto_approve, auto_reject")
+	}
 }
 
 // handleRunSync executes a workflow synchronously and returns the result.

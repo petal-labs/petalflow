@@ -615,15 +615,105 @@ func TestNewLiveNodeFactory_ToolTypeErrors(t *testing.T) {
 	})
 }
 
-func TestNewLiveNodeFactory_MapAndCacheRequireBindings(t *testing.T) {
+func TestNewLiveNodeFactory_MapAndCacheBindings(t *testing.T) {
 	factory, _ := newMockClientFactory()
 	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
 
-	if _, err := nodeFactory(graph.NodeDef{ID: "m1", Type: "map"}); err == nil {
-		t.Fatal("expected error for map node")
+	mapNode, err := nodeFactory(graph.NodeDef{
+		ID:   "m1",
+		Type: "map",
+		Config: map[string]any{
+			"input_var":  "items",
+			"output_var": "mapped",
+			"mapper_binding": map[string]any{
+				"type": "transform",
+				"config": map[string]any{
+					"transform":  "template",
+					"template":   "{{.item.name}}",
+					"output_var": "label",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("map node: unexpected error: %v", err)
 	}
-	if _, err := nodeFactory(graph.NodeDef{ID: "c1", Type: "cache"}); err == nil {
-		t.Fatal("expected error for cache node")
+	mn, ok := mapNode.(*nodes.MapNode)
+	if !ok {
+		t.Fatalf("expected *nodes.MapNode, got %T", mapNode)
+	}
+	mapCfg := mn.Config()
+	if mapCfg.MapperNode == nil {
+		t.Fatal("map config MapperNode should be set")
+	}
+	if mapCfg.InputVar != "items" || mapCfg.OutputVar != "mapped" {
+		t.Fatalf("unexpected map config input/output: %q/%q", mapCfg.InputVar, mapCfg.OutputVar)
+	}
+
+	cacheNode, err := nodeFactory(graph.NodeDef{
+		ID:   "c1",
+		Type: "cache",
+		Config: map[string]any{
+			"ttl":        "15s",
+			"output_var": "cache_meta",
+			"wrapped_node": map[string]any{
+				"type": "transform",
+				"config": map[string]any{
+					"transform":  "template",
+					"template":   "ok",
+					"output_var": "result",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("cache node: unexpected error: %v", err)
+	}
+	cn, ok := cacheNode.(*nodes.CacheNode)
+	if !ok {
+		t.Fatalf("expected *nodes.CacheNode, got %T", cacheNode)
+	}
+	cacheCfg := cn.Config()
+	if cacheCfg.WrappedNode == nil {
+		t.Fatal("cache config WrappedNode should be set")
+	}
+	if cacheCfg.OutputVar != "cache_meta" {
+		t.Fatalf("cache output var = %q, want %q", cacheCfg.OutputVar, "cache_meta")
+	}
+	if cacheCfg.TTL != 15*time.Second {
+		t.Fatalf("cache TTL = %s, want 15s", cacheCfg.TTL)
+	}
+}
+
+func TestNewLiveNodeFactory_MapAndCacheBindingErrors(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	_, err := nodeFactory(graph.NodeDef{ID: "m1", Type: "map"})
+	if err == nil || !strings.Contains(err.Error(), "missing binding config") {
+		t.Fatalf("map missing binding error = %v, want missing binding config", err)
+	}
+
+	_, err = nodeFactory(graph.NodeDef{
+		ID:   "m2",
+		Type: "map",
+		Config: map[string]any{
+			"mapper_binding": "transform",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "config.mapper_binding must be an object") {
+		t.Fatalf("map malformed binding error = %v", err)
+	}
+
+	_, err = nodeFactory(graph.NodeDef{
+		ID:   "c1",
+		Type: "cache",
+		Config: map[string]any{
+			"wrapped_binding": map[string]any{},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "config.wrapped_binding.type is required") {
+		t.Fatalf("cache missing type error = %v", err)
 	}
 }
 
@@ -1038,15 +1128,34 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 			node: graph.NodeDef{
 				ID:   "n-map",
 				Type: "map",
+				Config: map[string]any{
+					"input_var": "items",
+					"mapper_binding": map[string]any{
+						"type": "transform",
+						"config": map[string]any{
+							"transform":  "template",
+							"template":   "{{.item}}",
+							"output_var": "mapped",
+						},
+					},
+				},
 			},
-			expectErrSubstr: "requires a mapper binding",
 		},
 		"cache": {
 			node: graph.NodeDef{
 				ID:   "n-cache",
 				Type: "cache",
+				Config: map[string]any{
+					"wrapped_binding": map[string]any{
+						"type": "transform",
+						"config": map[string]any{
+							"transform":  "template",
+							"template":   "cached",
+							"output_var": "cache_out",
+						},
+					},
+				},
 			},
-			expectErrSubstr: "requires a wrapped node binding",
 		},
 		"sink": {
 			node: graph.NodeDef{

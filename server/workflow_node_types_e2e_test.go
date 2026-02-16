@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/petal-labs/petalflow/runtime"
@@ -521,68 +520,279 @@ func TestWorkflowNodeTypesE2E_DaemonAPI_RunCoverage(t *testing.T) {
 	}
 }
 
-func TestWorkflowNodeTypesE2E_DaemonAPI_ExpectedHydrateGaps(t *testing.T) {
+func TestWorkflowNodeTypesE2E_DaemonAPI_BindingCoverage(t *testing.T) {
 	handler := newDaemonWorkflowLifecycleHandler(t)
 
-	cases := []struct {
-		name          string
-		nodeType      string
-		config        map[string]any
-		wantErrorCode string
-		wantMessage   string
-	}{
+	t.Run("human_auto_approve", func(t *testing.T) {
+		workflowID := "node_type_human_bound"
+		createGraphWorkflow(t, handler, graphWorkflowPayload(workflowID, map[string]any{
+			"id":   "human_gate",
+			"type": "human",
+			"config": map[string]any{
+				"mode":       "approval",
+				"prompt":     "approve release?",
+				"output_var": "approval",
+			},
+		}))
+
+		run := runWorkflowWithOptions(t, handler, workflowID, map[string]any{
+			"topic": "issue-113",
+		}, RunReqOptions{
+			Timeout: "30s",
+			Human: &RunReqHumanOptions{
+				Mode:        "auto_approve",
+				RespondedBy: "node-types-e2e",
+			},
+		})
+		if run.Status != "completed" {
+			t.Fatalf("run status = %q, want completed", run.Status)
+		}
+		if approved, _ := run.Output.Vars["approval_approved"].(bool); !approved {
+			t.Fatalf("approval_approved = %v, want true", run.Output.Vars["approval_approved"])
+		}
+		raw, ok := run.Output.Vars["approval"]
+		if !ok {
+			t.Fatal("expected approval response output var")
+		}
+		resp, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("approval type = %T, want map[string]any", raw)
+		}
+		if resp["responded_by"] != "node-types-e2e" {
+			t.Fatalf("responded_by = %v, want %q", resp["responded_by"], "node-types-e2e")
+		}
+
+		events := getRunEvents(t, handler, run.RunID)
+		assertRunLifecycleEvents(t, events, run.RunID)
+		if !hasNodeEvent(events, runtime.EventNodeFinished, "human_gate") {
+			t.Fatal("expected human_gate node to complete")
+		}
+	})
+
+	t.Run("map_mapper_binding", func(t *testing.T) {
+		workflowID := "node_type_map_bound"
+		createGraphWorkflow(t, handler, graphWorkflowPayload(workflowID, map[string]any{
+			"id":   "map_items",
+			"type": "map",
+			"config": map[string]any{
+				"input_var":  "items",
+				"output_var": "mapped",
+				"item_var":   "item",
+				"mapper_binding": map[string]any{
+					"type": "transform",
+					"config": map[string]any{
+						"transform":  "template",
+						"template":   "item={{.item.name}}",
+						"output_var": "label",
+					},
+				},
+			},
+		}))
+
+		run := runWorkflowWithOptions(t, handler, workflowID, map[string]any{
+			"items": []any{
+				map[string]any{"name": "alpha"},
+				map[string]any{"name": "beta"},
+			},
+		}, RunReqOptions{Timeout: "30s"})
+		if run.Status != "completed" {
+			t.Fatalf("run status = %q, want completed", run.Status)
+		}
+
+		raw, ok := run.Output.Vars["mapped"]
+		if !ok {
+			t.Fatal("expected mapped output var")
+		}
+		mapped, ok := raw.([]any)
+		if !ok {
+			t.Fatalf("mapped type = %T, want []any", raw)
+		}
+		if len(mapped) != 2 {
+			t.Fatalf("mapped len = %d, want 2", len(mapped))
+		}
+		first, ok := mapped[0].(map[string]any)
+		if !ok {
+			t.Fatalf("mapped[0] type = %T, want map[string]any", mapped[0])
+		}
+		if first["label"] != "item=alpha" {
+			t.Fatalf("mapped[0].label = %v, want %q", first["label"], "item=alpha")
+		}
+
+		events := getRunEvents(t, handler, run.RunID)
+		assertRunLifecycleEvents(t, events, run.RunID)
+		if !hasNodeEvent(events, runtime.EventNodeFinished, "map_items") {
+			t.Fatal("expected map_items node to complete")
+		}
+	})
+
+	t.Run("cache_wrapped_binding", func(t *testing.T) {
+		workflowID := "node_type_cache_bound"
+		createGraphWorkflow(t, handler, graphWorkflowPayload(workflowID, map[string]any{
+			"id":   "cache_step",
+			"type": "cache",
+			"config": map[string]any{
+				"output_var": "cache_meta",
+				"cache_key":  "fixed-key",
+				"wrapped_binding": map[string]any{
+					"type": "transform",
+					"config": map[string]any{
+						"transform":  "template",
+						"template":   "payload={{.value}}",
+						"output_var": "cache_payload",
+					},
+				},
+			},
+		}))
+
+		run := runWorkflowWithOptions(t, handler, workflowID, map[string]any{
+			"value": "first",
+		}, RunReqOptions{Timeout: "30s"})
+
+		meta, ok := run.Output.Vars["cache_meta"].(map[string]any)
+		if !ok {
+			t.Fatalf("cache_meta type = %T, want map[string]any", run.Output.Vars["cache_meta"])
+		}
+		if hit, _ := meta["hit"].(bool); hit {
+			t.Fatalf("cache_meta.hit = %v, want false", meta["hit"])
+		}
+		if run.Output.Vars["cache_payload"] != "payload=first" {
+			t.Fatalf("cache_payload = %v, want %q", run.Output.Vars["cache_payload"], "payload=first")
+		}
+
+		events := getRunEvents(t, handler, run.RunID)
+		assertRunLifecycleEvents(t, events, run.RunID)
+		if !hasNodeEvent(events, runtime.EventNodeFinished, "cache_step") {
+			t.Fatal("expected cache_step node to complete")
+		}
+	})
+
+	t.Run("human_strict_mode_runtime_error", func(t *testing.T) {
+		workflowID := "node_type_human_strict"
+		createGraphWorkflow(t, handler, graphWorkflowPayload(workflowID, map[string]any{
+			"id":   "human_gate",
+			"type": "human",
+			"config": map[string]any{
+				"mode":       "approval",
+				"prompt":     "approve release?",
+				"output_var": "approval",
+			},
+		}))
+
+		errBody := runWorkflowExpectError(t, handler, workflowID, nil, http.StatusInternalServerError)
+		var payload struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(errBody, &payload); err != nil {
+			t.Fatalf("unmarshal strict mode error response: %v", err)
+		}
+		if payload.Error.Code != "RUNTIME_ERROR" {
+			t.Fatalf("error code = %q, want %q", payload.Error.Code, "RUNTIME_ERROR")
+		}
+		if payload.Error.Message == "" {
+			t.Fatal("strict mode runtime error message should not be empty")
+		}
+	})
+}
+
+func TestWorkflowNodeTypesE2E_DaemonAPI_BindingCoverage_WithTracing(t *testing.T) {
+	handler, spans := newDaemonWorkflowLifecycleHandlerWithTracing(t)
+
+	workflowID := "node_type_bound_tracing"
+	createGraphWorkflow(t, handler, graphWorkflowPayloadFromParts(workflowID, []map[string]any{
 		{
-			name:          "human_requires_handler_binding",
-			nodeType:      "human",
-			config:        map[string]any{"mode": "approval", "prompt": "approve?", "output_var": "approval"},
-			wantErrorCode: "HYDRATE_ERROR",
-			wantMessage:   "requires a HumanHandler",
+			"id":   "map_items",
+			"type": "map",
+			"config": map[string]any{
+				"input_var":  "items",
+				"output_var": "mapped",
+				"item_var":   "item",
+				"mapper_binding": map[string]any{
+					"type": "transform",
+					"config": map[string]any{
+						"transform":  "template",
+						"template":   "item={{.item.name}}",
+						"output_var": "label",
+					},
+				},
+			},
 		},
 		{
-			name:          "map_requires_mapper_binding",
-			nodeType:      "map",
-			config:        map[string]any{"input_var": "items", "output_var": "mapped"},
-			wantErrorCode: "HYDRATE_ERROR",
-			wantMessage:   "map node hydration requires a mapper binding",
+			"id":   "cache_step",
+			"type": "cache",
+			"config": map[string]any{
+				"output_var": "cache_meta",
+				"cache_key":  "bound-tracing",
+				"wrapped_binding": map[string]any{
+					"type": "transform",
+					"config": map[string]any{
+						"transform":  "template",
+						"template":   "cache-ready",
+						"output_var": "cache_payload",
+					},
+				},
+			},
 		},
 		{
-			name:          "cache_requires_wrapped_node_binding",
-			nodeType:      "cache",
-			config:        map[string]any{"output_key": "cached"},
-			wantErrorCode: "HYDRATE_ERROR",
-			wantMessage:   "cache node hydration requires a wrapped node binding",
+			"id":   "human_gate",
+			"type": "human",
+			"config": map[string]any{
+				"mode":       "approval",
+				"prompt":     "approve?",
+				"output_var": "approval",
+			},
 		},
+	}, []map[string]any{
+		{"source": "map_items", "target": "cache_step"},
+		{"source": "cache_step", "target": "human_gate"},
+	}, "map_items"))
+
+	run := runWorkflowWithOptions(t, handler, workflowID, map[string]any{
+		"items": []any{
+			map[string]any{"name": "alpha"},
+		},
+	}, RunReqOptions{
+		Timeout: "30s",
+		Human: &RunReqHumanOptions{
+			Mode: "auto_approve",
+		},
+	})
+	if run.Status != "completed" {
+		t.Fatalf("run status = %q, want completed", run.Status)
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			workflowID := "node_type_gap_" + tc.nodeType
-			createGraphWorkflow(t, handler, graphWorkflowPayload(workflowID, map[string]any{
-				"id":     "node",
-				"type":   tc.nodeType,
-				"config": tc.config,
-			}))
+	events := getRunEvents(t, handler, run.RunID)
+	assertRunLifecycleEvents(t, events, run.RunID)
 
-			errBody := runWorkflowExpectError(t, handler, workflowID, map[string]any{
-				"items": []any{1, 2, 3},
-			}, http.StatusUnprocessableEntity)
+	for _, nodeID := range []string{"map_items", "cache_step", "human_gate"} {
+		if !hasNodeEvent(events, runtime.EventNodeFinished, nodeID) {
+			t.Fatalf("expected node %q to emit node.finished", nodeID)
+		}
+	}
 
-			var payload struct {
-				Error struct {
-					Code    string `json:"code"`
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			if err := json.Unmarshal(errBody, &payload); err != nil {
-				t.Fatalf("unmarshal error response: %v", err)
-			}
-			if payload.Error.Code != tc.wantErrorCode {
-				t.Fatalf("error code = %q, want %q (body=%s)", payload.Error.Code, tc.wantErrorCode, string(errBody))
-			}
-			if !strings.Contains(payload.Error.Message, tc.wantMessage) {
-				t.Fatalf("error message = %q, want substring %q", payload.Error.Message, tc.wantMessage)
-			}
-		})
+	var traced []runtime.Event
+	for _, event := range events {
+		if event.TraceID != "" || event.SpanID != "" {
+			traced = append(traced, event)
+		}
+	}
+	if len(traced) == 0 {
+		t.Fatal("expected at least one traced event")
+	}
+	traceID := traced[0].TraceID
+	for i, event := range traced {
+		if event.TraceID == "" || event.SpanID == "" {
+			t.Fatalf("traced event[%d] missing trace metadata (trace_id=%q span_id=%q)", i, event.TraceID, event.SpanID)
+		}
+		if traceID != "" && event.TraceID != traceID {
+			t.Fatalf("traced event[%d] trace_id=%q, want %q", i, event.TraceID, traceID)
+		}
+	}
+
+	if ended := spans.Ended(); len(ended) < 2 {
+		t.Fatalf("ended span count = %d, want >= 2", len(ended))
 	}
 }
 
@@ -625,6 +835,38 @@ func runWorkflowExpectError(
 		t.Fatalf("run workflow status=%d, want %d body=%s", w.Code, wantStatus, w.Body.String())
 	}
 	return w.Body.Bytes()
+}
+
+func runWorkflowWithOptions(
+	t *testing.T,
+	handler http.Handler,
+	id string,
+	input map[string]any,
+	options RunReqOptions,
+) RunResponse {
+	t.Helper()
+
+	if options.Timeout == "" {
+		options.Timeout = "30s"
+	}
+	body := mustJSON(t, RunRequest{
+		Input:   input,
+		Options: options,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows/"+id+"/run", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("run workflow status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp RunResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+	return resp
 }
 
 func graphWorkflowPayload(workflowID string, node map[string]any) map[string]any {

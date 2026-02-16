@@ -3,6 +3,7 @@ package hydrate
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
@@ -88,10 +89,42 @@ func newLiveFactoryClientGetter(providers ProviderMap, clientFactory ClientFacto
 }
 
 func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
-	if builder, ok := staticLiveNodeBuilders[nd.Type]; ok {
-		return builder(r, nd)
+	switch nd.Type {
+	case "llm_prompt":
+		return buildLLMNode(nd, r.getClient)
+	case "llm_router":
+		return buildLLMRouter(nd, r.getClient)
+	case "rule_router":
+		return buildRuleRouter(nd)
+	case "filter":
+		return buildFilterNode(nd)
+	case "transform":
+		return buildTransformNode(nd)
+	case "gate":
+		return buildGateNode(nd)
+	case "guardian":
+		return buildGuardianNode(nd)
+	case "sink":
+		return buildSinkNode(nd)
+	case "map":
+		return buildMapNode(r, nd)
+	case "cache":
+		return buildCacheNode(r, nd)
+	case "merge":
+		return buildMergeNode(nd)
+	case "human":
+		return buildHumanNode(nd, r.options.humanHandler)
+	case "conditional":
+		return buildConditionalNode(nd)
+	case "noop":
+		return core.NewNoopNode(nd.ID), nil
+	case "func":
+		return buildFuncPlaceholderNode(r, nd)
+	case "tool":
+		return buildConfiguredToolNode(r, nd)
+	default:
+		return r.buildDynamicToolNode(nd)
 	}
-	return r.buildDynamicToolNode(nd)
 }
 
 func (r liveFactoryRuntime) buildDynamicToolNode(nd graph.NodeDef) (core.Node, error) {
@@ -104,35 +137,122 @@ func (r liveFactoryRuntime) buildDynamicToolNode(nd graph.NodeDef) (core.Node, e
 	return nil, fmt.Errorf("node %q: unsupported node type %q", nd.ID, nd.Type)
 }
 
-var staticLiveNodeBuilders = map[string]func(liveFactoryRuntime, graph.NodeDef) (core.Node, error){
-	"llm_prompt": func(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildLLMNode(nd, r.getClient) },
-	"llm_router": func(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
-		return buildLLMRouter(nd, r.getClient)
-	},
-	"rule_router": func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildRuleRouter(nd) },
-	"filter":      func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildFilterNode(nd) },
-	"transform":   func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildTransformNode(nd) },
-	"gate":        func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildGateNode(nd) },
-	"guardian":    func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildGuardianNode(nd) },
-	"sink":        func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildSinkNode(nd) },
-	"map":         buildMapNodeUnsupported,
-	"cache":       buildCacheNodeUnsupported,
-	"merge":       func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildMergeNode(nd) },
-	"human": func(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
-		return buildHumanNode(nd, r.options.humanHandler)
-	},
-	"conditional": func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return buildConditionalNode(nd) },
-	"noop":        func(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) { return core.NewNoopNode(nd.ID), nil },
-	"func":        buildFuncPlaceholderNode,
-	"tool":        buildConfiguredToolNode,
+func buildMapNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	mapperDef, err := boundNodeDefFromConfig(nd, []string{"mapper_binding", "mapper_node"}, nd.ID+"__mapper")
+	if err != nil {
+		return nil, err
+	}
+	mapperNode, err := r.buildNode(mapperDef)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: map mapper binding hydration failed: %w", nd.ID, err)
+	}
+
+	cfg := nodes.MapNodeConfig{
+		InputVar:   configString(nd.Config, "input_var"),
+		OutputVar:  configString(nd.Config, "output_var"),
+		ItemVar:    configString(nd.Config, "item_var"),
+		IndexVar:   configString(nd.Config, "index_var"),
+		MapperNode: mapperNode,
+	}
+	if v, ok := configInt(nd.Config, "concurrency"); ok {
+		cfg.Concurrency = v
+	}
+	if v, ok := nd.Config["continue_on_error"].(bool); ok {
+		cfg.ContinueOnError = v
+	}
+	if v, ok := nd.Config["preserve_order"].(bool); ok {
+		cfg.PreserveOrder = v
+	}
+
+	return nodes.NewMapNode(nd.ID, cfg), nil
 }
 
-func buildMapNodeUnsupported(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
-	return nil, fmt.Errorf("node %q: map node hydration requires a mapper binding", nd.ID)
+func buildCacheNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	wrappedDef, err := boundNodeDefFromConfig(nd, []string{"wrapped_binding", "wrapped_node"}, nd.ID+"__wrapped")
+	if err != nil {
+		return nil, err
+	}
+	wrappedNode, err := r.buildNode(wrappedDef)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: cache wrapped binding hydration failed: %w", nd.ID, err)
+	}
+
+	cfg := nodes.CacheNodeConfig{
+		CacheKey:    configString(nd.Config, "cache_key"),
+		WrappedNode: wrappedNode,
+		TTL:         configDuration(nd.Config, "ttl"),
+		OutputVar:   configString(nd.Config, "output_var"),
+	}
+	// Backward-compatible alias used in some tests/examples.
+	if cfg.OutputVar == "" {
+		cfg.OutputVar = configString(nd.Config, "output_key")
+	}
+	if vars, ok := configStringSlice(nd.Config, "input_vars"); ok {
+		cfg.InputVars = vars
+	}
+	if v, ok := nd.Config["include_artifacts"].(bool); ok {
+		cfg.IncludeArtifacts = v
+	}
+	if v, ok := nd.Config["include_input"].(bool); ok {
+		cfg.IncludeInput = v
+	}
+
+	return nodes.NewCacheNode(nd.ID, cfg), nil
 }
 
-func buildCacheNodeUnsupported(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
-	return nil, fmt.Errorf("node %q: cache node hydration requires a wrapped node binding", nd.ID)
+func boundNodeDefFromConfig(nd graph.NodeDef, keys []string, defaultID string) (graph.NodeDef, error) {
+	if len(keys) == 0 {
+		return graph.NodeDef{}, fmt.Errorf("node %q: internal error: no binding keys configured", nd.ID)
+	}
+
+	var (
+		raw any
+		key string
+	)
+	for _, candidate := range keys {
+		if v, ok := nd.Config[candidate]; ok {
+			raw = v
+			key = candidate
+			break
+		}
+	}
+	if key == "" {
+		return graph.NodeDef{}, fmt.Errorf(
+			"node %q: missing binding config; expected one of %s",
+			nd.ID,
+			strings.Join(keys, ", "),
+		)
+	}
+
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return graph.NodeDef{}, fmt.Errorf("node %q: config.%s must be an object", nd.ID, key)
+	}
+
+	nodeType := configMapString(obj, "type")
+	if nodeType == "" {
+		return graph.NodeDef{}, fmt.Errorf("node %q: config.%s.type is required", nd.ID, key)
+	}
+
+	nodeID := configMapString(obj, "id")
+	if nodeID == "" {
+		nodeID = defaultID
+	}
+
+	cfg := map[string]any{}
+	if rawCfg, ok := obj["config"]; ok {
+		typedCfg, ok := rawCfg.(map[string]any)
+		if !ok {
+			return graph.NodeDef{}, fmt.Errorf("node %q: config.%s.config must be an object", nd.ID, key)
+		}
+		cfg = typedCfg
+	}
+
+	return graph.NodeDef{
+		ID:     nodeID,
+		Type:   nodeType,
+		Config: cfg,
+	}, nil
 }
 
 func buildFuncPlaceholderNode(_ liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {

@@ -52,6 +52,71 @@ Example registration:
 }
 ```
 
+## Workflow Endpoints
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/workflows/agent` | Create workflow from Agent/Task schema |
+| `POST` | `/api/workflows/graph` | Create workflow from Graph IR schema |
+| `GET` | `/api/workflows` | List workflows |
+| `GET` | `/api/workflows/{id}` | Get workflow |
+| `PUT` | `/api/workflows/{id}` | Update workflow source and recompile |
+| `DELETE` | `/api/workflows/{id}` | Delete workflow |
+| `POST` | `/api/workflows/{id}/run` | Execute workflow |
+| `GET` | `/api/runs/{run_id}/events` | Fetch persisted run events |
+
+## Workflow Run Bindings
+
+`POST /api/workflows/{id}/run` accepts:
+
+- `input` (`object`): initial envelope variables.
+- `options.timeout` (`duration`): run timeout (default `5m`).
+- `options.stream` (`bool`): stream run events via SSE.
+- `options.human` (`object`): runtime human handler mode.
+
+`options.human.mode` values:
+
+- `strict` (default): hydrate succeeds, but human node requests fail at runtime with a clear configuration error.
+- `auto_approve`: injects an auto-approve handler for all human node requests.
+- `auto_reject`: injects an auto-reject handler for all human node requests.
+
+Optional `options.human` fields for auto modes:
+
+- `choice` (string)
+- `notes` (string)
+- `responded_by` (string)
+- `delay` (duration)
+
+Example run request:
+
+```json
+{
+  "input": {
+    "topic": "issue-113"
+  },
+  "options": {
+    "timeout": "30s",
+    "human": {
+      "mode": "auto_approve",
+      "responded_by": "daemon-e2e"
+    }
+  }
+}
+```
+
+### `map` and `cache` Node Binding Config
+
+`map` and `cache` execute via embedded node bindings in `config`:
+
+- `map.config.mapper_binding` (or alias `mapper_node`)
+- `cache.config.wrapped_binding` (or alias `wrapped_node`)
+
+Both bindings are object node definitions with:
+
+- `type` (required)
+- `id` (optional; auto-generated if omitted)
+- `config` (optional object)
+
 ## Security and Error Semantics
 
 - Sensitive tool config values are always masked in API responses (`**********`).
