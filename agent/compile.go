@@ -515,6 +515,7 @@ func compileCustom(
 				}
 
 				condNodeID := depID + "__cond__" + taskID
+				conditionTarget := dstStartNode
 
 				// Check if this conditional node already exists
 				condExists := false
@@ -535,7 +536,7 @@ func compileCustom(
 						Config: map[string]any{
 							"conditions": []any{
 								map[string]any{
-									"name":       taskID,
+									"name":       conditionTarget,
 									"expression": rewrittenExpr,
 								},
 							},
@@ -557,7 +558,7 @@ func compileCustom(
 				// Wire: conditional -> dst
 				gd.Edges = append(gd.Edges, graph.EdgeDef{
 					Source:       condNodeID,
-					SourceHandle: taskID,
+					SourceHandle: conditionTarget,
 					Target:       dstStartNode,
 					TargetHandle: "input",
 				})
