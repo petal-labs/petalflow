@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,91 @@ func TestStdioAdapterInvokeError(t *testing.T) {
 	}
 }
 
+func TestStdioAdapterInvokeValidation(t *testing.T) {
+	t.Run("nil adapter", func(t *testing.T) {
+		var adapter *StdioAdapter
+		_, err := adapter.Invoke(context.Background(), InvokeRequest{Action: "echo"})
+		if err == nil {
+			t.Fatal("Invoke() error = nil, want non-nil")
+		}
+		if got := toolErrorCode(err); got != ToolErrorCodeInvalidRequest {
+			t.Fatalf("toolErrorCode = %q, want %q", got, ToolErrorCodeInvalidRequest)
+		}
+	})
+
+	t.Run("empty command", func(t *testing.T) {
+		reg := ToolRegistration{
+			Name:     "bad_stdio",
+			Origin:   OriginStdio,
+			Manifest: NewManifest("bad_stdio"),
+		}
+		reg.Manifest.Transport = NewStdioTransport(StdioTransport{
+			Command: "   ",
+		})
+
+		adapter := NewStdioAdapter(reg)
+		_, err := adapter.Invoke(context.Background(), InvokeRequest{Action: "echo"})
+		if err == nil {
+			t.Fatal("Invoke() error = nil, want non-nil")
+		}
+		if got := toolErrorCode(err); got != ToolErrorCodeInvalidRequest {
+			t.Fatalf("toolErrorCode = %q, want %q", got, ToolErrorCodeInvalidRequest)
+		}
+	})
+
+	t.Run("empty action", func(t *testing.T) {
+		reg := ToolRegistration{
+			Name:     "echo_stdio",
+			Origin:   OriginStdio,
+			Manifest: NewManifest("echo_stdio"),
+		}
+		reg.Manifest.Transport = NewStdioTransport(StdioTransport{
+			Command: os.Args[0],
+			Args:    []string{"-test.run=TestStdioAdapterHelperProcess", "--"},
+			Env: map[string]string{
+				"GO_WANT_STDIO_HELPER": "1",
+			},
+		})
+
+		adapter := NewStdioAdapter(reg)
+		_, err := adapter.Invoke(context.Background(), InvokeRequest{Action: "  "})
+		if err == nil {
+			t.Fatal("Invoke() error = nil, want non-nil")
+		}
+		if got := toolErrorCode(err); got != ToolErrorCodeActionNotFound {
+			t.Fatalf("toolErrorCode = %q, want %q", got, ToolErrorCodeActionNotFound)
+		}
+	})
+}
+
+func TestStdioAdapterInvokeDecodeError(t *testing.T) {
+	reg := ToolRegistration{
+		Name:     "echo_stdio",
+		Origin:   OriginStdio,
+		Manifest: NewManifest("echo_stdio"),
+	}
+	reg.Manifest.Transport = NewStdioTransport(StdioTransport{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestStdioAdapterHelperProcess", "--"},
+		Env: map[string]string{
+			"GO_WANT_STDIO_HELPER":     "1",
+			"GO_STDIO_HELPER_BAD_JSON": "1",
+		},
+	})
+
+	adapter := NewStdioAdapter(reg)
+	_, err := adapter.Invoke(context.Background(), InvokeRequest{Action: "echo"})
+	if err == nil {
+		t.Fatal("Invoke() error = nil, want non-nil")
+	}
+	if got := toolErrorCode(err); got != ToolErrorCodeInvocationFailed {
+		t.Fatalf("toolErrorCode = %q, want %q", got, ToolErrorCodeInvocationFailed)
+	}
+	if !strings.Contains(err.Error(), "stdio invoke failed") {
+		t.Fatalf("Invoke() error = %v, want wrapped stdio invoke failure", err)
+	}
+}
+
 func TestStdioAdapterHelperProcess(t *testing.T) {
 	if os.Getenv("GO_WANT_STDIO_HELPER") != "1" {
 		return
@@ -71,6 +157,10 @@ func TestStdioAdapterHelperProcess(t *testing.T) {
 	if os.Getenv("GO_STDIO_HELPER_FAIL") == "1" {
 		_, _ = fmt.Fprintln(os.Stderr, "helper failed")
 		os.Exit(2)
+	}
+	if os.Getenv("GO_STDIO_HELPER_BAD_JSON") == "1" {
+		_, _ = fmt.Fprintln(os.Stdout, "{bad json")
+		os.Exit(0)
 	}
 
 	var req InvokeRequest
