@@ -727,3 +727,73 @@ func TestDaemonToolServiceUpdateMCPTransportTypeMismatch(t *testing.T) {
 		t.Fatalf("Update() error = %v, want ErrToolNotMCP", err)
 	}
 }
+
+func TestDaemonToolServiceUpdateMCPRebuildUsesInputTransport(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+
+	manifest := NewManifest("mcp_switch")
+	manifest.Transport = NewMCPTransport(MCPTransport{
+		Mode:    MCPModeStdio,
+		Command: "old-mcp",
+	})
+	manifest.Actions["list"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"count": {Type: TypeInteger},
+		},
+	}
+
+	seed := ToolRegistration{
+		Name:     "mcp_switch",
+		Origin:   OriginMCP,
+		Manifest: manifest,
+		Config:   map[string]string{"region": "us-west-2"},
+		Status:   StatusReady,
+		Enabled:  true,
+	}
+	if err := store.Upsert(context.Background(), seed); err != nil {
+		t.Fatalf("store.Upsert() error = %v", err)
+	}
+
+	var gotTransport MCPTransport
+	builder := func(ctx context.Context, name string, transport MCPTransport, config map[string]string, overlayPath string) (Registration, error) {
+		gotTransport = transport
+		m := NewManifest(name)
+		m.Transport = NewMCPTransport(transport)
+		m.Actions["list"] = ActionSpec{
+			Outputs: map[string]FieldSpec{
+				"count": {Type: TypeInteger},
+			},
+		}
+		return ToolRegistration{
+			Name:     name,
+			Origin:   OriginMCP,
+			Manifest: m,
+			Config:   cloneStringMap(config),
+			Status:   StatusReady,
+			Enabled:  true,
+		}, nil
+	}
+
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+		MCPBuilder:          builder,
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	_, err = service.Update(context.Background(), "mcp_switch", UpdateToolInput{
+		MCPTransport: &MCPTransport{
+			Mode:    MCPModeStdio,
+			Command: "new-mcp",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if gotTransport.Command != "new-mcp" {
+		t.Fatalf("builder transport command = %q, want new-mcp", gotTransport.Command)
+	}
+}
