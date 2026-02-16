@@ -63,85 +63,16 @@ func runToolsRegister(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	manifestPath, _ := cmd.Flags().GetString("manifest")
-	originValue, _ := cmd.Flags().GetString("type")
-	overlayPath, _ := cmd.Flags().GetString("overlay")
-	origin, err := parseToolOrigin(originValue)
+	registerOptions, err := resolveRegisterOptions(cmd)
 	if err != nil {
-		return exitError(exitValidation, "%s", err.Error())
+		return exitError(exitValidation, "%s", err)
 	}
 
-	var registration tool.ToolRegistration
-	switch {
-	case manifestPath == "" && origin == tool.OriginNative:
-		builtin, ok := tool.BuiltinRegistration(name)
-		if !ok {
-			return exitError(exitValidation, "native tool %q requires --manifest (built-in not found)", name)
-		}
-		registration = builtin
-
-	case manifestPath == "" && origin == tool.OriginMCP:
-		mcpTransport, err := buildMCPTransportFromFlags(cmd)
-		if err != nil {
-			return exitError(exitValidation, "invalid mcp transport: %v", err)
-		}
-		reg, err := tool.BuildMCPRegistration(cmd.Context(), name, mcpTransport, map[string]string{}, overlayPath)
-		if err != nil {
-			return formatRegistrationValidationError(err)
-		}
-		registration = reg
-
-	default:
-		if manifestPath == "" {
-			return exitError(exitValidation, "--manifest is required for non-native registrations")
-		}
-		manifest, err := loadManifestFile(manifestPath)
-		if err != nil {
-			return exitError(exitValidation, "loading manifest: %v", err)
-		}
-		if strings.TrimSpace(manifest.Tool.Name) == "" {
-			manifest.Tool.Name = name
-		}
-		if manifest.Tool.Name != name {
-			return exitError(exitValidation, "manifest tool.name %q does not match registration name %q", manifest.Tool.Name, name)
-		}
-
-		if origin == "" {
-			origin = originFromTransport(manifest.Transport.Type)
-		}
-		if origin == "" {
-			return exitError(exitValidation, "unable to infer tool origin from manifest transport %q", manifest.Transport.Type)
-		}
-
-		registration = tool.ToolRegistration{
-			Name:     name,
-			Manifest: manifest,
-			Origin:   origin,
-			Status:   tool.StatusReady,
-			Enabled:  true,
-			Config:   map[string]string{},
-		}
-
-		if err := applyTransportOverrides(cmd, &registration.Manifest); err != nil {
-			return exitError(exitValidation, "%s", err.Error())
-		}
-		if registration.Origin == "" {
-			registration.Origin = originFromTransport(registration.Manifest.Transport.Type)
-		}
-		if registration.Origin == "" {
-			return exitError(exitValidation, "tool origin must be set via --type or manifest transport")
-		}
-		if registration.Origin == tool.OriginMCP && strings.TrimSpace(overlayPath) != "" {
-			registration.Overlay = &tool.ToolOverlay{Path: overlayPath}
-		}
+	registration, err := buildRegistrationForRegister(cmd, name, registerOptions)
+	if err != nil {
+		return err
 	}
-
-	if registration.Status == "" {
-		registration.Status = tool.StatusReady
-	}
-	if registration.Config == nil {
-		registration.Config = map[string]string{}
-	}
+	ensureRegistrationDefaults(&registration)
 
 	if err := tool.ValidateNewRegistration(cmd.Context(), registration, tool.RegistrationValidationOptions{
 		Store: store,
@@ -155,6 +86,117 @@ func runToolsRegister(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Registered tool: %s (%s, status=%s)\n", registration.Name, registration.Origin, registration.Status)
 	return nil
+}
+
+type toolsRegisterOptions struct {
+	manifestPath string
+	origin       tool.ToolOrigin
+	overlayPath  string
+}
+
+func resolveRegisterOptions(cmd *cobra.Command) (toolsRegisterOptions, error) {
+	manifestPath, _ := cmd.Flags().GetString("manifest")
+	originValue, _ := cmd.Flags().GetString("type")
+	overlayPath, _ := cmd.Flags().GetString("overlay")
+	origin, err := parseToolOrigin(originValue)
+	if err != nil {
+		return toolsRegisterOptions{}, err
+	}
+	return toolsRegisterOptions{
+		manifestPath: manifestPath,
+		origin:       origin,
+		overlayPath:  overlayPath,
+	}, nil
+}
+
+func buildRegistrationForRegister(cmd *cobra.Command, name string, options toolsRegisterOptions) (tool.ToolRegistration, error) {
+	switch {
+	case options.manifestPath == "" && options.origin == tool.OriginNative:
+		return buildNativeRegistration(name)
+	case options.manifestPath == "" && options.origin == tool.OriginMCP:
+		return buildMCPRegistration(cmd, name, options.overlayPath)
+	default:
+		return buildManifestRegistration(cmd, name, options)
+	}
+}
+
+func buildNativeRegistration(name string) (tool.ToolRegistration, error) {
+	builtin, ok := tool.BuiltinRegistration(name)
+	if !ok {
+		return tool.ToolRegistration{}, exitError(exitValidation, "native tool %q requires --manifest (built-in not found)", name)
+	}
+	return builtin, nil
+}
+
+func buildMCPRegistration(cmd *cobra.Command, name string, overlayPath string) (tool.ToolRegistration, error) {
+	mcpTransport, err := buildMCPTransportFromFlags(cmd)
+	if err != nil {
+		return tool.ToolRegistration{}, exitError(exitValidation, "invalid mcp transport: %v", err)
+	}
+
+	registration, err := tool.BuildMCPRegistration(cmd.Context(), name, mcpTransport, map[string]string{}, overlayPath)
+	if err != nil {
+		return tool.ToolRegistration{}, formatRegistrationValidationError(err)
+	}
+	return registration, nil
+}
+
+func buildManifestRegistration(cmd *cobra.Command, name string, options toolsRegisterOptions) (tool.ToolRegistration, error) {
+	if options.manifestPath == "" {
+		return tool.ToolRegistration{}, exitError(exitValidation, "--manifest is required for non-native registrations")
+	}
+
+	manifest, err := loadManifestFile(options.manifestPath)
+	if err != nil {
+		return tool.ToolRegistration{}, exitError(exitValidation, "loading manifest: %v", err)
+	}
+	if strings.TrimSpace(manifest.Tool.Name) == "" {
+		manifest.Tool.Name = name
+	}
+	if manifest.Tool.Name != name {
+		return tool.ToolRegistration{}, exitError(exitValidation, "manifest tool.name %q does not match registration name %q", manifest.Tool.Name, name)
+	}
+
+	origin := options.origin
+	if origin == "" {
+		origin = originFromTransport(manifest.Transport.Type)
+	}
+	if origin == "" {
+		return tool.ToolRegistration{}, exitError(exitValidation, "unable to infer tool origin from manifest transport %q", manifest.Transport.Type)
+	}
+
+	registration := tool.ToolRegistration{
+		Name:     name,
+		Manifest: manifest,
+		Origin:   origin,
+		Status:   tool.StatusReady,
+		Enabled:  true,
+		Config:   map[string]string{},
+	}
+
+	if err := applyTransportOverrides(cmd, &registration.Manifest); err != nil {
+		return tool.ToolRegistration{}, exitError(exitValidation, "%s", err)
+	}
+	if registration.Origin == "" {
+		registration.Origin = originFromTransport(registration.Manifest.Transport.Type)
+	}
+	if registration.Origin == "" {
+		return tool.ToolRegistration{}, exitError(exitValidation, "tool origin must be set via --type or manifest transport")
+	}
+	if registration.Origin == tool.OriginMCP && strings.TrimSpace(options.overlayPath) != "" {
+		registration.Overlay = &tool.ToolOverlay{Path: options.overlayPath}
+	}
+
+	return registration, nil
+}
+
+func ensureRegistrationDefaults(registration *tool.ToolRegistration) {
+	if registration.Status == "" {
+		registration.Status = tool.StatusReady
+	}
+	if registration.Config == nil {
+		registration.Config = map[string]string{}
+	}
 }
 
 func newToolsListCmd() *cobra.Command {
