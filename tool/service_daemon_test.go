@@ -488,3 +488,242 @@ func TestDaemonToolServiceHealthAppliesUnhealthyThreshold(t *testing.T) {
 		t.Fatalf("second report failure_count = %d, want 2", report.FailureCount)
 	}
 }
+
+func TestDaemonToolServiceRegisterManifestEnabledOverride(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	manifest := NewManifest("")
+	manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://localhost:9802"})
+	manifest.Actions["ping"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"ok": {Type: TypeBoolean},
+		},
+	}
+
+	enabled := false
+	reg, err := service.Register(context.Background(), RegisterToolInput{
+		Name:     "manifest_http",
+		Manifest: &manifest,
+		Config: map[string]string{
+			"region": "us-east-1",
+		},
+		Enabled: &enabled,
+	})
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if reg.Manifest.Tool.Name != "manifest_http" {
+		t.Fatalf("manifest tool name = %q, want manifest_http", reg.Manifest.Tool.Name)
+	}
+	if reg.Enabled {
+		t.Fatal("Enabled = true, want false")
+	}
+	if reg.Status != StatusDisabled {
+		t.Fatalf("status = %q, want disabled", reg.Status)
+	}
+	if reg.Config["region"] != "us-east-1" {
+		t.Fatalf("config region = %q, want us-east-1", reg.Config["region"])
+	}
+}
+
+func TestDaemonToolServiceUpdateNonMCPRestoresReadyStatus(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+
+	manifest := NewManifest("http_mutable")
+	manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://localhost:9803"})
+	manifest.Actions["probe"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"ok": {Type: TypeBoolean},
+		},
+	}
+
+	seed := ToolRegistration{
+		Name:     "http_mutable",
+		Origin:   OriginHTTP,
+		Manifest: manifest,
+		Config:   map[string]string{"region": "us-east-1"},
+		Status:   StatusDisabled,
+		Enabled:  false,
+		Overlay:  &ToolOverlay{Path: "/tmp/old.overlay.yaml"},
+	}
+	if err := store.Upsert(context.Background(), seed); err != nil {
+		t.Fatalf("store.Upsert() error = %v", err)
+	}
+
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	enabled := true
+	emptyOverlay := "   "
+	updated, err := service.Update(context.Background(), "http_mutable", UpdateToolInput{
+		Config:      map[string]string{"region": "eu-central-1"},
+		Enabled:     &enabled,
+		OverlayPath: &emptyOverlay,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if !updated.Enabled {
+		t.Fatal("Enabled = false, want true")
+	}
+	if updated.Status != StatusReady {
+		t.Fatalf("status = %q, want ready", updated.Status)
+	}
+	if updated.Config["region"] != "eu-central-1" {
+		t.Fatalf("config region = %q, want eu-central-1", updated.Config["region"])
+	}
+	if updated.Overlay != nil {
+		t.Fatalf("overlay = %#v, want nil", updated.Overlay)
+	}
+}
+
+func TestDaemonToolServiceUpdateMCPRebuildUsesCurrentTransport(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+
+	manifest := NewManifest("s3_sync")
+	manifest.Transport = NewMCPTransport(MCPTransport{
+		Mode:    MCPModeStdio,
+		Command: "s3-mcp",
+	})
+	manifest.Actions["list"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"count": {Type: TypeInteger},
+		},
+	}
+
+	registeredAt := time.Date(2026, 2, 10, 8, 30, 0, 0, time.UTC)
+	seed := ToolRegistration{
+		Name:         "s3_sync",
+		Origin:       OriginMCP,
+		Manifest:     manifest,
+		Config:       map[string]string{"region": "us-west-1"},
+		Status:       StatusReady,
+		Enabled:      true,
+		RegisteredAt: registeredAt,
+		Overlay:      &ToolOverlay{Path: "/tmp/old.overlay.yaml"},
+	}
+	if err := store.Upsert(context.Background(), seed); err != nil {
+		t.Fatalf("store.Upsert() error = %v", err)
+	}
+
+	var gotTransport MCPTransport
+	var gotConfig map[string]string
+	var gotOverlay string
+	builder := func(ctx context.Context, name string, transport MCPTransport, config map[string]string, overlayPath string) (Registration, error) {
+		gotTransport = transport
+		gotConfig = cloneStringMap(config)
+		gotOverlay = overlayPath
+
+		m := NewManifest(name)
+		m.Transport = NewMCPTransport(transport)
+		m.Actions["list"] = ActionSpec{
+			Outputs: map[string]FieldSpec{
+				"count": {Type: TypeInteger},
+			},
+		}
+		return ToolRegistration{
+			Name:     name,
+			Origin:   OriginMCP,
+			Manifest: m,
+			Config:   cloneStringMap(config),
+			Status:   StatusReady,
+			Enabled:  true,
+		}, nil
+	}
+
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+		MCPBuilder:          builder,
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	enabled := false
+	overlay := " /tmp/new.overlay.yaml "
+	updated, err := service.Update(context.Background(), "s3_sync", UpdateToolInput{
+		Config:      map[string]string{"region": "us-east-2"},
+		OverlayPath: &overlay,
+		Enabled:     &enabled,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if gotTransport.Command != "s3-mcp" {
+		t.Fatalf("builder transport command = %q, want s3-mcp", gotTransport.Command)
+	}
+	if gotConfig["region"] != "us-east-2" {
+		t.Fatalf("builder config region = %q, want us-east-2", gotConfig["region"])
+	}
+	if gotOverlay != "/tmp/new.overlay.yaml" {
+		t.Fatalf("builder overlay = %q, want /tmp/new.overlay.yaml", gotOverlay)
+	}
+	if !updated.RegisteredAt.Equal(registeredAt) {
+		t.Fatalf("RegisteredAt = %v, want %v", updated.RegisteredAt, registeredAt)
+	}
+	if updated.Enabled {
+		t.Fatal("Enabled = true, want false")
+	}
+	if updated.Status != StatusDisabled {
+		t.Fatalf("status = %q, want disabled", updated.Status)
+	}
+}
+
+func TestDaemonToolServiceUpdateMCPTransportTypeMismatch(t *testing.T) {
+	store := NewDaemonStore(newFakeDaemonBackend())
+
+	manifest := NewManifest("mismatch")
+	manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://localhost:9804"})
+	manifest.Actions["probe"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"ok": {Type: TypeBoolean},
+		},
+	}
+
+	seed := ToolRegistration{
+		Name:     "mismatch",
+		Origin:   OriginHTTP,
+		Manifest: manifest,
+		Status:   StatusReady,
+		Enabled:  true,
+	}
+	if err := store.Upsert(context.Background(), seed); err != nil {
+		t.Fatalf("store.Upsert() error = %v", err)
+	}
+
+	service, err := NewDaemonToolService(DaemonToolServiceConfig{
+		Store:               store,
+		ReachabilityChecker: stubReachabilityChecker{},
+		MCPBuilder: func(ctx context.Context, name string, transport MCPTransport, config map[string]string, overlayPath string) (Registration, error) {
+			t.Fatal("MCPBuilder should not be called for transport mismatch")
+			return Registration{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewDaemonToolService() error = %v", err)
+	}
+
+	mcpOrigin := OriginMCP
+	_, err = service.Update(context.Background(), "mismatch", UpdateToolInput{
+		Origin: &mcpOrigin,
+	})
+	if !errors.Is(err, ErrToolNotMCP) {
+		t.Fatalf("Update() error = %v, want ErrToolNotMCP", err)
+	}
+}
