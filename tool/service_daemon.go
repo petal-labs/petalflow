@@ -484,69 +484,122 @@ func (s *DaemonToolService) registrationFromRegisterInput(ctx context.Context, i
 	if name == "" {
 		return ToolRegistration{}, fmt.Errorf("tool: registration name is required")
 	}
-	origin := input.Origin
-	if origin == "" && input.Manifest != nil {
-		origin = inferToolOrigin((*input.Manifest).Transport.Type)
+
+	origin := resolveRegisterOrigin(input)
+	reg, err := s.buildRegistrationFromRegisterInput(ctx, name, origin, input)
+	if err != nil {
+		return ToolRegistration{}, err
 	}
 
-	var reg ToolRegistration
-	switch {
-	case input.Manifest == nil && origin == OriginNative:
+	return finalizeRegistrationEnabledState(reg, input.Enabled), nil
+}
+
+func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, current ToolRegistration, input UpdateToolInput) (ToolRegistration, error) {
+	origin := resolveUpdateOrigin(current, input)
+
+	// MCP updates default to fresh discovery unless a full manifest override is supplied.
+	if shouldRebuildMCPRegistration(origin, input) {
+		return s.rebuildMCPRegistrationFromUpdate(ctx, current, input)
+	}
+
+	next, err := applyNonRebuildUpdate(current, input, origin)
+	if err != nil {
+		return ToolRegistration{}, err
+	}
+
+	return s.finalizeUpdatedRegistration(ctx, current, next), nil
+}
+
+func resolveRegisterOrigin(input RegisterToolInput) ToolOrigin {
+	origin := input.Origin
+	if origin == "" && input.Manifest != nil {
+		origin = inferToolOrigin(input.Manifest.Transport.Type)
+	}
+	return origin
+}
+
+func (s *DaemonToolService) buildRegistrationFromRegisterInput(
+	ctx context.Context,
+	name string,
+	origin ToolOrigin,
+	input RegisterToolInput,
+) (ToolRegistration, error) {
+	if input.Manifest == nil {
+		return s.buildManifestlessRegistration(ctx, name, origin, input)
+	}
+	return buildManifestRegistration(name, origin, input)
+}
+
+func (s *DaemonToolService) buildManifestlessRegistration(
+	ctx context.Context,
+	name string,
+	origin ToolOrigin,
+	input RegisterToolInput,
+) (ToolRegistration, error) {
+	switch origin {
+	case OriginNative:
 		builtin, ok := BuiltinRegistration(name)
 		if !ok {
 			return ToolRegistration{}, fmt.Errorf("tool: native registration %q requires a manifest", name)
 		}
-		reg = builtin
+		return builtin, nil
 
-	case input.Manifest == nil && origin == OriginMCP:
+	case OriginMCP:
 		if input.MCPTransport == nil {
 			return ToolRegistration{}, fmt.Errorf("tool: mcp registration %q requires transport", name)
 		}
-		built, err := s.mcpBuilder(ctx, name, *input.MCPTransport, cloneStringMap(input.Config), strings.TrimSpace(input.OverlayPath))
-		if err != nil {
-			return ToolRegistration{}, err
-		}
-		reg = built
-
-	case input.Manifest == nil:
-		return ToolRegistration{}, fmt.Errorf("tool: registration %q requires a manifest", name)
+		return s.mcpBuilder(
+			ctx,
+			name,
+			*input.MCPTransport,
+			cloneStringMap(input.Config),
+			strings.TrimSpace(input.OverlayPath),
+		)
 
 	default:
-		manifest := *input.Manifest
-		if strings.TrimSpace(manifest.Tool.Name) == "" {
-			manifest.Tool.Name = name
-		}
-		if manifest.Tool.Name != name {
-			return ToolRegistration{}, fmt.Errorf("tool: manifest tool.name %q does not match %q", manifest.Tool.Name, name)
-		}
-		if origin == "" {
-			origin = inferToolOrigin(manifest.Transport.Type)
-		}
-		if origin == "" {
-			return ToolRegistration{}, fmt.Errorf("tool: unable to infer registration origin for %q", name)
-		}
+		return ToolRegistration{}, fmt.Errorf("tool: registration %q requires a manifest", name)
+	}
+}
 
-		reg = ToolRegistration{
-			Name:     name,
-			Origin:   origin,
-			Manifest: manifest,
-			Config:   cloneStringMap(input.Config),
-			Status:   StatusReady,
-			Enabled:  true,
-		}
-		if origin == OriginMCP {
-			path := strings.TrimSpace(input.OverlayPath)
-			if path != "" {
-				reg.Overlay = &ToolOverlay{Path: path}
-			}
-		}
+func buildManifestRegistration(name string, origin ToolOrigin, input RegisterToolInput) (ToolRegistration, error) {
+	manifest := *input.Manifest
+	if strings.TrimSpace(manifest.Tool.Name) == "" {
+		manifest.Tool.Name = name
+	}
+	if manifest.Tool.Name != name {
+		return ToolRegistration{}, fmt.Errorf("tool: manifest tool.name %q does not match %q", manifest.Tool.Name, name)
 	}
 
+	if origin == "" {
+		origin = inferToolOrigin(manifest.Transport.Type)
+	}
+	if origin == "" {
+		return ToolRegistration{}, fmt.Errorf("tool: unable to infer registration origin for %q", name)
+	}
+
+	reg := ToolRegistration{
+		Name:     name,
+		Origin:   origin,
+		Manifest: manifest,
+		Config:   cloneStringMap(input.Config),
+		Status:   StatusReady,
+		Enabled:  true,
+	}
+	if origin == OriginMCP {
+		path := strings.TrimSpace(input.OverlayPath)
+		if path != "" {
+			reg.Overlay = &ToolOverlay{Path: path}
+		}
+	}
+	return reg, nil
+}
+
+func finalizeRegistrationEnabledState(reg ToolRegistration, enabledOverride *bool) ToolRegistration {
 	if reg.Config == nil {
 		reg.Config = map[string]string{}
 	}
-	if input.Enabled != nil {
-		reg.Enabled = *input.Enabled
+	if enabledOverride != nil {
+		reg.Enabled = *enabledOverride
 	}
 	if !reg.Enabled {
 		reg.Status = StatusDisabled
@@ -558,11 +611,10 @@ func (s *DaemonToolService) registrationFromRegisterInput(ctx context.Context, i
 			reg.Status = StatusDisabled
 		}
 	}
-
-	return reg, nil
+	return reg
 }
 
-func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, current ToolRegistration, input UpdateToolInput) (ToolRegistration, error) {
+func resolveUpdateOrigin(current ToolRegistration, input UpdateToolInput) ToolOrigin {
 	origin := current.Origin
 	if input.Origin != nil {
 		origin = *input.Origin
@@ -570,51 +622,75 @@ func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, cur
 	if origin == "" {
 		origin = inferToolOrigin(current.Manifest.Transport.Type)
 	}
+	return origin
+}
 
-	// MCP updates default to fresh discovery unless a full manifest override is supplied.
-	if origin == OriginMCP && input.Manifest == nil {
-		var transport MCPTransport
-		if input.MCPTransport != nil {
-			transport = *input.MCPTransport
-		} else {
-			var ok bool
-			transport, ok = current.Manifest.Transport.AsMCP()
-			if !ok {
-				return ToolRegistration{}, fmt.Errorf("%w: %s", ErrToolNotMCP, current.Name)
-			}
-		}
+func shouldRebuildMCPRegistration(origin ToolOrigin, input UpdateToolInput) bool {
+	return origin == OriginMCP && input.Manifest == nil
+}
 
-		config := cloneStringMap(current.Config)
-		if input.Config != nil {
-			config = cloneStringMap(input.Config)
-		}
-
-		overlayPath := ""
-		if current.Overlay != nil {
-			overlayPath = current.Overlay.Path
-		}
-		if input.OverlayPath != nil {
-			overlayPath = strings.TrimSpace(*input.OverlayPath)
-		}
-
-		updated, err := s.mcpBuilder(ctx, current.Name, transport, config, overlayPath)
-		if err != nil {
-			return ToolRegistration{}, err
-		}
-		updated.RegisteredAt = current.RegisteredAt
-		if input.Enabled != nil {
-			updated.Enabled = *input.Enabled
-		} else {
-			updated.Enabled = current.Enabled
-		}
-		if !updated.Enabled {
-			updated.Status = StatusDisabled
-		}
-		return updated, nil
+func (s *DaemonToolService) rebuildMCPRegistrationFromUpdate(
+	ctx context.Context,
+	current ToolRegistration,
+	input UpdateToolInput,
+) (ToolRegistration, error) {
+	transport, err := resolveMCPUpdateTransport(current, input)
+	if err != nil {
+		return ToolRegistration{}, err
 	}
 
+	config := cloneStringMap(current.Config)
+	if input.Config != nil {
+		config = cloneStringMap(input.Config)
+	}
+	overlayPath := resolveUpdatedOverlayPath(current.Overlay, input.OverlayPath)
+
+	updated, err := s.mcpBuilder(ctx, current.Name, transport, config, overlayPath)
+	if err != nil {
+		return ToolRegistration{}, err
+	}
+	updated.RegisteredAt = current.RegisteredAt
+	updated.Enabled = resolveUpdatedEnabledState(current.Enabled, input.Enabled)
+	if !updated.Enabled {
+		updated.Status = StatusDisabled
+	}
+	return updated, nil
+}
+
+func resolveMCPUpdateTransport(current ToolRegistration, input UpdateToolInput) (MCPTransport, error) {
+	if input.MCPTransport != nil {
+		return *input.MCPTransport, nil
+	}
+
+	transport, ok := current.Manifest.Transport.AsMCP()
+	if !ok {
+		return MCPTransport{}, fmt.Errorf("%w: %s", ErrToolNotMCP, current.Name)
+	}
+	return transport, nil
+}
+
+func resolveUpdatedOverlayPath(currentOverlay *ToolOverlay, overlayPath *string) string {
+	path := ""
+	if currentOverlay != nil {
+		path = currentOverlay.Path
+	}
+	if overlayPath != nil {
+		path = strings.TrimSpace(*overlayPath)
+	}
+	return path
+}
+
+func resolveUpdatedEnabledState(current bool, override *bool) bool {
+	if override == nil {
+		return current
+	}
+	return *override
+}
+
+func applyNonRebuildUpdate(current ToolRegistration, input UpdateToolInput, origin ToolOrigin) (ToolRegistration, error) {
 	next := current
 	next.Origin = origin
+
 	if input.Manifest != nil {
 		next.Manifest = *input.Manifest
 	}
@@ -624,12 +700,14 @@ func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, cur
 	if next.Manifest.Tool.Name != current.Name {
 		return ToolRegistration{}, fmt.Errorf("tool: manifest tool.name %q does not match %q", next.Manifest.Tool.Name, current.Name)
 	}
+
 	if input.Config != nil {
 		next.Config = cloneStringMap(input.Config)
 	}
 	if next.Config == nil {
 		next.Config = map[string]string{}
 	}
+
 	if input.OverlayPath != nil {
 		path := strings.TrimSpace(*input.OverlayPath)
 		if path == "" {
@@ -638,10 +716,19 @@ func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, cur
 			next.Overlay = &ToolOverlay{Path: path}
 		}
 	}
+
 	if input.Enabled != nil {
 		next.Enabled = *input.Enabled
 	}
 
+	return next, nil
+}
+
+func (s *DaemonToolService) finalizeUpdatedRegistration(
+	ctx context.Context,
+	current ToolRegistration,
+	next ToolRegistration,
+) ToolRegistration {
 	if !next.Enabled {
 		next.Status = StatusDisabled
 	} else if current.Status == StatusDisabled {
@@ -656,7 +743,7 @@ func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, cur
 		}
 	}
 
-	return next, nil
+	return next
 }
 
 func (s *DaemonToolService) getMutableRegistration(ctx context.Context, name string) (ToolRegistration, error) {
