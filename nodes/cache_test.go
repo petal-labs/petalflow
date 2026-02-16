@@ -558,6 +558,34 @@ func TestCacheNode_Kind(t *testing.T) {
 	}
 }
 
+func TestCacheNode_Config(t *testing.T) {
+	mockNode := NewMockNode("wrapped", "result")
+
+	node := NewCacheNode("cache1", CacheNodeConfig{
+		WrappedNode: mockNode,
+		OutputVar:   "cache_meta",
+		CacheKey:    "{{.vars.query}}",
+		TTL:         time.Minute,
+	})
+
+	cfg := node.Config()
+	if cfg.WrappedNode != mockNode {
+		t.Fatalf("WrappedNode = %v, want mock node", cfg.WrappedNode)
+	}
+	if cfg.OutputVar != "cache_meta" {
+		t.Fatalf("OutputVar = %q, want cache_meta", cfg.OutputVar)
+	}
+	if cfg.CacheKey != "{{.vars.query}}" {
+		t.Fatalf("CacheKey = %q, want template", cfg.CacheKey)
+	}
+	if cfg.TTL != time.Minute {
+		t.Fatalf("TTL = %v, want %v", cfg.TTL, time.Minute)
+	}
+	if cfg.Store == nil {
+		t.Fatal("Store should be initialized by default")
+	}
+}
+
 // MemoryCacheStore tests
 
 func TestMemoryCacheStore_GetSet(t *testing.T) {
