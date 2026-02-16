@@ -38,14 +38,39 @@ const maxIDLength = 64
 // Validate checks the AgentWorkflow for structural errors and returns
 // a list of diagnostics (errors and warnings).
 func Validate(wf *AgentWorkflow) []graph.Diagnostic {
-	var diags []graph.Diagnostic
-
 	if wf == nil {
-		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED", "workflow is nil", ""))
-		return diags
+		return []graph.Diagnostic{
+			errDiag("AT-010", "MISSING_REQUIRED", "workflow is nil", ""),
+		}
 	}
 
-	// AT-012: Validate ID formats for agents and tasks
+	diags := make([]graph.Diagnostic, 0)
+
+	diags = append(diags, validateIDFormats(wf)...)
+	diags = append(diags, validateAgents(wf, registry.Global())...)
+	diags = append(diags, validateTasks(wf)...)
+
+	strategy, strategyDiags := validateExecutionStrategy(wf)
+	diags = append(diags, strategyDiags...)
+
+	// Strategy-specific validation
+	switch strategy {
+	case "sequential":
+		diags = append(diags, validateSequential(wf)...)
+	case "custom":
+		diags = append(diags, validateCustom(wf)...)
+	}
+
+	// AT-009: Every defined task must appear in the execution block
+	diags = append(diags, validateOrphanTasks(wf)...)
+
+	return diags
+}
+
+func validateIDFormats(wf *AgentWorkflow) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-012: Validate ID formats for agents and tasks.
 	for id := range wf.Agents {
 		if !isValidID(id) {
 			diags = append(diags, errDiag("AT-012", "INVALID_ID_FORMAT",
@@ -61,185 +86,255 @@ func Validate(wf *AgentWorkflow) []graph.Diagnostic {
 		}
 	}
 
-	// AT-010: Check required fields on agents
-	reg := registry.Global()
+	return diags
+}
+
+func validateAgents(wf *AgentWorkflow, reg *registry.Registry) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
 	for id, ag := range wf.Agents {
 		path := fmt.Sprintf("agents.%s", id)
-		if ag.Role == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Agent %q is missing required field \"role\"", id), path+".role"))
-		}
-		if ag.Goal == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Agent %q is missing required field \"goal\"", id), path+".goal"))
-		}
-		if ag.Provider == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Agent %q is missing required field \"provider\"", id), path+".provider"))
-		}
-		if ag.Model == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Agent %q is missing required field \"model\"", id), path+".model"))
+		diags = append(diags, validateAgentRequiredFields(id, path, ag)...)
+
+		toolRefsByName, toolDiags := validateAgentTools(id, path, ag.Tools, reg)
+		diags = append(diags, toolDiags...)
+		diags = append(diags, validateAgentToolConfig(id, path, ag.ToolConfig, toolRefsByName, reg)...)
+	}
+
+	return diags
+}
+
+func validateAgentRequiredFields(id string, path string, ag Agent) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-010: Check required fields on agents.
+	if ag.Role == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Agent %q is missing required field \"role\"", id), path+".role"))
+	}
+	if ag.Goal == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Agent %q is missing required field \"goal\"", id), path+".goal"))
+	}
+	if ag.Provider == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Agent %q is missing required field \"provider\"", id), path+".provider"))
+	}
+	if ag.Model == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Agent %q is missing required field \"model\"", id), path+".model"))
+	}
+
+	// AT-002: Validate provider.
+	if ag.Provider != "" && !validProviders[ag.Provider] {
+		diags = append(diags, errDiag("AT-002", "INVALID_PROVIDER",
+			fmt.Sprintf("Agent %q has invalid provider %q", id, ag.Provider), path+".provider"))
+	}
+
+	return diags
+}
+
+func validateAgentTools(
+	agentID string,
+	path string,
+	tools []string,
+	reg *registry.Registry,
+) (map[string][]string, []graph.Diagnostic) {
+	toolRefsByName := make(map[string][]string)
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-004: Validate tools exist in registry.
+	for i, toolID := range tools {
+		toolRef := strings.TrimSpace(toolID)
+		toolName, actionName, hasAction, valid := parseToolReference(toolRef)
+
+		if hasAction && !valid {
+			diags = append(diags, errDiag("AT-004", "INVALID_TOOL_REFERENCE",
+				fmt.Sprintf("Agent %q tool reference %q must use tool_name.action_name", agentID, toolID),
+				fmt.Sprintf("%s.tools[%d]", path, i)))
+			continue
 		}
 
-		// AT-002: Validate provider
-		if ag.Provider != "" && !validProviders[ag.Provider] {
-			diags = append(diags, errDiag("AT-002", "INVALID_PROVIDER",
-				fmt.Sprintf("Agent %q has invalid provider %q", id, ag.Provider), path+".provider"))
-		}
-
-		// AT-003: Validate model (non-empty, already checked by AT-010)
-		// This rule exists for completeness but AT-010 covers the empty case.
-
-		// AT-004: Validate tools exist in registry.
-		toolRefsByName := make(map[string][]string)
-		for i, toolID := range ag.Tools {
-			toolRef := strings.TrimSpace(toolID)
-			toolName, actionName, hasAction, valid := parseToolReference(toolRef)
-
-			if hasAction && !valid {
-				diags = append(diags, errDiag("AT-004", "INVALID_TOOL_REFERENCE",
-					fmt.Sprintf("Agent %q tool reference %q must use tool_name.action_name", id, toolID),
-					fmt.Sprintf("%s.tools[%d]", path, i)))
-				continue
-			}
-
-			if hasAction {
-				def, ok := reg.Get(toolRef)
-				if !ok || !def.IsTool {
-					if hasAnyActionForTool(reg, toolName) {
-						diags = append(diags, errDiag("AT-004", "UNKNOWN_ACTION",
-							fmt.Sprintf("Agent %q references unknown action %q on tool %q", id, actionName, toolName),
-							fmt.Sprintf("%s.tools[%d]", path, i)))
-					} else {
-						diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
-							fmt.Sprintf("Agent %q references unknown tool %q", id, toolName),
-							fmt.Sprintf("%s.tools[%d]", path, i)))
-					}
-					continue
+		if hasAction {
+			def, ok := reg.Get(toolRef)
+			if !ok || !def.IsTool {
+				if hasAnyActionForTool(reg, toolName) {
+					diags = append(diags, errDiag("AT-004", "UNKNOWN_ACTION",
+						fmt.Sprintf("Agent %q references unknown action %q on tool %q", agentID, actionName, toolName),
+						fmt.Sprintf("%s.tools[%d]", path, i)))
+				} else {
+					diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
+						fmt.Sprintf("Agent %q references unknown tool %q", agentID, toolName),
+						fmt.Sprintf("%s.tools[%d]", path, i)))
 				}
-				toolRefsByName[toolName] = append(toolRefsByName[toolName], toolRef)
 				continue
 			}
-
-			if !reg.HasTool(toolRef) {
-				diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
-					fmt.Sprintf("Agent %q references unknown tool %q", id, toolID),
-					fmt.Sprintf("%s.tools[%d]", path, i)))
-				continue
-			}
-			toolRefsByName[toolRef] = append(toolRefsByName[toolRef], toolRef)
+			toolRefsByName[toolName] = append(toolRefsByName[toolName], toolRef)
+			continue
 		}
 
-		// AT-004: Validate agent-level tool_config overrides against declared fields.
-		for toolName, overrides := range ag.ToolConfig {
-			if len(overrides) == 0 {
+		if !reg.HasTool(toolRef) {
+			diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
+				fmt.Sprintf("Agent %q references unknown tool %q", agentID, toolID),
+				fmt.Sprintf("%s.tools[%d]", path, i)))
+			continue
+		}
+		toolRefsByName[toolRef] = append(toolRefsByName[toolRef], toolRef)
+	}
+
+	return toolRefsByName, diags
+}
+
+func validateAgentToolConfig(
+	agentID string,
+	path string,
+	toolConfig map[string]map[string]any,
+	toolRefsByName map[string][]string,
+	reg *registry.Registry,
+) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-004: Validate agent-level tool_config overrides against declared fields.
+	for toolName, overrides := range toolConfig {
+		if len(overrides) == 0 {
+			continue
+		}
+
+		referenced := toolRefsByName[toolName]
+		if len(referenced) == 0 && reg.HasTool(toolName) {
+			referenced = []string{toolName}
+		}
+		if len(referenced) == 0 {
+			diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
+				fmt.Sprintf("Agent %q tool_config references unknown tool %q", agentID, toolName),
+				fmt.Sprintf("%s.tool_config.%s", path, toolName)))
+			continue
+		}
+
+		allowedKeys := make(map[string]struct{})
+		for _, ref := range referenced {
+			def, ok := reg.Get(ref)
+			if !ok {
 				continue
 			}
-
-			referenced := toolRefsByName[toolName]
-			if len(referenced) == 0 && reg.HasTool(toolName) {
-				referenced = []string{toolName}
+			for key := range extractToolConfigFieldNames(def.ConfigSchema) {
+				allowedKeys[key] = struct{}{}
 			}
-			if len(referenced) == 0 {
-				diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
-					fmt.Sprintf("Agent %q tool_config references unknown tool %q", id, toolName),
-					fmt.Sprintf("%s.tool_config.%s", path, toolName)))
+		}
+
+		for key := range overrides {
+			if _, ok := allowedKeys[key]; ok {
 				continue
 			}
-
-			allowedKeys := make(map[string]struct{})
-			for _, ref := range referenced {
-				def, ok := reg.Get(ref)
-				if !ok {
-					continue
-				}
-				for key := range extractToolConfigFieldNames(def.ConfigSchema) {
-					allowedKeys[key] = struct{}{}
-				}
-			}
-
-			for key := range overrides {
-				if _, ok := allowedKeys[key]; ok {
-					continue
-				}
-				diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL_CONFIG_FIELD",
-					fmt.Sprintf("Agent %q tool_config field %q is not declared for tool %q", id, key, toolName),
-					fmt.Sprintf("%s.tool_config.%s.%s", path, toolName, key)))
-			}
+			diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL_CONFIG_FIELD",
+				fmt.Sprintf("Agent %q tool_config field %q is not declared for tool %q", agentID, key, toolName),
+				fmt.Sprintf("%s.tool_config.%s.%s", path, toolName, key)))
 		}
 	}
 
-	// AT-010: Check required fields on tasks
+	return diags
+}
+
+func validateTasks(wf *AgentWorkflow) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-010: Check required fields on tasks.
 	for id, task := range wf.Tasks {
 		path := fmt.Sprintf("tasks.%s", id)
-		if task.Description == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Task %q is missing required field \"description\"", id), path+".description"))
-		}
-		if task.Agent == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Task %q is missing required field \"agent\"", id), path+".agent"))
-		}
-		if task.ExpectedOutput == "" {
-			diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
-				fmt.Sprintf("Task %q is missing required field \"expected_output\"", id), path+".expected_output"))
-		}
+		diags = append(diags, validateTaskRequiredFields(id, path, task)...)
+		diags = append(diags, validateTaskAgentReference(wf, id, path, task)...)
+		diags = append(diags, validateTaskInputReferences(wf, id, path, task)...)
+		diags = append(diags, validateTaskContextReferences(wf, id, path, task)...)
+	}
 
-		// AT-001: Task agent must reference a defined agent
-		if task.Agent != "" {
-			if _, ok := wf.Agents[task.Agent]; !ok {
-				diags = append(diags, errDiag("AT-001", "UNDEFINED_AGENT",
-					fmt.Sprintf("Task %q references undefined agent %q", id, task.Agent),
-					path+".agent"))
-			}
-		}
+	return diags
+}
 
-		// AT-008: Validate input template references
-		for param, tmpl := range task.Inputs {
-			refs := extractTaskRefs(tmpl)
-			for _, ref := range refs {
-				if _, ok := wf.Tasks[ref]; !ok {
-					diags = append(diags, errDiag("AT-008", "UNRESOLVED_REF",
-						fmt.Sprintf("Unresolved reference %q in task %q", tmpl, id),
-						fmt.Sprintf("%s.inputs.%s", path, param)))
-				}
-			}
-		}
+func validateTaskRequiredFields(id string, path string, task Task) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
 
-		// AT-008: Validate context references
-		for i, ctxRef := range task.Context {
-			if _, ok := wf.Tasks[ctxRef]; !ok {
-				diags = append(diags, errDiag("AT-008", "UNRESOLVED_REF",
-					fmt.Sprintf("Task %q context references undefined task %q", id, ctxRef),
-					fmt.Sprintf("%s.context[%d]", path, i)))
+	if task.Description == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Task %q is missing required field \"description\"", id), path+".description"))
+	}
+	if task.Agent == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Task %q is missing required field \"agent\"", id), path+".agent"))
+	}
+	if task.ExpectedOutput == "" {
+		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
+			fmt.Sprintf("Task %q is missing required field \"expected_output\"", id), path+".expected_output"))
+	}
+
+	return diags
+}
+
+func validateTaskAgentReference(wf *AgentWorkflow, id string, path string, task Task) []graph.Diagnostic {
+	if task.Agent == "" {
+		return nil
+	}
+	if _, ok := wf.Agents[task.Agent]; ok {
+		return nil
+	}
+	return []graph.Diagnostic{
+		errDiag("AT-001", "UNDEFINED_AGENT",
+			fmt.Sprintf("Task %q references undefined agent %q", id, task.Agent),
+			path+".agent"),
+	}
+}
+
+func validateTaskInputReferences(wf *AgentWorkflow, id string, path string, task Task) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-008: Validate input template references.
+	for param, tmpl := range task.Inputs {
+		refs := extractTaskRefs(tmpl)
+		for _, ref := range refs {
+			if _, ok := wf.Tasks[ref]; ok {
+				continue
 			}
+			diags = append(diags, errDiag("AT-008", "UNRESOLVED_REF",
+				fmt.Sprintf("Unresolved reference %q in task %q", tmpl, id),
+				fmt.Sprintf("%s.inputs.%s", path, param)))
 		}
 	}
 
-	// AT-005: Validate execution strategy
+	return diags
+}
+
+func validateTaskContextReferences(wf *AgentWorkflow, id string, path string, task Task) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	// AT-008: Validate context references.
+	for i, ctxRef := range task.Context {
+		if _, ok := wf.Tasks[ctxRef]; ok {
+			continue
+		}
+		diags = append(diags, errDiag("AT-008", "UNRESOLVED_REF",
+			fmt.Sprintf("Task %q context references undefined task %q", id, ctxRef),
+			fmt.Sprintf("%s.context[%d]", path, i)))
+	}
+
+	return diags
+}
+
+func validateExecutionStrategy(wf *AgentWorkflow) (string, []graph.Diagnostic) {
+	diags := make([]graph.Diagnostic, 0)
 	strategy := wf.Execution.Strategy
+
+	// AT-005: Validate execution strategy.
 	if strategy == "" {
 		diags = append(diags, errDiag("AT-010", "MISSING_REQUIRED",
 			"Execution strategy is required", "execution.strategy"))
-	} else if !validStrategies[strategy] {
+		return strategy, diags
+	}
+	if !validStrategies[strategy] {
 		diags = append(diags, errDiag("AT-005", "INVALID_STRATEGY",
 			fmt.Sprintf("Invalid execution strategy %q (must be sequential, parallel, hierarchical, or custom)", strategy),
 			"execution.strategy"))
 	}
 
-	// Strategy-specific validation
-	switch strategy {
-	case "sequential":
-		diags = append(diags, validateSequential(wf)...)
-	case "custom":
-		diags = append(diags, validateCustom(wf)...)
-	}
-
-	// AT-009: Every defined task must appear in the execution block
-	diags = append(diags, validateOrphanTasks(wf)...)
-
-	return diags
+	return strategy, diags
 }
 
 // validateSequential checks sequential-strategy-specific rules.
