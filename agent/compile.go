@@ -21,18 +21,7 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 		return nil, fmt.Errorf("workflow is nil")
 	}
 
-	gd := &graph.GraphDefinition{
-		ID:      wf.ID,
-		Version: wf.Version,
-		Metadata: map[string]string{
-			"source_kind":      "agent_workflow",
-			"source_version":   wf.Version,
-			"compiled_at":      time.Now().UTC().Format(time.RFC3339),
-			"compiler_version": compilerVersion,
-		},
-	}
-
-	reg := registry.Global()
+	gd := newCompiledGraphDefinition(wf)
 
 	// Build nodes for each task + its assigned agent.
 	// Track task start/output nodes for edge wiring.
@@ -43,147 +32,234 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 
 	// Deterministic iteration order over tasks
 	taskIDs := sortedKeys(wf.Tasks)
+	if err := compileTaskNodes(gd, wf, registry.Global(), taskIDs, taskStartNodeIDs, taskNodeIDs); err != nil {
+		return nil, err
+	}
 
+	wireTaskReferenceEdges(gd, wf, taskIDs, taskStartNodeIDs, taskNodeIDs)
+	if err := compileExecutionStrategy(gd, wf, taskStartNodeIDs, taskNodeIDs); err != nil {
+		return nil, err
+	}
+	sortEdges(gd)
+
+	return gd, nil
+}
+
+func newCompiledGraphDefinition(wf *AgentWorkflow) *graph.GraphDefinition {
+	return &graph.GraphDefinition{
+		ID:      wf.ID,
+		Version: wf.Version,
+		Metadata: map[string]string{
+			"source_kind":      "agent_workflow",
+			"source_version":   wf.Version,
+			"compiled_at":      time.Now().UTC().Format(time.RFC3339),
+			"compiler_version": compilerVersion,
+		},
+	}
+}
+
+func compileTaskNodes(
+	gd *graph.GraphDefinition,
+	wf *AgentWorkflow,
+	reg *registry.Registry,
+	taskIDs []string,
+	taskStartNodeIDs map[string]string,
+	taskNodeIDs map[string]string,
+) error {
 	for _, taskID := range taskIDs {
 		task := wf.Tasks[taskID]
 		ag, ok := wf.Agents[task.Agent]
 		if !ok {
-			return nil, fmt.Errorf("task %q references undefined agent %q", taskID, task.Agent)
+			return fmt.Errorf("task %q references undefined agent %q", taskID, task.Agent)
 		}
+		compileTaskNode(gd, reg, taskID, task, ag, taskStartNodeIDs, taskNodeIDs)
+	}
 
-		nodeID := taskID + "__" + task.Agent
-		taskStartNodeIDs[taskID] = nodeID
-		taskNodeIDs[taskID] = nodeID
+	return nil
+}
 
-		// Build system prompt from agent fields
-		systemPrompt := buildSystemPrompt(ag, task)
+func compileTaskNode(
+	gd *graph.GraphDefinition,
+	reg *registry.Registry,
+	taskID string,
+	task Task,
+	ag Agent,
+	taskStartNodeIDs map[string]string,
+	taskNodeIDs map[string]string,
+) {
+	nodeID := taskID + "__" + task.Agent
+	taskStartNodeIDs[taskID] = nodeID
+	taskNodeIDs[taskID] = nodeID
 
-		// Separate tools by mode
-		var fcTools []string
-		var firstStandaloneNodeID string
-		var prevStandaloneNodeID string
-		for _, toolID := range ag.Tools {
-			toolRef := strings.TrimSpace(toolID)
-			mode := reg.ToolMode(toolRef)
-			if mode == "" {
-				if def, ok := reg.Get(toolRef); ok && def.IsTool {
-					mode = inferredToolMode(def)
-				}
-			}
-
-			switch mode {
-			case "function_call":
-				fcTools = append(fcTools, toolRef)
-			case "standalone":
-				// Create a standalone tool node wired before the agent node
-				toolNodeID := taskID + "__" + toolRef
-				toolNodeConfig := map[string]any{}
-
-				if def, ok := reg.Get(toolRef); ok && len(def.Ports.Inputs) > 0 {
-					if argsTemplate := defaultArgsTemplate(def.Ports.Inputs); len(argsTemplate) > 0 {
-						toolNodeConfig["args_template"] = argsTemplate
-					}
-				}
-
-				if toolName, actionName, hasAction, valid := parseToolReference(toolRef); hasAction && valid {
-					toolNodeConfig["tool_name"] = toolName
-					toolNodeConfig["action_name"] = actionName
-					if overrides, ok := ag.ToolConfig[toolName]; ok && len(overrides) > 0 {
-						toolNodeConfig["tool_config"] = cloneAnyMap(overrides)
-					}
-				}
-				gd.Nodes = append(gd.Nodes, graph.NodeDef{
-					ID:     toolNodeID,
-					Type:   toolRef,
-					Config: toolNodeConfig,
-				})
-
-				if firstStandaloneNodeID == "" {
-					firstStandaloneNodeID = toolNodeID
-				}
-				if prevStandaloneNodeID != "" {
-					gd.Edges = append(gd.Edges, graph.EdgeDef{
-						Source:       prevStandaloneNodeID,
-						SourceHandle: "output",
-						Target:       toolNodeID,
-						TargetHandle: "input",
-					})
-				}
-				prevStandaloneNodeID = toolNodeID
-
-				taskStartNodeIDs[taskID] = firstStandaloneNodeID
-			}
-		}
-
-		if prevStandaloneNodeID != "" {
-			gd.Edges = append(gd.Edges, graph.EdgeDef{
-				Source:       prevStandaloneNodeID,
-				SourceHandle: "output",
-				Target:       nodeID,
-				TargetHandle: "context",
-			})
-		}
-
-		// Build config for the LLM node
-		config := map[string]any{
-			"system_prompt":   systemPrompt,
-			"prompt_template": rewriteTemplate(task.Description, taskNodeIDs),
-			"provider":        ag.Provider,
-			"model":           ag.Model,
-		}
-		if len(fcTools) > 0 {
-			config["tools"] = fcTools
-		}
-		if len(ag.ToolConfig) > 0 {
-			config["tool_config"] = cloneToolConfig(ag.ToolConfig)
-		}
-		if ag.Config != nil {
-			if temp, ok := ag.Config["temperature"]; ok {
-				config["temperature"] = temp
-			}
-			if maxTok, ok := ag.Config["max_tokens"]; ok {
-				config["max_tokens"] = maxTok
-			}
-		}
-
-		// Output key from task
-		if task.OutputKey != "" {
-			config["output_key"] = task.OutputKey
-		}
-
-		gd.Nodes = append(gd.Nodes, graph.NodeDef{
-			ID:     nodeID,
-			Type:   "llm_prompt",
-			Config: config,
+	fcTools, prevStandaloneNodeID := compileTaskTools(
+		gd,
+		reg,
+		taskID,
+		ag,
+		taskStartNodeIDs,
+	)
+	if prevStandaloneNodeID != "" {
+		gd.Edges = append(gd.Edges, graph.EdgeDef{
+			Source:       prevStandaloneNodeID,
+			SourceHandle: "output",
+			Target:       nodeID,
+			TargetHandle: "context",
 		})
+	}
 
-		// Human-in-the-loop: review:"human" -> append a hitl_gate node
-		if task.Review == "human" {
-			hitlID := nodeID + "__hitl"
+	gd.Nodes = append(gd.Nodes, graph.NodeDef{
+		ID:     nodeID,
+		Type:   "llm_prompt",
+		Config: buildTaskLLMConfig(task, ag, taskNodeIDs, fcTools),
+	})
+	appendTaskHumanReviewNode(gd, taskID, task, nodeID, taskNodeIDs)
+}
+
+func compileTaskTools(
+	gd *graph.GraphDefinition,
+	reg *registry.Registry,
+	taskID string,
+	ag Agent,
+	taskStartNodeIDs map[string]string,
+) ([]string, string) {
+	var fcTools []string
+	var firstStandaloneNodeID string
+	var prevStandaloneNodeID string
+
+	for _, toolID := range ag.Tools {
+		toolRef := strings.TrimSpace(toolID)
+		mode := reg.ToolMode(toolRef)
+		if mode == "" {
+			if def, ok := reg.Get(toolRef); ok && def.IsTool {
+				mode = inferredToolMode(def)
+			}
+		}
+
+		switch mode {
+		case "function_call":
+			fcTools = append(fcTools, toolRef)
+		case "standalone":
+			toolNodeID := taskID + "__" + toolRef
 			gd.Nodes = append(gd.Nodes, graph.NodeDef{
-				ID:   hitlID,
-				Type: "human",
-				Config: map[string]any{
-					"mode":    "approval",
-					"task_id": taskID,
-				},
+				ID:     toolNodeID,
+				Type:   toolRef,
+				Config: buildStandaloneToolNodeConfig(reg, toolRef, ag),
 			})
-			gd.Edges = append(gd.Edges, graph.EdgeDef{
-				Source:       nodeID,
-				SourceHandle: "output",
-				Target:       hitlID,
-				TargetHandle: "input",
-			})
-			// Update taskNodeIDs to point to the hitl gate as the "output" node
-			// so downstream edges connect to the hitl gate output.
-			taskNodeIDs[taskID] = hitlID
+
+			if firstStandaloneNodeID == "" {
+				firstStandaloneNodeID = toolNodeID
+			}
+			if prevStandaloneNodeID != "" {
+				gd.Edges = append(gd.Edges, graph.EdgeDef{
+					Source:       prevStandaloneNodeID,
+					SourceHandle: "output",
+					Target:       toolNodeID,
+					TargetHandle: "input",
+				})
+			}
+			prevStandaloneNodeID = toolNodeID
+			taskStartNodeIDs[taskID] = firstStandaloneNodeID
 		}
 	}
 
-	// Wire edges based on input references ({{tasks.X.output}})
+	return fcTools, prevStandaloneNodeID
+}
+
+func buildStandaloneToolNodeConfig(reg *registry.Registry, toolRef string, ag Agent) map[string]any {
+	toolNodeConfig := map[string]any{}
+
+	if def, ok := reg.Get(toolRef); ok && len(def.Ports.Inputs) > 0 {
+		if argsTemplate := defaultArgsTemplate(def.Ports.Inputs); len(argsTemplate) > 0 {
+			toolNodeConfig["args_template"] = argsTemplate
+		}
+	}
+
+	if toolName, actionName, hasAction, valid := parseToolReference(toolRef); hasAction && valid {
+		toolNodeConfig["tool_name"] = toolName
+		toolNodeConfig["action_name"] = actionName
+		if overrides, ok := ag.ToolConfig[toolName]; ok && len(overrides) > 0 {
+			toolNodeConfig["tool_config"] = cloneAnyMap(overrides)
+		}
+	}
+
+	return toolNodeConfig
+}
+
+func buildTaskLLMConfig(
+	task Task,
+	ag Agent,
+	taskNodeIDs map[string]string,
+	fcTools []string,
+) map[string]any {
+	config := map[string]any{
+		"system_prompt":   buildSystemPrompt(ag, task),
+		"prompt_template": rewriteTemplate(task.Description, taskNodeIDs),
+		"provider":        ag.Provider,
+		"model":           ag.Model,
+	}
+
+	if len(fcTools) > 0 {
+		config["tools"] = fcTools
+	}
+	if len(ag.ToolConfig) > 0 {
+		config["tool_config"] = cloneToolConfig(ag.ToolConfig)
+	}
+	if ag.Config != nil {
+		if temp, ok := ag.Config["temperature"]; ok {
+			config["temperature"] = temp
+		}
+		if maxTok, ok := ag.Config["max_tokens"]; ok {
+			config["max_tokens"] = maxTok
+		}
+	}
+	if task.OutputKey != "" {
+		config["output_key"] = task.OutputKey
+	}
+
+	return config
+}
+
+func appendTaskHumanReviewNode(
+	gd *graph.GraphDefinition,
+	taskID string,
+	task Task,
+	nodeID string,
+	taskNodeIDs map[string]string,
+) {
+	if task.Review != "human" {
+		return
+	}
+
+	hitlID := nodeID + "__hitl"
+	gd.Nodes = append(gd.Nodes, graph.NodeDef{
+		ID:   hitlID,
+		Type: "human",
+		Config: map[string]any{
+			"mode":    "approval",
+			"task_id": taskID,
+		},
+	})
+	gd.Edges = append(gd.Edges, graph.EdgeDef{
+		Source:       nodeID,
+		SourceHandle: "output",
+		Target:       hitlID,
+		TargetHandle: "input",
+	})
+	// Update taskNodeIDs to point to the hitl gate as the "output" node
+	// so downstream edges connect to the hitl gate output.
+	taskNodeIDs[taskID] = hitlID
+}
+
+func wireTaskReferenceEdges(
+	gd *graph.GraphDefinition,
+	wf *AgentWorkflow,
+	taskIDs []string,
+	taskStartNodeIDs map[string]string,
+	taskNodeIDs map[string]string,
+) {
 	for _, taskID := range taskIDs {
 		task := wf.Tasks[taskID]
-		// If task has HITL, the actual LLM node is before the gate
+		// If task has HITL, the actual LLM node is before the gate.
 		dstNodeID := taskStartNodeIDs[taskID]
 		if dstNodeID == "" {
 			dstNodeID = taskID + "__" + task.Agent
@@ -205,7 +281,7 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 			}
 		}
 
-		// Context references also generate edges
+		// Context references also generate edges.
 		for _, ctxRef := range task.Context {
 			srcNode, ok := taskNodeIDs[ctxRef]
 			if !ok {
@@ -219,29 +295,29 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 			})
 		}
 	}
+}
 
-	// Wire execution strategy edges
+func compileExecutionStrategy(
+	gd *graph.GraphDefinition,
+	wf *AgentWorkflow,
+	taskStartNodeIDs map[string]string,
+	taskNodeIDs map[string]string,
+) error {
 	switch wf.Execution.Strategy {
 	case "sequential":
-		if err := compileSequential(gd, wf, taskStartNodeIDs, taskNodeIDs); err != nil {
-			return nil, err
-		}
+		return compileSequential(gd, wf, taskStartNodeIDs, taskNodeIDs)
 	case "parallel":
-		if err := compileParallel(gd, wf, taskStartNodeIDs, taskNodeIDs); err != nil {
-			return nil, err
-		}
+		return compileParallel(gd, wf, taskStartNodeIDs, taskNodeIDs)
 	case "hierarchical":
-		if err := compileHierarchical(gd, wf, taskStartNodeIDs, taskNodeIDs); err != nil {
-			return nil, err
-		}
+		return compileHierarchical(gd, wf, taskStartNodeIDs, taskNodeIDs)
 	case "custom":
-		if err := compileCustom(gd, wf, taskStartNodeIDs, taskNodeIDs); err != nil {
-			return nil, err
-		}
+		return compileCustom(gd, wf, taskStartNodeIDs, taskNodeIDs)
 	default:
-		return nil, fmt.Errorf("unsupported execution strategy %q", wf.Execution.Strategy)
+		return fmt.Errorf("unsupported execution strategy %q", wf.Execution.Strategy)
 	}
+}
 
+func sortEdges(gd *graph.GraphDefinition) {
 	sort.Slice(gd.Edges, func(i, j int) bool {
 		ei, ej := gd.Edges[i], gd.Edges[j]
 		if ei.Source != ej.Source {
@@ -255,8 +331,6 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 		}
 		return ei.TargetHandle < ej.TargetHandle
 	})
-
-	return gd, nil
 }
 
 // compileSequential wires tasks in the order specified by TaskOrder.
