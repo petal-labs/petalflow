@@ -156,12 +156,22 @@ func (v *manifestSchemaValidator) validateTransport(obj map[string]any) {
 		return
 	}
 
-	switch TransportType(transportType) {
+	transport := TransportType(transportType)
+	v.validateTransportType(transport)
+	v.validateTransportCommonFields(obj)
+	v.validateTransportTypeSpecificFields(transport, obj)
+}
+
+func (v *manifestSchemaValidator) validateTransportType(transportType TransportType) {
+	switch transportType {
 	case TransportTypeNative, TransportTypeHTTP, TransportTypeStdio, TransportTypeMCP:
+		return
 	default:
 		v.add("transport.type", "ENUM", "must be one of: native, http, stdio, mcp")
 	}
+}
 
+func (v *manifestSchemaValidator) validateTransportCommonFields(obj map[string]any) {
 	if timeoutRaw, ok := obj["timeout_ms"]; ok {
 		timeout, ok := asNonNegativeInt(timeoutRaw)
 		if !ok {
@@ -171,82 +181,108 @@ func (v *manifestSchemaValidator) validateTransport(obj map[string]any) {
 		}
 	}
 
-	if endpointRaw, ok := obj["endpoint"]; ok {
-		if _, ok := endpointRaw.(string); !ok {
-			v.add("transport.endpoint", "TYPE", "must be a string")
-		}
-	}
-	if commandRaw, ok := obj["command"]; ok {
-		if _, ok := commandRaw.(string); !ok {
-			v.add("transport.command", "TYPE", "must be a string")
-		}
-	}
-	if argsRaw, ok := obj["args"]; ok {
-		args, ok := argsRaw.([]any)
-		if !ok {
-			v.add("transport.args", "TYPE", "must be an array of strings")
-		} else {
-			for i, arg := range args {
-				if _, ok := arg.(string); !ok {
-					v.add(fmt.Sprintf("transport.args[%d]", i), "TYPE", "must be a string")
-				}
-			}
-		}
-	}
-	if envRaw, ok := obj["env"]; ok {
-		env, ok := envRaw.(map[string]any)
-		if !ok {
-			v.add("transport.env", "TYPE", "must be an object of string values")
-		} else {
-			for key, value := range env {
-				if _, ok := value.(string); !ok {
-					v.add("transport.env."+key, "TYPE", "must be a string")
-				}
-			}
-		}
-	}
+	v.optionalString(obj, "endpoint", "transport.endpoint")
+	v.optionalString(obj, "command", "transport.command")
+	v.validateTransportArgs(obj)
+	v.validateTransportEnv(obj)
+	v.validateTransportRetry(obj)
+}
 
-	if retryRaw, ok := obj["retry"]; ok {
-		retryObj, ok := retryRaw.(map[string]any)
-		if !ok {
-			v.add("transport.retry", "TYPE", "must be an object")
-		} else {
-			v.validateRetry(retryObj, "transport.retry")
-		}
+func (v *manifestSchemaValidator) validateTransportArgs(obj map[string]any) {
+	argsRaw, ok := obj["args"]
+	if !ok {
+		return
 	}
+	args, ok := argsRaw.([]any)
+	if !ok {
+		v.add("transport.args", "TYPE", "must be an array of strings")
+		return
+	}
+	for i, arg := range args {
+		if _, ok := arg.(string); ok {
+			continue
+		}
+		v.add(fmt.Sprintf("transport.args[%d]", i), "TYPE", "must be a string")
+	}
+}
 
-	switch TransportType(transportType) {
+func (v *manifestSchemaValidator) validateTransportEnv(obj map[string]any) {
+	envRaw, ok := obj["env"]
+	if !ok {
+		return
+	}
+	env, ok := envRaw.(map[string]any)
+	if !ok {
+		v.add("transport.env", "TYPE", "must be an object of string values")
+		return
+	}
+	for key, value := range env {
+		if _, ok := value.(string); ok {
+			continue
+		}
+		v.add("transport.env."+key, "TYPE", "must be a string")
+	}
+}
+
+func (v *manifestSchemaValidator) validateTransportRetry(obj map[string]any) {
+	retryRaw, ok := obj["retry"]
+	if !ok {
+		return
+	}
+	retryObj, ok := retryRaw.(map[string]any)
+	if !ok {
+		v.add("transport.retry", "TYPE", "must be an object")
+		return
+	}
+	v.validateRetry(retryObj, "transport.retry")
+}
+
+func (v *manifestSchemaValidator) validateTransportTypeSpecificFields(transportType TransportType, obj map[string]any) {
+	switch transportType {
 	case TransportTypeNative:
 		// Native tools are invoked in-process and require no transport endpoint fields.
 	case TransportTypeHTTP:
-		endpoint, ok := v.requireString(obj, "endpoint", "transport.endpoint")
-		if ok && strings.TrimSpace(endpoint) == "" {
-			v.add("transport.endpoint", "MIN_LENGTH", "must not be empty for http transport")
-		}
+		v.validateHTTPTransport(obj)
 	case TransportTypeStdio:
+		v.validateStdioTransport(obj)
+	case TransportTypeMCP:
+		v.validateMCPTransport(obj)
+	}
+}
+
+func (v *manifestSchemaValidator) validateHTTPTransport(obj map[string]any) {
+	endpoint, ok := v.requireString(obj, "endpoint", "transport.endpoint")
+	if ok && strings.TrimSpace(endpoint) == "" {
+		v.add("transport.endpoint", "MIN_LENGTH", "must not be empty for http transport")
+	}
+}
+
+func (v *manifestSchemaValidator) validateStdioTransport(obj map[string]any) {
+	command, ok := v.requireString(obj, "command", "transport.command")
+	if ok && strings.TrimSpace(command) == "" {
+		v.add("transport.command", "MIN_LENGTH", "must not be empty for stdio transport")
+	}
+}
+
+func (v *manifestSchemaValidator) validateMCPTransport(obj map[string]any) {
+	mode, ok := v.requireString(obj, "mode", "transport.mode")
+	if !ok {
+		return
+	}
+
+	switch MCPMode(mode) {
+	case MCPModeStdio:
 		command, ok := v.requireString(obj, "command", "transport.command")
 		if ok && strings.TrimSpace(command) == "" {
-			v.add("transport.command", "MIN_LENGTH", "must not be empty for stdio transport")
+			v.add("transport.command", "MIN_LENGTH", "must not be empty for mcp stdio mode")
 		}
-	case TransportTypeMCP:
-		mode, ok := v.requireString(obj, "mode", "transport.mode")
-		if !ok {
-			return
+	case MCPModeSSE:
+		endpoint, ok := v.requireString(obj, "endpoint", "transport.endpoint")
+		if ok && strings.TrimSpace(endpoint) == "" {
+			v.add("transport.endpoint", "MIN_LENGTH", "must not be empty for mcp sse mode")
 		}
-		switch MCPMode(mode) {
-		case MCPModeStdio:
-			command, ok := v.requireString(obj, "command", "transport.command")
-			if ok && strings.TrimSpace(command) == "" {
-				v.add("transport.command", "MIN_LENGTH", "must not be empty for mcp stdio mode")
-			}
-		case MCPModeSSE:
-			endpoint, ok := v.requireString(obj, "endpoint", "transport.endpoint")
-			if ok && strings.TrimSpace(endpoint) == "" {
-				v.add("transport.endpoint", "MIN_LENGTH", "must not be empty for mcp sse mode")
-			}
-		default:
-			v.add("transport.mode", "ENUM", "must be one of: stdio, sse")
-		}
+	default:
+		v.add("transport.mode", "ENUM", "must be one of: stdio, sse")
 	}
 }
 
