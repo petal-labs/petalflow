@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/llmprovider"
 	"github.com/petal-labs/petalflow/loader"
@@ -56,48 +58,111 @@ func NewRunCmd() *cobra.Command {
 func runRun(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
-	// Load and compile the workflow (handles both agent and graph schemas)
-	gd, _, err := loader.LoadWorkflow(filePath)
+	gd, err := loadWorkflowForRun(cmd, filePath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return exitError(exitFileNotFound, "file not found: %s", filePath)
-		}
-		// Check if it's a validation error
-		if diagErr, ok := err.(*loader.DiagnosticError); ok {
-			printDiagnosticsText(cmd.ErrOrStderr(), diagErr.Diagnostics)
-			return exitError(exitValidation, "validation failed")
-		}
-		return exitError(exitValidation, "%v", err)
+		return err
 	}
 
-	// Dry run: just validate and compile, don't execute
-	dryRun, _ := cmd.Flags().GetBool("dry-run")
-	if dryRun {
+	// Dry run: just validate and compile, don't execute.
+	if isRunDry(cmd) {
 		fmt.Fprintln(cmd.OutOrStdout(), "Validation and compilation successful.")
 		return nil
 	}
 
-	// Resolve provider credentials
+	providers, err := resolveRunProviders(cmd)
+	if err != nil {
+		return err
+	}
+
+	toolRegistry, err := buildRunToolRegistry(cmd)
+	if err != nil {
+		return err
+	}
+
+	execGraph, err := hydrateRunGraph(cmd, gd, providers, toolRegistry)
+	if err != nil {
+		return err
+	}
+
+	// Build input envelope.
+	env, err := buildInputEnvelope(cmd)
+	if err != nil {
+		return err
+	}
+
+	applyRunEnvVars(cmd)
+	ctx, cancel, timeout := runContext(cmd)
+	defer cancel()
+
+	opts, streaming := buildRunOptions(cmd)
+	result, err := runtime.NewRuntime().Run(ctx, execGraph, env, opts)
+	if err != nil {
+		return runRuntimeError(ctx, timeout, err)
+	}
+
+	// Skip writeOutput when streaming — output was already printed incrementally.
+	if streaming {
+		return nil
+	}
+
+	// Format and write output.
+	return writeOutput(cmd, result)
+}
+
+func loadWorkflowForRun(cmd *cobra.Command, filePath string) (*graph.GraphDefinition, error) {
+	// Load and compile the workflow (handles both agent and graph schemas).
+	gd, _, err := loader.LoadWorkflow(filePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, exitError(exitFileNotFound, "file not found: %s", filePath)
+		}
+		// Check if it's a validation error.
+		if diagErr, ok := err.(*loader.DiagnosticError); ok {
+			printDiagnosticsText(cmd.ErrOrStderr(), diagErr.Diagnostics)
+			return nil, exitError(exitValidation, "validation failed")
+		}
+		return nil, exitError(exitValidation, "%v", err)
+	}
+	return gd, nil
+}
+
+func isRunDry(cmd *cobra.Command) bool {
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	return dryRun
+}
+
+func resolveRunProviders(cmd *cobra.Command) (hydrate.ProviderMap, error) {
 	providerFlags, _ := cmd.Flags().GetStringArray("provider-key")
 	flagMap, err := hydrate.ParseProviderFlags(providerFlags)
 	if err != nil {
-		return exitError(exitProvider, "invalid provider flag: %v", err)
+		return nil, exitError(exitProvider, "invalid provider flag: %v", err)
 	}
 	providers, err := hydrate.ResolveProviders(flagMap)
 	if err != nil {
-		return exitError(exitProvider, "resolving providers: %v", err)
+		return nil, exitError(exitProvider, "resolving providers: %v", err)
 	}
+	return providers, nil
+}
 
+func buildRunToolRegistry(cmd *cobra.Command) (*core.ToolRegistry, error) {
 	store, err := resolveToolStore(cmd)
 	if err != nil {
-		return exitError(exitRuntime, "loading tool store: %v", err)
+		return nil, exitError(exitRuntime, "loading tool store: %v", err)
 	}
 	toolRegistry, err := hydrate.BuildActionToolRegistry(cmd.Context(), store)
 	if err != nil {
-		return exitError(exitRuntime, "building tool registry: %v", err)
+		return nil, exitError(exitRuntime, "building tool registry: %v", err)
 	}
+	return toolRegistry, nil
+}
 
-	// Hydrate the graph (build executable graph from definition)
+func hydrateRunGraph(
+	cmd *cobra.Command,
+	gd *graph.GraphDefinition,
+	providers hydrate.ProviderMap,
+	toolRegistry *core.ToolRegistry,
+) (*graph.BasicGraph, error) {
+	// Build executable graph from definition.
 	factory := hydrate.NewLiveNodeFactory(providers, func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 		return llmprovider.NewClient(name, cfg)
 	},
@@ -106,16 +171,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 	)
 	execGraph, err := hydrate.HydrateGraph(gd, providers, factory)
 	if err != nil {
-		return exitError(exitProvider, "hydrating graph: %v", err)
+		return nil, exitError(exitProvider, "hydrating graph: %v", err)
 	}
+	return execGraph, nil
+}
 
-	// Build input envelope
-	env, err := buildInputEnvelope(cmd)
-	if err != nil {
-		return err
-	}
-
-	// Set environment variables
+func applyRunEnvVars(cmd *cobra.Command) {
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	for _, kv := range envVars {
 		parts := strings.SplitN(kv, "=", 2)
@@ -123,44 +184,41 @@ func runRun(cmd *cobra.Command, args []string) error {
 			_ = os.Setenv(parts[0], parts[1])
 		}
 	}
+}
 
-	// Create runtime and execute
+func runContext(cmd *cobra.Command) (context.Context, context.CancelFunc, time.Duration) {
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
-	defer cancel()
+	return ctx, cancel, timeout
+}
 
-	rt := runtime.NewRuntime()
+func buildRunOptions(cmd *cobra.Command) (runtime.RunOptions, bool) {
 	opts := runtime.DefaultRunOptions()
-
 	streaming, _ := cmd.Flags().GetBool("stream")
 	if streaming {
-		opts.EventHandler = func(e runtime.Event) {
-			switch e.Kind {
-			case runtime.EventNodeOutputDelta:
-				if delta, ok := e.Payload["delta"].(string); ok {
-					fmt.Fprint(cmd.OutOrStdout(), delta)
-				}
-			case runtime.EventNodeOutputFinal:
-				fmt.Fprintln(cmd.OutOrStdout())
+		opts.EventHandler = runStreamingEventHandler(cmd.OutOrStdout())
+	}
+	return opts, streaming
+}
+
+func runStreamingEventHandler(out io.Writer) runtime.EventHandler {
+	return func(e runtime.Event) {
+		switch e.Kind {
+		case runtime.EventNodeOutputDelta:
+			if delta, ok := e.Payload["delta"].(string); ok {
+				fmt.Fprint(out, delta)
 			}
+		case runtime.EventNodeOutputFinal:
+			fmt.Fprintln(out)
 		}
 	}
+}
 
-	result, err := rt.Run(ctx, execGraph, env, opts)
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return exitError(exitTimeout, "execution timed out after %s", timeout)
-		}
-		return exitError(exitRuntime, "execution failed: %v", err)
+func runRuntimeError(ctx context.Context, timeout time.Duration, err error) error {
+	if ctx.Err() == context.DeadlineExceeded {
+		return exitError(exitTimeout, "execution timed out after %s", timeout)
 	}
-
-	// Skip writeOutput when streaming — output was already printed incrementally
-	if streaming {
-		return nil
-	}
-
-	// Format and write output
-	return writeOutput(cmd, result)
+	return exitError(exitRuntime, "execution failed: %v", err)
 }
 
 // buildInputEnvelope creates an Envelope from --input or --input-file flags.
