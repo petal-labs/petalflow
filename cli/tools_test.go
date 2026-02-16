@@ -178,6 +178,49 @@ func TestToolsRegisterDuplicateNameShowsValidationCode(t *testing.T) {
 	}
 }
 
+func TestToolsRegisterNativeBuiltinWithoutManifest(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "tools.json")
+	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+
+	root := newTestRoot()
+	stdout, _, err := executeCommand(root, "tools", "register", "template_render", "--type", "native")
+	if err != nil {
+		t.Fatalf("register native builtin error = %v", err)
+	}
+	if !strings.Contains(stdout, "Registered tool: template_render (native") {
+		t.Fatalf("register output = %q, want native success message", stdout)
+	}
+}
+
+func TestToolsRegisterManifestNameMismatch(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "tools.json")
+	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
+
+	manifest := map[string]any{
+		"manifest_version": "1.0",
+		"tool": map[string]any{
+			"name": "different_name",
+		},
+		"transport": map[string]any{
+			"type":    "stdio",
+			"command": "cat",
+		},
+		"actions": map[string]any{
+			"echo": map[string]any{},
+		},
+	}
+	manifestPath := writeManifestFile(t, manifest)
+
+	root := newTestRoot()
+	_, _, err := executeCommand(root, "tools", "register", "expected_name", "--type", "stdio", "--manifest", manifestPath)
+	if err == nil {
+		t.Fatal("register should fail when manifest tool.name does not match registration name")
+	}
+	if !strings.Contains(err.Error(), "does not match registration name") {
+		t.Fatalf("register error = %q, want name mismatch message", err.Error())
+	}
+}
+
 func TestToolsRegisterMCPRefreshOverlayAndHealth(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "tools.json")
 	t.Setenv("PETALFLOW_TOOLS_STORE_PATH", storePath)
