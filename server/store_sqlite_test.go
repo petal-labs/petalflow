@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -180,6 +181,256 @@ func TestSQLiteStore_PersistenceAcrossReopen(t *testing.T) {
 	}
 	if got.ID != "wf-persist" {
 		t.Fatalf("got ID = %q, want %q", got.ID, "wf-persist")
+	}
+}
+
+func TestSQLiteStore_MigratesLegacyWorkflowsSchema(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "workflows.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	legacySchema := `
+CREATE TABLE IF NOT EXISTS workflows (
+	id TEXT PRIMARY KEY,
+	name TEXT,
+	source BLOB NOT NULL,
+	compiled BLOB,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy workflows schema error = %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO workflows (id, name, source, compiled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"wf-legacy",
+		"legacy workflow",
+		[]byte(`{"nodes":[],"edges":[]}`),
+		nil,
+		"2026-02-17T00:00:00Z",
+		"2026-02-17T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert legacy workflow row error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(SQLiteStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() migration error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	legacy, ok, err := store.Get(ctx, "wf-legacy")
+	if err != nil {
+		t.Fatalf("Get(wf-legacy) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Get(wf-legacy) ok = false, want true")
+	}
+	if legacy.SchemaKind != loader.SchemaKindGraph {
+		t.Fatalf("legacy schema_kind = %q, want %q", legacy.SchemaKind, loader.SchemaKindGraph)
+	}
+
+	if err := store.Create(ctx, WorkflowRecord{
+		ID:         "wf-new",
+		SchemaKind: loader.SchemaKindGraph,
+		Name:       "new workflow",
+		Source:     json.RawMessage(`{"nodes":[],"edges":[]}`),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Create(wf-new) after migration error = %v", err)
+	}
+
+	var (
+		schemaKind string
+		seq        sql.NullInt64
+	)
+	if err := store.db.QueryRow(`SELECT schema_kind, seq FROM workflows WHERE id = ?`, "wf-new").Scan(&schemaKind, &seq); err != nil {
+		t.Fatalf("query migrated workflow row error = %v", err)
+	}
+	if schemaKind != string(loader.SchemaKindGraph) {
+		t.Fatalf("wf-new schema_kind = %q, want %q", schemaKind, loader.SchemaKindGraph)
+	}
+	if !seq.Valid || seq.Int64 <= 0 {
+		t.Fatalf("wf-new seq = %+v, want positive non-null value", seq)
+	}
+}
+
+func TestSQLiteStore_MigratesLegacyWorkflowsKindColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "workflows.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	legacySchema := `
+CREATE TABLE IF NOT EXISTS workflows (
+	id TEXT PRIMARY KEY,
+	kind TEXT NOT NULL,
+	name TEXT,
+	source BLOB NOT NULL,
+	compiled BLOB,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy workflows(kind) schema error = %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO workflows (id, kind, name, source, compiled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"wf-legacy-kind",
+		string(loader.SchemaKindGraph),
+		"legacy workflow",
+		[]byte(`{"nodes":[],"edges":[]}`),
+		nil,
+		"2026-02-17T00:00:00Z",
+		"2026-02-17T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert legacy workflow(kind) row error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(SQLiteStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() migration error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	legacy, ok, err := store.Get(ctx, "wf-legacy-kind")
+	if err != nil {
+		t.Fatalf("Get(wf-legacy-kind) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Get(wf-legacy-kind) ok = false, want true")
+	}
+	if legacy.SchemaKind != loader.SchemaKindGraph {
+		t.Fatalf("legacy schema_kind = %q, want %q", legacy.SchemaKind, loader.SchemaKindGraph)
+	}
+
+	newRec := WorkflowRecord{
+		ID:         "wf-new-kind",
+		SchemaKind: loader.SchemaKindAgent,
+		Name:       "new workflow",
+		Source:     json.RawMessage(`{"nodes":[],"edges":[]}`),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	if err := store.Create(ctx, newRec); err != nil {
+		t.Fatalf("Create(wf-new-kind) after migration error = %v", err)
+	}
+
+	var kind string
+	if err := store.db.QueryRow(`SELECT kind FROM workflows WHERE id = ?`, "wf-new-kind").Scan(&kind); err != nil {
+		t.Fatalf("query kind for wf-new-kind error = %v", err)
+	}
+	if kind != string(loader.SchemaKindAgent) {
+		t.Fatalf("wf-new-kind kind = %q, want %q", kind, loader.SchemaKindAgent)
+	}
+
+	newRec.SchemaKind = loader.SchemaKindGraph
+	newRec.UpdatedAt = time.Now().UTC()
+	if err := store.Update(ctx, newRec); err != nil {
+		t.Fatalf("Update(wf-new-kind) after migration error = %v", err)
+	}
+
+	var schemaKind string
+	if err := store.db.QueryRow(`SELECT kind, schema_kind FROM workflows WHERE id = ?`, "wf-new-kind").Scan(&kind, &schemaKind); err != nil {
+		t.Fatalf("query kind/schema_kind for wf-new-kind error = %v", err)
+	}
+	if kind != string(loader.SchemaKindGraph) {
+		t.Fatalf("wf-new-kind kind after update = %q, want %q", kind, loader.SchemaKindGraph)
+	}
+	if schemaKind != string(loader.SchemaKindGraph) {
+		t.Fatalf("wf-new-kind schema_kind after update = %q, want %q", schemaKind, loader.SchemaKindGraph)
+	}
+}
+
+func TestSQLiteStore_MigratesLegacyWorkflowsSourceJSONColumn(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "workflows.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	legacySchema := `
+CREATE TABLE IF NOT EXISTS workflows (
+	id TEXT PRIMARY KEY,
+	kind TEXT NOT NULL,
+	name TEXT,
+	source_json BLOB NOT NULL,
+	compiled_json BLOB,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy workflows(source_json) schema error = %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO workflows (id, kind, name, source_json, compiled_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"wf-legacy-sourcejson",
+		string(loader.SchemaKindGraph),
+		"legacy workflow",
+		[]byte(`{"nodes":[],"edges":[]}`),
+		nil,
+		"2026-02-17T00:00:00Z",
+		"2026-02-17T00:00:00Z",
+	); err != nil {
+		t.Fatalf("insert legacy workflow(source_json) row error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(SQLiteStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() migration error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	legacy, ok, err := store.Get(ctx, "wf-legacy-sourcejson")
+	if err != nil {
+		t.Fatalf("Get(wf-legacy-sourcejson) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Get(wf-legacy-sourcejson) ok = false, want true")
+	}
+	if legacy.SchemaKind != loader.SchemaKindGraph {
+		t.Fatalf("legacy schema_kind = %q, want %q", legacy.SchemaKind, loader.SchemaKindGraph)
+	}
+
+	if err := store.Create(ctx, WorkflowRecord{
+		ID:         "wf-new-sourcejson",
+		SchemaKind: loader.SchemaKindGraph,
+		Name:       "new workflow",
+		Source:     json.RawMessage(`{"nodes":[],"edges":[]}`),
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("Create(wf-new-sourcejson) after migration error = %v", err)
+	}
+
+	var sourceJSON []byte
+	if err := store.db.QueryRow(`SELECT source_json FROM workflows WHERE id = ?`, "wf-new-sourcejson").Scan(&sourceJSON); err != nil {
+		t.Fatalf("query source_json for wf-new-sourcejson error = %v", err)
+	}
+	if len(sourceJSON) == 0 {
+		t.Fatal("wf-new-sourcejson source_json should be populated")
 	}
 }
 

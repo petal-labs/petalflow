@@ -982,31 +982,24 @@ func TestNewLiveNodeFactory_GuardianNode(t *testing.T) {
 	}
 }
 
-func TestNewLiveNodeFactory_SinkNode(t *testing.T) {
+func TestNewLiveNodeFactory_WebhookCallNode(t *testing.T) {
 	factory, _ := newMockClientFactory()
 	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
 
 	nd := graph.NodeDef{
-		ID:   "sink",
-		Type: "sink",
+		ID:   "webhook_call",
+		Type: "webhook_call",
 		Config: map[string]any{
-			"template":          "{{.vars}}",
+			"url":               "https://example.com/webhook",
+			"method":            "POST",
+			"headers":           map[string]any{"X-Test": "1"},
+			"template":          "{{ json .vars }}",
 			"error_policy":      "record",
-			"result_var":        "sink_result",
+			"result_var":        "webhook_result",
 			"input_vars":        []any{"summary", "score"},
 			"include_artifacts": true,
 			"include_messages":  true,
 			"include_trace":     true,
-			"sinks": []any{
-				map[string]any{
-					"type": "var",
-					"name": "memory",
-					"config": map[string]any{
-						"var_name": "sink_output",
-					},
-				},
-				"invalid-sink",
-			},
 		},
 	}
 
@@ -1015,16 +1008,63 @@ func TestNewLiveNodeFactory_SinkNode(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sn, ok := node.(*nodes.SinkNode)
+	webhookNode, ok := node.(*nodes.WebhookCallNode)
 	if !ok {
-		t.Fatalf("expected *nodes.SinkNode, got %T", node)
+		t.Fatalf("expected *nodes.WebhookCallNode, got %T", node)
 	}
-	cfg := sn.Config()
-	if cfg.ErrorPolicy != nodes.SinkErrorPolicyRecord {
-		t.Fatalf("ErrorPolicy = %q, want %q", cfg.ErrorPolicy, nodes.SinkErrorPolicyRecord)
+	cfg := webhookNode.Config()
+	if cfg.ErrorPolicy != nodes.WebhookCallErrorPolicyRecord {
+		t.Fatalf("ErrorPolicy = %q, want %q", cfg.ErrorPolicy, nodes.WebhookCallErrorPolicyRecord)
 	}
-	if len(cfg.InputVars) != 2 || len(cfg.Sinks) != 1 {
-		t.Fatalf("unexpected sink config: input_vars=%v sinks=%d", cfg.InputVars, len(cfg.Sinks))
+	if cfg.URL != "https://example.com/webhook" {
+		t.Fatalf("URL = %q, want https://example.com/webhook", cfg.URL)
+	}
+	if len(cfg.InputVars) != 2 {
+		t.Fatalf("unexpected webhook_call config input_vars=%v", cfg.InputVars)
+	}
+}
+
+func TestNewLiveNodeFactory_WebhookTriggerNode(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "webhook_trigger",
+		Type: "webhook_trigger",
+		Config: map[string]any{
+			"methods": []any{"POST", "PUT"},
+			"auth": map[string]any{
+				"type":   "header_token",
+				"header": "X-Test-Webhook",
+				"token":  "secret",
+			},
+			"request_var":  "request",
+			"body_var":     "body",
+			"headers_var":  "headers",
+			"query_var":    "query",
+			"metadata_var": "meta",
+			"timeout":      "30s",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	triggerNode, ok := node.(*nodes.WebhookTriggerNode)
+	if !ok {
+		t.Fatalf("expected *nodes.WebhookTriggerNode, got %T", node)
+	}
+	cfg := triggerNode.Config()
+	if len(cfg.Methods) != 2 || cfg.Methods[0] != "POST" || cfg.Methods[1] != "PUT" {
+		t.Fatalf("Methods = %v, want [POST PUT]", cfg.Methods)
+	}
+	if cfg.Auth.Type != nodes.WebhookAuthTypeHeaderToken {
+		t.Fatalf("Auth.Type = %q, want header_token", cfg.Auth.Type)
+	}
+	if cfg.RequestVar != "request" || cfg.MetadataVar != "meta" {
+		t.Fatalf("unexpected trigger config: request_var=%q metadata_var=%q", cfg.RequestVar, cfg.MetadataVar)
 	}
 }
 
@@ -1157,10 +1197,22 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 				},
 			},
 		},
-		"sink": {
+		"webhook_trigger": {
 			node: graph.NodeDef{
-				ID:   "n-sink",
-				Type: "sink",
+				ID:   "n-webhook-trigger",
+				Type: "webhook_trigger",
+				Config: map[string]any{
+					"methods": []any{"POST"},
+				},
+			},
+		},
+		"webhook_call": {
+			node: graph.NodeDef{
+				ID:   "n-webhook-call",
+				Type: "webhook_call",
+				Config: map[string]any{
+					"url": "https://example.com/webhook",
+				},
 			},
 		},
 		"noop": {

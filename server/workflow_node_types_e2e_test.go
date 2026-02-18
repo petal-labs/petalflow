@@ -13,6 +13,13 @@ import (
 
 func TestWorkflowNodeTypesE2E_DaemonAPI_RunCoverage(t *testing.T) {
 	handler := newDaemonWorkflowLifecycleHandler(t)
+	webhookCalls := 0
+	webhookTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		webhookCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer webhookTarget.Close()
 
 	cases := []struct {
 		name   string
@@ -432,21 +439,15 @@ func TestWorkflowNodeTypesE2E_DaemonAPI_RunCoverage(t *testing.T) {
 			},
 		},
 		{
-			name: "sink",
+			name: "webhook_call",
 			node: map[string]any{
-				"id":   "sink_to_var",
-				"type": "sink",
+				"id":   "send_webhook",
+				"type": "webhook_call",
 				"config": map[string]any{
-					"result_var": "sink_result",
-					"sinks": []any{
-						map[string]any{
-							"type": "var",
-							"name": "capture",
-							"config": map[string]any{
-								"name": "captured_payload",
-							},
-						},
-					},
+					"url":        webhookTarget.URL,
+					"method":     "POST",
+					"result_var": "webhook_result",
+					"input_vars": []any{"topic"},
 				},
 			},
 			input: map[string]any{
@@ -454,11 +455,19 @@ func TestWorkflowNodeTypesE2E_DaemonAPI_RunCoverage(t *testing.T) {
 			},
 			assert: func(t *testing.T, run RunResponse, _ []runtime.Event) {
 				t.Helper()
-				if _, ok := run.Output.Vars["captured_payload"]; !ok {
-					t.Fatal("expected captured_payload var to be set by var sink")
+				raw, ok := run.Output.Vars["webhook_result"]
+				if !ok {
+					t.Fatal("expected webhook_result var")
 				}
-				if _, ok := run.Output.Vars["sink_result"]; !ok {
-					t.Fatal("expected sink_result var")
+				result, ok := raw.(map[string]any)
+				if !ok {
+					t.Fatalf("webhook_result type = %T, want map[string]any", raw)
+				}
+				if result["ok"] != true {
+					t.Fatalf("webhook_result.ok = %v, want true", result["ok"])
+				}
+				if webhookCalls == 0 {
+					t.Fatal("expected webhook target to receive at least one call")
 				}
 			},
 		},

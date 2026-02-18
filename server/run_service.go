@@ -38,6 +38,12 @@ type scheduledRunMetadata struct {
 	ScheduledAt time.Time
 }
 
+type webhookRunMetadata struct {
+	WorkflowID string
+	TriggerID  string
+	Method     string
+}
+
 func (s *Server) planWorkflowRun(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error) {
 	rec, ok, err := s.store.Get(ctx, workflowID)
 	if err != nil {
@@ -47,6 +53,19 @@ func (s *Server) planWorkflowRun(ctx context.Context, workflowID string, req Run
 		return nil, &runAPIError{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: fmt.Sprintf("workflow %q not found", workflowID)}
 	}
 	if rec.Compiled == nil {
+		return nil, &runAPIError{Status: http.StatusBadRequest, Code: "NOT_COMPILED", Message: "workflow has no compiled graph"}
+	}
+
+	return s.planWorkflowRunWithDefinition(ctx, workflowID, rec.Compiled, req)
+}
+
+func (s *Server) planWorkflowRunWithDefinition(
+	ctx context.Context,
+	workflowID string,
+	compiled *graph.GraphDefinition,
+	req RunRequest,
+) (*workflowRunPlan, error) {
+	if compiled == nil {
 		return nil, &runAPIError{Status: http.StatusBadRequest, Code: "NOT_COMPILED", Message: "workflow has no compiled graph"}
 	}
 
@@ -73,7 +92,7 @@ func (s *Server) planWorkflowRun(ctx context.Context, workflowID string, req Run
 		hydrate.WithToolRegistry(toolRegistry),
 		hydrate.WithHumanHandler(humanHandler),
 	)
-	execGraph, err := hydrate.HydrateGraph(rec.Compiled, s.providers, factory)
+	execGraph, err := hydrate.HydrateGraph(compiled, s.providers, factory)
 	if err != nil {
 		return nil, &runAPIError{Status: http.StatusUnprocessableEntity, Code: "HYDRATE_ERROR", Message: err.Error()}
 	}
@@ -179,6 +198,23 @@ func scheduleRunMetadataDecorator(meta scheduledRunMetadata) runtime.EventEmitte
 				e.Payload["schedule_id"] = meta.ScheduleID
 				e.Payload["workflow_id"] = meta.WorkflowID
 				e.Payload["scheduled_at"] = meta.ScheduledAt.UTC().Format(time.RFC3339Nano)
+			}
+			next(e)
+		}
+	}
+}
+
+func webhookRunMetadataDecorator(meta webhookRunMetadata) runtime.EventEmitterDecorator {
+	return func(next runtime.EventEmitter) runtime.EventEmitter {
+		return func(e runtime.Event) {
+			if e.Kind == runtime.EventRunStarted || e.Kind == runtime.EventRunFinished {
+				if e.Payload == nil {
+					e.Payload = map[string]any{}
+				}
+				e.Payload["trigger"] = "webhook"
+				e.Payload["workflow_id"] = meta.WorkflowID
+				e.Payload["webhook_trigger_id"] = meta.TriggerID
+				e.Payload["webhook_method"] = meta.Method
 			}
 			next(e)
 		}

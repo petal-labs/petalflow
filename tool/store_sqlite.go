@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,6 +85,11 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 	scope := cfg.Scope
 	if strings.TrimSpace(scope) == "" {
 		scope = cfg.DSN
+	}
+
+	if err := migrateLegacySQLiteSchema(db, scope); err != nil {
+		_ = db.Close()
+		return nil, err
 	}
 
 	return &SQLiteStore{
@@ -307,6 +313,360 @@ func (s *SQLiteStore) decryptSensitiveRegistration(reg *ToolRegistration) error 
 		reg.Config[key] = plain
 	}
 	return nil
+}
+
+func migrateLegacySQLiteSchema(db *sql.DB, scope string) error {
+	if db == nil {
+		return errors.New("tool: sqlite store db is nil")
+	}
+
+	columns, err := sqliteTableColumns(db, "tool_registrations")
+	if err != nil {
+		return err
+	}
+	if len(columns) == 0 {
+		return nil
+	}
+	if !columns["name"] {
+		return errors.New("tool: sqlite schema missing tool_registrations.name column")
+	}
+
+	hasPayload := columns["payload"]
+	if !hasPayload {
+		if _, err := db.Exec(`ALTER TABLE tool_registrations ADD COLUMN payload BLOB`); err != nil {
+			return fmt.Errorf("tool: sqlite add payload column: %w", err)
+		}
+	}
+	if !columns["updated_at"] {
+		if _, err := db.Exec(`ALTER TABLE tool_registrations ADD COLUMN updated_at TEXT`); err != nil {
+			return fmt.Errorf("tool: sqlite add updated_at column: %w", err)
+		}
+	}
+
+	if !hasPayload && columns["manifest_json"] {
+		if err := backfillLegacyPayloadFromColumnSchema(db, scope, columns); err != nil {
+			return err
+		}
+	}
+
+	if err := backfillMissingPayloadDefaults(db, scope); err != nil {
+		return err
+	}
+	return nil
+}
+
+func sqliteTableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("tool: sqlite inspect schema for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			colType   string
+			notNull   int
+			dfltValue any
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("tool: sqlite scan schema for %s: %w", table, err)
+		}
+		columns[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("tool: sqlite schema rows for %s: %w", table, err)
+	}
+
+	return columns, nil
+}
+
+func backfillLegacyPayloadFromColumnSchema(db *sql.DB, scope string, columns map[string]bool) error {
+	store := &SQLiteStore{db: db, scope: scope}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	manifestExpr := sqliteLegacyColumnExpr(columns, "manifest_json", "''")
+	originExpr := sqliteLegacyColumnExpr(columns, "origin", "''")
+	configExpr := sqliteLegacyColumnExpr(columns, "config_json", "'{}'")
+	statusExpr := sqliteLegacyColumnExpr(columns, "status", "''")
+	registeredExpr := sqliteLegacyColumnExpr(columns, "registered_at", "''")
+	lastCheckExpr := sqliteLegacyColumnExpr(columns, "last_health_check", "''")
+	healthFailuresExpr := sqliteLegacyColumnExpr(columns, "health_failures", "0")
+	overlayExpr := sqliteLegacyColumnExpr(columns, "overlay_path", "NULL")
+	enabledExpr := sqliteLegacyColumnExpr(columns, "enabled", "1")
+
+	query := fmt.Sprintf(`
+SELECT name, %s, %s, %s, %s, %s, %s, %s, %s, %s
+FROM tool_registrations`,
+		manifestExpr,
+		originExpr,
+		configExpr,
+		statusExpr,
+		registeredExpr,
+		lastCheckExpr,
+		healthFailuresExpr,
+		overlayExpr,
+		enabledExpr,
+	)
+
+	rows, err := db.Query(query)
+	if err != nil {
+		return fmt.Errorf("tool: sqlite read legacy registrations: %w", err)
+	}
+	defer rows.Close()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("tool: sqlite begin legacy migration: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	for rows.Next() {
+		var (
+			name            string
+			manifestJSON    string
+			origin          string
+			configJSON      string
+			status          string
+			registeredAtRaw string
+			lastCheckRaw    string
+			healthFailures  int
+			overlayPath     sql.NullString
+			enabledRaw      any
+		)
+		if err := rows.Scan(
+			&name,
+			&manifestJSON,
+			&origin,
+			&configJSON,
+			&status,
+			&registeredAtRaw,
+			&lastCheckRaw,
+			&healthFailures,
+			&overlayPath,
+			&enabledRaw,
+		); err != nil {
+			return fmt.Errorf("tool: sqlite scan legacy registration: %w", err)
+		}
+
+		reg := decodeLegacySQLiteRegistration(
+			name,
+			manifestJSON,
+			origin,
+			configJSON,
+			status,
+			registeredAtRaw,
+			lastCheckRaw,
+			healthFailures,
+			overlayPath,
+			sqliteAnyToBool(enabledRaw, true),
+		)
+
+		payload, err := store.encodeRegistration(reg)
+		if err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(
+			`UPDATE tool_registrations SET payload = ?, updated_at = COALESCE(updated_at, ?) WHERE name = ?`,
+			payload,
+			now,
+			reg.Name,
+		); err != nil {
+			return fmt.Errorf("tool: sqlite update migrated payload for %q: %w", reg.Name, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("tool: sqlite iterate legacy registrations: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("tool: sqlite commit legacy migration: %w", err)
+	}
+	return nil
+}
+
+func sqliteLegacyColumnExpr(columns map[string]bool, name string, fallback string) string {
+	if columns[strings.ToLower(strings.TrimSpace(name))] {
+		return name
+	}
+	return fallback
+}
+
+func decodeLegacySQLiteRegistration(
+	name string,
+	manifestJSON string,
+	origin string,
+	configJSON string,
+	status string,
+	registeredAtRaw string,
+	lastCheckRaw string,
+	healthFailures int,
+	overlayPath sql.NullString,
+	enabled bool,
+) ToolRegistration {
+	trimmedName := strings.TrimSpace(name)
+	reg := ToolRegistration{
+		Name:           trimmedName,
+		Manifest:       NewManifest(trimmedName),
+		Origin:         ToolOrigin(strings.TrimSpace(origin)),
+		Status:         Status(strings.TrimSpace(status)),
+		Config:         map[string]string{},
+		HealthFailures: healthFailures,
+		Enabled:        enabled,
+	}
+
+	if reg.Status == "" {
+		reg.Status = StatusUnverified
+	}
+
+	if strings.TrimSpace(manifestJSON) != "" {
+		var manifest ToolManifest
+		if err := json.Unmarshal([]byte(manifestJSON), &manifest); err == nil {
+			if strings.TrimSpace(manifest.Tool.Name) == "" {
+				manifest.Tool.Name = trimmedName
+			}
+			if strings.TrimSpace(manifest.ManifestVersion) == "" {
+				manifest.ManifestVersion = ManifestVersionV1
+			}
+			if strings.TrimSpace(manifest.Schema) == "" {
+				manifest.Schema = SchemaToolV1
+			}
+			if manifest.Actions == nil {
+				manifest.Actions = map[string]ActionSpec{}
+			}
+			reg.Manifest = manifest
+		}
+	}
+
+	if strings.TrimSpace(configJSON) != "" {
+		_ = json.Unmarshal([]byte(configJSON), &reg.Config)
+		if reg.Config == nil {
+			reg.Config = map[string]string{}
+		}
+	}
+
+	if registeredAt, err := parseSQLiteTimeValue(registeredAtRaw); err == nil {
+		reg.RegisteredAt = registeredAt
+	}
+	if lastCheck, err := parseSQLiteTimeValue(lastCheckRaw); err == nil {
+		reg.LastHealthCheck = lastCheck
+	}
+
+	if overlayPath.Valid && strings.TrimSpace(overlayPath.String) != "" {
+		reg.Overlay = &ToolOverlay{Path: overlayPath.String}
+	}
+
+	return reg
+}
+
+func backfillMissingPayloadDefaults(db *sql.DB, scope string) error {
+	store := &SQLiteStore{db: db, scope: scope}
+	rows, err := db.Query(`SELECT name FROM tool_registrations WHERE payload IS NULL`)
+	if err != nil {
+		return fmt.Errorf("tool: sqlite query registrations missing payload: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("tool: sqlite begin default payload backfill: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return fmt.Errorf("tool: sqlite scan missing payload row: %w", err)
+		}
+		reg := ToolRegistration{
+			Name:     name,
+			Manifest: NewManifest(name),
+			Status:   StatusUnverified,
+			Enabled:  true,
+		}
+		payload, err := store.encodeRegistration(reg)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			`UPDATE tool_registrations SET payload = ?, updated_at = COALESCE(updated_at, ?) WHERE name = ?`,
+			payload,
+			now,
+			name,
+		); err != nil {
+			return fmt.Errorf("tool: sqlite default payload backfill for %q: %w", name, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("tool: sqlite iterate missing payload rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("tool: sqlite commit default payload backfill: %w", err)
+	}
+	return nil
+}
+
+func parseSQLiteTimeValue(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
+}
+
+func sqliteAnyToBool(value any, fallback bool) bool {
+	switch v := value.(type) {
+	case nil:
+		return fallback
+	case bool:
+		return v
+	case int64:
+		return v != 0
+	case int32:
+		return v != 0
+	case int:
+		return v != 0
+	case float64:
+		return v != 0
+	case []byte:
+		s := strings.TrimSpace(string(v))
+		if s == "" {
+			return fallback
+		}
+		if i, err := strconv.Atoi(s); err == nil {
+			return i != 0
+		}
+		if b, err := strconv.ParseBool(s); err == nil {
+			return b
+		}
+		return fallback
+	case string:
+		s := strings.TrimSpace(v)
+		if s == "" {
+			return fallback
+		}
+		if i, err := strconv.Atoi(s); err == nil {
+			return i != 0
+		}
+		if b, err := strconv.ParseBool(s); err == nil {
+			return b
+		}
+		return fallback
+	default:
+		return fallback
+	}
 }
 
 var _ Store = (*SQLiteStore)(nil)

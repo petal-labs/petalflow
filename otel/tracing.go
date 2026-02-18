@@ -82,6 +82,18 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 			workflowID = s
 		}
 	}
+	webhookTriggerID := ""
+	if value, ok := e.Payload["webhook_trigger_id"]; ok {
+		if s, ok := value.(string); ok {
+			webhookTriggerID = s
+		}
+	}
+	webhookMethod := ""
+	if value, ok := e.Payload["webhook_method"]; ok {
+		if s, ok := value.(string); ok {
+			webhookMethod = s
+		}
+	}
 	scheduledAt := ""
 	if value, ok := e.Payload["scheduled_at"]; ok {
 		if s, ok := value.(string); ok {
@@ -112,6 +124,12 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 	}
 	if workflowID != "" {
 		span.SetAttributes(attribute.String("petalflow.workflow_id", workflowID))
+	}
+	if webhookTriggerID != "" {
+		span.SetAttributes(attribute.String("petalflow.webhook_trigger_id", webhookTriggerID))
+	}
+	if webhookMethod != "" {
+		span.SetAttributes(attribute.String("petalflow.webhook_method", webhookMethod))
 	}
 	if scheduledAt != "" {
 		span.SetAttributes(attribute.String("petalflow.scheduled_at", scheduledAt))

@@ -116,7 +116,7 @@ MCP overlays: [`docs/mcp-overlay.md`](./docs/mcp-overlay.md)
 | Node type | Registered in catalog | Hydrated and executable | Notes |
 |-----------|-----------------------|--------------------------|-------|
 | `llm_prompt`, `llm_router` | Yes | Yes | Requires configured provider credentials |
-| `rule_router`, `filter`, `transform`, `gate`, `guardian`, `sink` | Yes | Yes | Executable from Graph IR config |
+| `rule_router`, `filter`, `transform`, `gate`, `guardian`, `webhook_trigger`, `webhook_call` | Yes | Yes | Executable from Graph IR config |
 | `merge`, `conditional`, `noop`, `tool` | Yes | Yes | `tool` requires valid `config.tool_name` and tool registry entry |
 | `tool_name.action_name` | Dynamic | Yes | Compiled from agent tool actions and resolved from tool registry |
 | `human` | Yes | Yes | Daemon uses `options.human.mode` (`strict`, `auto_approve`, `auto_reject`) to wire a handler at run time |
@@ -342,6 +342,7 @@ See the [`examples/`](./examples) directory:
 | [05_rag_workflow](./examples/05_rag_workflow) | Retrieval-augmented generation pattern |
 | [06_cli_workflow](./examples/06_cli_workflow) | Using the CLI with workflow files |
 | [07_mcp_overlay](./examples/07_mcp_overlay) | MCP discovery, overlay merge, and tool registration |
+| [08_webhooks](./examples/08_webhooks) | Inbound (`webhook_trigger`) and outbound (`webhook_call`) webhook workflows |
 
 ## LLM Integration with Iris
 

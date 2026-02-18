@@ -125,19 +125,20 @@ type (
 
 // NodeKind constants
 const (
-	NodeKindLLM       = core.NodeKindLLM
-	NodeKindTool      = core.NodeKindTool
-	NodeKindRouter    = core.NodeKindRouter
-	NodeKindMerge     = core.NodeKindMerge
-	NodeKindMap       = core.NodeKindMap
-	NodeKindGate      = core.NodeKindGate
-	NodeKindNoop      = core.NodeKindNoop
-	NodeKindFilter    = core.NodeKindFilter
-	NodeKindTransform = core.NodeKindTransform
-	NodeKindGuardian  = core.NodeKindGuardian
-	NodeKindCache     = core.NodeKindCache
-	NodeKindSink      = core.NodeKindSink
-	NodeKindHuman     = core.NodeKindHuman
+	NodeKindLLM            = core.NodeKindLLM
+	NodeKindTool           = core.NodeKindTool
+	NodeKindRouter         = core.NodeKindRouter
+	NodeKindMerge          = core.NodeKindMerge
+	NodeKindMap            = core.NodeKindMap
+	NodeKindGate           = core.NodeKindGate
+	NodeKindNoop           = core.NodeKindNoop
+	NodeKindFilter         = core.NodeKindFilter
+	NodeKindTransform      = core.NodeKindTransform
+	NodeKindGuardian       = core.NodeKindGuardian
+	NodeKindCache          = core.NodeKindCache
+	NodeKindWebhookCall    = core.NodeKindWebhookCall
+	NodeKindWebhookTrigger = core.NodeKindWebhookTrigger
+	NodeKindHuman          = core.NodeKindHuman
 )
 
 // ErrorPolicy constants
@@ -525,41 +526,32 @@ type (
 	// QueuedHumanHandler queues requests for later processing.
 	QueuedHumanHandler = nodes.QueuedHumanHandler
 
-	// SinkNode outputs data to external systems.
-	SinkNode = nodes.SinkNode
+	// WebhookCallNode executes outbound HTTP webhook calls.
+	WebhookCallNode = nodes.WebhookCallNode
 
-	// SinkNodeConfig configures a SinkNode.
-	SinkNodeConfig = nodes.SinkNodeConfig
+	// WebhookCallNodeConfig configures a WebhookCallNode.
+	WebhookCallNodeConfig = nodes.WebhookCallNodeConfig
 
-	// SinkType identifies the type of sink.
-	SinkType = nodes.SinkType
+	// WebhookCallErrorPolicy defines how webhook_call errors are handled.
+	WebhookCallErrorPolicy = nodes.WebhookCallErrorPolicy
 
-	// SinkErrorPolicy defines how sink errors are handled.
-	SinkErrorPolicy = nodes.SinkErrorPolicy
+	// WebhookTriggerNode maps inbound webhook requests into workflow vars.
+	WebhookTriggerNode = nodes.WebhookTriggerNode
 
-	// SinkTarget defines a single sink destination.
-	SinkTarget = nodes.SinkTarget
+	// WebhookTriggerNodeConfig configures a WebhookTriggerNode.
+	WebhookTriggerNodeConfig = nodes.WebhookTriggerNodeConfig
 
-	// SinkResult contains the results of sink operations.
-	SinkResult = nodes.SinkResult
+	// WebhookTriggerAuthConfig configures webhook trigger authentication.
+	WebhookTriggerAuthConfig = nodes.WebhookTriggerAuthConfig
 
-	// SinkTargetResult contains the result of a single sink target.
-	SinkTargetResult = nodes.SinkTargetResult
+	// WebhookAuthType identifies webhook trigger auth mode.
+	WebhookAuthType = nodes.WebhookAuthType
 
 	// HTTPClient is the interface for HTTP requests.
 	HTTPClient = nodes.HTTPClient
 
-	// MetricRecorder is the interface for recording metrics.
-	MetricRecorder = nodes.MetricRecorder
-
 	// MockHTTPClient is a mock HTTP client for testing.
 	MockHTTPClient = nodes.MockHTTPClient
-
-	// MockMetricRecorder is a mock metric recorder for testing.
-	MockMetricRecorder = nodes.MockMetricRecorder
-
-	// MockMetric represents a recorded metric.
-	MockMetric = nodes.MockMetric
 )
 
 // ConditionOp constants
@@ -660,21 +652,17 @@ const (
 	HumanTimeoutSkip    = nodes.HumanTimeoutSkip
 )
 
-// SinkType constants
+// WebhookCallErrorPolicy constants
 const (
-	SinkTypeFile    = nodes.SinkTypeFile
-	SinkTypeWebhook = nodes.SinkTypeWebhook
-	SinkTypeLog     = nodes.SinkTypeLog
-	SinkTypeMetric  = nodes.SinkTypeMetric
-	SinkTypeVar     = nodes.SinkTypeVar
-	SinkTypeCustom  = nodes.SinkTypeCustom
+	WebhookCallErrorPolicyFail     = nodes.WebhookCallErrorPolicyFail
+	WebhookCallErrorPolicyContinue = nodes.WebhookCallErrorPolicyContinue
+	WebhookCallErrorPolicyRecord   = nodes.WebhookCallErrorPolicyRecord
 )
 
-// SinkErrorPolicy constants
+// Webhook auth mode constants.
 const (
-	SinkErrorPolicyFail     = nodes.SinkErrorPolicyFail
-	SinkErrorPolicyContinue = nodes.SinkErrorPolicyContinue
-	SinkErrorPolicyRecord   = nodes.SinkErrorPolicyRecord
+	WebhookAuthTypeNone        = nodes.WebhookAuthTypeNone
+	WebhookAuthTypeHeaderToken = nodes.WebhookAuthTypeHeaderToken
 )
 
 // Nodes package constructors
@@ -705,9 +693,9 @@ var (
 	NewAutoApproveHandler     = nodes.NewAutoApproveHandler
 	NewAutoRejectHandler      = nodes.NewAutoRejectHandler
 	NewQueuedHumanHandler     = nodes.NewQueuedHumanHandler
-	NewSinkNode               = nodes.NewSinkNode
+	NewWebhookCallNode        = nodes.NewWebhookCallNode
+	NewWebhookTriggerNode     = nodes.NewWebhookTriggerNode
 	NewMockHTTPClient         = nodes.NewMockHTTPClient
-	NewMockMetricRecorder     = nodes.NewMockMetricRecorder
 )
 
 // =============================================================================
@@ -731,9 +719,6 @@ type TransformFunc = func(ctx context.Context, env *Envelope) (*Envelope, error)
 
 // ValidateFunc is a convenience type for custom validation functions.
 type ValidateFunc = func(ctx context.Context, env *Envelope, check *GuardianCheck) (bool, string, error)
-
-// SinkWriteFunc is a convenience type for custom sink functions.
-type SinkWriteFunc = func(ctx context.Context, env *Envelope, target *SinkTarget) error
 
 // =============================================================================
 // Convenience helper functions
