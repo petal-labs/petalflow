@@ -398,6 +398,7 @@ func backfillLegacyPayloadFromColumnSchema(db *sql.DB, scope string, columns map
 	overlayExpr := sqliteLegacyColumnExpr(columns, "overlay_path", "NULL")
 	enabledExpr := sqliteLegacyColumnExpr(columns, "enabled", "1")
 
+	// #nosec G201 -- expressions are built from fixed legacy column names and static fallbacks only.
 	query := fmt.Sprintf(`
 SELECT name, %s, %s, %s, %s, %s, %s, %s, %s, %s
 FROM tool_registrations`,

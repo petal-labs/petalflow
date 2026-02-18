@@ -50,6 +50,28 @@ ON workflow_schedules(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due
 ON workflow_schedules(enabled, next_run_at);`
 
+var workflowInsertQueries = [8]string{
+	"INSERT INTO workflows (id, schema_kind, name, source, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, name, source, source_json, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, source_json, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, name, source, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, name, source, source_json, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, source_json, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+}
+
+var workflowUpdateQueries = [8]string{
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+}
+
 // SQLiteStoreConfig configures the SQLite workflow store.
 type SQLiteStoreConfig struct {
 	DSN string
@@ -163,35 +185,23 @@ func (s *SQLiteStore) Create(ctx context.Context, rec WorkflowRecord) error {
 	}
 	legacyCompiled := normalizeLegacyWorkflowCompiled(compiled)
 
-	columns := []string{"id", "schema_kind"}
 	args := []any{rec.ID, string(rec.SchemaKind)}
 	if s.workflowHasLegacyKind {
-		columns = append(columns, "kind")
 		args = append(args, string(rec.SchemaKind))
 	}
-	columns = append(columns, "name", "source")
 	args = append(args, rec.Name, sourceBytes)
 	if s.workflowHasLegacySourceJSON {
-		columns = append(columns, "source_json")
 		args = append(args, sourceBytes)
 	}
-	columns = append(columns, "compiled")
 	args = append(args, compiled)
 	if s.workflowHasLegacyCompiledJSON {
-		columns = append(columns, "compiled_json")
 		args = append(args, legacyCompiled)
 	}
-	columns = append(columns, "created_at", "updated_at")
 	args = append(args,
 		rec.CreatedAt.UTC().Format(time.RFC3339Nano),
 		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	)
-
-	query := fmt.Sprintf(
-		"INSERT INTO workflows (%s)\nVALUES (%s)",
-		strings.Join(columns, ", "),
-		sqlPlaceholders(len(columns)),
-	)
+	query := workflowInsertQueries[s.workflowLegacyColumnMask()]
 
 	_, err = s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -215,35 +225,24 @@ func (s *SQLiteStore) Update(ctx context.Context, rec WorkflowRecord) error {
 		rec.UpdatedAt = time.Now().UTC()
 	}
 
-	sets := []string{"schema_kind = ?"}
 	args := []any{string(rec.SchemaKind)}
 	if s.workflowHasLegacyKind {
-		sets = append(sets, "kind = ?")
 		args = append(args, string(rec.SchemaKind))
 	}
-	sets = append(sets, "name = ?", "source = ?")
 	args = append(args, rec.Name, sourceBytes)
 	if s.workflowHasLegacySourceJSON {
-		sets = append(sets, "source_json = ?")
 		args = append(args, sourceBytes)
 	}
-	sets = append(sets, "compiled = ?")
 	args = append(args, compiled)
 	if s.workflowHasLegacyCompiledJSON {
-		sets = append(sets, "compiled_json = ?")
 		args = append(args, legacyCompiled)
 	}
-	sets = append(sets, "created_at = ?", "updated_at = ?")
 	args = append(args,
 		rec.CreatedAt.UTC().Format(time.RFC3339Nano),
 		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	)
 	args = append(args, rec.ID)
-
-	query := fmt.Sprintf(
-		"UPDATE workflows\nSET %s\nWHERE id = ?",
-		strings.Join(sets, ", "),
-	)
+	query := workflowUpdateQueries[s.workflowLegacyColumnMask()]
 
 	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -716,15 +715,18 @@ func nullIfEmpty(value string) any {
 	return value
 }
 
-func sqlPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
+func (s *SQLiteStore) workflowLegacyColumnMask() int {
+	mask := 0
+	if s.workflowHasLegacyKind {
+		mask |= 1
 	}
-	out := make([]string, n)
-	for i := 0; i < n; i++ {
-		out[i] = "?"
+	if s.workflowHasLegacySourceJSON {
+		mask |= 2
 	}
-	return strings.Join(out, ", ")
+	if s.workflowHasLegacyCompiledJSON {
+		mask |= 4
+	}
+	return mask
 }
 
 func normalizeWorkflowSource(raw json.RawMessage) []byte {
