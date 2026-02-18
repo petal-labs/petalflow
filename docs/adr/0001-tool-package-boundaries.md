@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-02-09
 - Related issue: [#24](https://github.com/petal-labs/petalflow/issues/24)
-- Related plan: `/Users/erikhoward/src/github/petal-labs/petalflow/.spec/petalflow-tools-contract-implementation-plan.md` (P1-01)
+- Related implementation work: tool package foundation and follow-up issues linked from [#24](https://github.com/petal-labs/petalflow/issues/24)
 
 ## Context
 
@@ -28,7 +28,7 @@ Create a new `tool` package with boundary-specific files and public contracts:
 - `validate.go`: structured diagnostics and validator pipeline interfaces.
 - `health.go`: health status model and probing/monitor interfaces.
 
-The package is intentionally skeletal in this issue. Production behavior (schema validation, persistence, transport IO, retries, health loops) is deferred to follow-up issues in the same implementation plan.
+The package foundation in this ADR established boundaries first, with production behavior (schema validation, persistence, transport I/O, retries, health loops) implemented incrementally in follow-up issues.
 
 ## Dependency Rules
 
@@ -50,11 +50,10 @@ Positive:
 
 Tradeoffs:
 
-1. Some files currently contain placeholder behavior (`ErrNotImplemented`) until later phase tasks.
+1. Initial implementation shipped boundary-first structure, with full behavior added incrementally after this decision.
 2. Additional ADRs may be needed if we later split this package into subpackages for stricter compile-time dependency enforcement.
 
 ## Alternatives Considered
 
 1. Single monolithic implementation in one file: rejected because it blurs boundaries and increases future refactor cost.
 2. Immediate deep subpackage split (`tool/manifest`, `tool/adapter`, etc.): deferred to keep initial API churn low while the contract is still evolving.
-

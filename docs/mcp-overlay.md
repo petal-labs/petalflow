@@ -1,13 +1,16 @@
-# MCP Adapter and Overlay Guide
+# MCP Overlay Guide
 
-This guide covers the Phase 2 MCP workflow in PetalFlow:
+MCP overlays let you refine discovered MCP tools without modifying the MCP server itself.
 
-- Register MCP servers over stdio or endpoint mode.
-- Build and apply overlays for grouped actions + typed outputs.
-- Refresh discovered capabilities after MCP server changes.
-- Run health checks with strategy-based behavior.
+Typical uses:
 
-## Register an MCP Tool (stdio)
+- Rename/group actions
+- Mark actions as `llm_callable` or `standalone`
+- Provide typed input/output schemas
+- Map config keys to environment variables
+- Define health strategy overrides
+
+## Register MCP Tool with Overlay
 
 ```bash
 petalflow tools register s3_fetch \
@@ -19,53 +22,94 @@ petalflow tools register s3_fetch \
   --overlay ./examples/07_mcp_overlay/s3_fetch.overlay.yaml
 ```
 
-## Register an MCP Tool (endpoint mode)
+Inspect merged action definitions:
 
 ```bash
-petalflow tools register github_tools \
-  --type mcp \
-  --transport-mode sse \
-  --endpoint http://localhost:9803/mcp
+petalflow tools inspect s3_fetch --actions
 ```
+
+## Overlay Example
+
+```yaml
+overlay_version: "1.0"
+
+group_actions:
+  list: list_objects
+  download: get_object
+
+action_modes:
+  list: llm_callable
+  download: standalone
+
+output_schemas:
+  list:
+    items:
+      type: array
+      items:
+        type: object
+        properties:
+          key:
+            type: string
+
+config:
+  region:
+    type: string
+    required: true
+  access_key:
+    type: string
+    sensitive: true
+    env_var: AWS_ACCESS_KEY_ID
+
+health:
+  strategy: ping
+  interval_seconds: 30
+  unhealthy_threshold: 2
+```
+
+## Overlay Fields
+
+| Field | Description |
+| --- | --- |
+| `overlay_version` | Must be `"1.0"` |
+| `group_actions` | Map exposed action name -> underlying MCP tool name |
+| `action_modes` | `llm_callable` or `standalone` per action |
+| `input_overrides` | Override action input schemas |
+| `output_schemas` | Override action output schemas |
+| `description_overrides` | Override action descriptions |
+| `config` | Add/override config fields (supports `env_var`) |
+| `metadata` | Optional manifest metadata overrides |
+| `health` | Override health strategy and cadence |
 
 ## Refresh and Overlay Updates
 
 ```bash
-# Re-run discovery (initialize + tools/list)
+# Re-discover from MCP server
 petalflow tools refresh s3_fetch
 
-# Update overlay path and refresh derived manifest
+# Change overlay path and refresh manifest
 petalflow tools overlay s3_fetch --set ./examples/07_mcp_overlay/s3_fetch.overlay.yaml
 ```
 
 ## Health Strategies
 
-```bash
-# Single tool health check
-petalflow tools health s3_fetch
+`health.strategy` options:
 
-# All MCP tools
-petalflow tools health --all
-```
+- `process`: stdio process availability check
+- `connection`: endpoint connectivity check
+- `ping`: initialize + `tools/list` ping
+- `endpoint`: explicit HTTP health endpoint check
 
-Overlay health strategy options:
+For `endpoint`, set `health.endpoint`.
 
-- `process`: initialize-only process/stdio availability check.
-- `connection`: initialize-only endpoint connectivity check.
-- `ping`: initialize + `tools/list` ping check.
-- `endpoint`: HTTP endpoint check from overlay `health.endpoint`.
+## Notes on MCP Transport Modes
 
-## Compatibility Matrix (Phase 2)
+- `stdio`: launches MCP server as a local subprocess
+- `sse`: targets an HTTP MCP endpoint
 
-| Target Server | Transport | Discovery (`initialize` + `tools/list`) | Invocation (`tools/call`) | Overlay Merge | Notes |
-| --- | --- | --- | --- | --- | --- |
-| GitHub MCP (`@modelcontextprotocol/server-github`) | stdio | Yes | Yes | Yes | Validate PAT config via overlay `env_var` mapping. |
-| Filesystem MCP | stdio | Yes | Yes | Yes | Useful for local file listing/read/write action grouping. |
-| Cloud Provider MCP (S3/GCS/Azure variant) | stdio or endpoint | Yes | Yes | Yes | Typed outputs strongly recommended via overlay. |
+Current `sse` behavior uses request/response JSON-RPC over HTTP while preserving compatibility with SSE-capable endpoints.
 
-Known gaps in current implementation:
+## Validate via Example
 
-- Endpoint mode currently uses request/response HTTP transport abstraction and does not yet consume streaming SSE event framing.
-- Connection pooling for high-concurrency MCP workloads is deferred.
-- Overlay-driven advanced input coercion beyond schema merge is deferred.
-- MCP resources/prompts are out of scope for this phase.
+See the runnable end-to-end example:
+
+- [`examples/07_mcp_overlay`](../examples/07_mcp_overlay)

@@ -1,18 +1,34 @@
-# Tool Manifest and CLI Quickstart
+# Tools CLI Guide
 
-This guide covers the Phase 1 tool contract workflow:
+PetalFlow tools let workflows call external capabilities (HTTP services, stdio programs, MCP servers, and built-ins).
 
-- Register tools from manifest JSON.
-- List and inspect built-in + registered tools.
-- Configure required and sensitive settings.
-- Invoke tool actions from the CLI for fast validation.
+This guide covers the common CLI flow:
 
-## 1. Manifest Shape (v1.0)
+1. Register a tool
+2. Configure values (including secrets)
+3. Inspect and test actions
+4. Keep the same SQLite store when running workflows
 
-Create a manifest file (for example `tools/echo_http.tool.json`):
+## Quick Commands
+
+```bash
+# Show all built-in + registered tools
+petalflow tools list
+
+# Inspect a tool's manifest
+petalflow tools inspect <tool_name>
+
+# Show action schemas only
+petalflow tools inspect <tool_name> --actions
+```
+
+## 1) Register an HTTP Tool from a Manifest
+
+Manifest example (`tools/echo_http.tool.json`):
 
 ```json
 {
+  "$schema": "https://petalflow.dev/schemas/tool-manifest/v1.json",
   "manifest_version": "1.0",
   "tool": {
     "name": "echo_http",
@@ -39,25 +55,40 @@ Create a manifest file (for example `tools/echo_http.tool.json`):
 }
 ```
 
-## 2. Register and Inspect
+Register it:
 
 ```bash
-# Register from manifest
 petalflow tools register echo_http \
   --type http \
   --manifest ./tools/echo_http.tool.json
-
-# List built-ins + registered tools
-petalflow tools list
-
-# Inspect full registration (manifest + status + masked config)
-petalflow tools inspect echo_http
-
-# Inspect action schemas only
-petalflow tools inspect echo_http --actions
 ```
 
-MCP discovery registration (no manifest file required):
+## 2) Configure Values
+
+```bash
+# Non-sensitive values
+petalflow tools config echo_http --set region=us-west-2
+
+# Sensitive values
+petalflow tools config echo_http --set-secret api_key=sk-example
+
+# Show effective config (sensitive values are masked)
+petalflow tools config echo_http --show
+```
+
+## 3) Test an Action
+
+```bash
+petalflow tools test echo_http echo --input value=hello
+```
+
+Or JSON input:
+
+```bash
+petalflow tools test echo_http echo --input-json '{"value":"hello"}'
+```
+
+## 4) Register an MCP Tool
 
 ```bash
 petalflow tools register s3_fetch \
@@ -69,55 +100,7 @@ petalflow tools register s3_fetch \
   --overlay ./examples/07_mcp_overlay/s3_fetch.overlay.yaml
 ```
 
-## 3. Configure Values (Sensitive Masking)
-
-```bash
-# Set non-sensitive values
-petalflow tools config echo_http --set region=us-west-2
-
-# Set sensitive values
-petalflow tools config echo_http --set-secret api_key="sk-example"
-
-# Show effective config (sensitive values are masked)
-petalflow tools config echo_http --show
-```
-
-Expected masking behavior:
-
-```text
-Tool: echo_http
-Config:
-  api_key: ********** (sensitive)
-  region: us-west-2
-```
-
-Sensitive values are encrypted at rest in SQLite-backed tool stores and always masked in CLI/API output.
-
-## 4. Invoke Actions with `tools test`
-
-```bash
-petalflow tools test echo_http echo --input value=hello
-
-# JSON input form
-petalflow tools test echo_http echo \
-  --input-json '{"value":"hello"}'
-```
-
-Built-in native tools are available immediately:
-
-```bash
-petalflow tools test template_render render \
-  --input template='Hello, {{.name}}!' \
-  --input name=Ada
-```
-
-## 5. Unregister
-
-```bash
-petalflow tools unregister echo_http
-```
-
-MCP lifecycle commands:
+MCP maintenance commands:
 
 ```bash
 petalflow tools refresh s3_fetch
@@ -126,15 +109,49 @@ petalflow tools health s3_fetch
 petalflow tools health --all
 ```
 
+## Built-In Tools
+
+Built-ins are available without registration.
+
+Example:
+
+```bash
+petalflow tools test template_render render \
+  --input template='Hello, {{.name}}!' \
+  --input name=Ada
+```
+
+## Remove a Tool
+
+```bash
+petalflow tools unregister echo_http
+```
+
+## Important: Keep Store Path Consistent
+
+Tool registrations are stored in SQLite. Use the same DB path across commands.
+
+Default:
+
+- `~/.petalflow/petalflow.db`
+
+Custom path example:
+
+```bash
+petalflow tools list --store-path /tmp/petalflow.db
+petalflow run workflow.yaml --store-path /tmp/petalflow.db
+petalflow serve --sqlite-path /tmp/petalflow.db
+```
+
+If store paths differ, workflows may fail to find registered tools.
+
 ## Troubleshooting
 
-- `REGISTRATION_VALIDATION_FAILED` with `NAME_NOT_UNIQUE`:
-  Existing registration already uses that name. Run `petalflow tools list` and choose a new name or `unregister` first.
-- `REGISTRATION_VALIDATION_FAILED` with `UNREACHABLE` on `transport.endpoint`:
-  PetalFlow could not reach the HTTP endpoint during registration. Verify service availability and URL.
-- `REGISTRATION_VALIDATION_FAILED` with `REQUIRED_FIELD` on `config.<field>`:
-  A required config value is missing. Set it via `petalflow tools config <name> --set ...` or `--set-secret ...`.
-- `tool test failed` for native tools:
-  Verify action name using `petalflow tools inspect <name> --actions`.
-- Sensitive value appears in output:
-  This is a bug. Sensitive keys declared as `sensitive: true` must always render as masked values.
+- `NAME_NOT_UNIQUE`:
+  A tool with that name already exists. Use a new name or unregister first.
+- `REQUIRED_FIELD` on `config.<field>`:
+  Set required config values with `tools config --set` or `--set-secret`.
+- `UNREACHABLE` for HTTP endpoint:
+  Verify the endpoint is up and reachable from your environment.
+- Action not found during `tools test`:
+  Use `petalflow tools inspect <name> --actions` to confirm action names.
