@@ -105,6 +105,15 @@ func (h *MetricsHandler) handleRunFinished(e runtime.Event) {
 	if scheduleID, ok := e.Payload["schedule_id"].(string); ok && scheduleID != "" {
 		attrList = append(attrList, attribute.String("schedule_id", scheduleID))
 	}
+	if workflowID, ok := e.Payload["workflow_id"].(string); ok && workflowID != "" {
+		attrList = append(attrList, attribute.String("workflow_id", workflowID))
+	}
+	if triggerID, ok := e.Payload["webhook_trigger_id"].(string); ok && triggerID != "" {
+		attrList = append(attrList, attribute.String("webhook_trigger_id", triggerID))
+	}
+	if method, ok := e.Payload["webhook_method"].(string); ok && method != "" {
+		attrList = append(attrList, attribute.String("webhook_method", method))
+	}
 	attrs := metric.WithAttributes(attrList...)
 	h.runDuration.Record(ctx, e.Elapsed.Seconds(), attrs)
 }

@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,5 +243,122 @@ func TestSQLiteStorePersistenceAcrossReopen(t *testing.T) {
 	}
 	if got.Name != "persisted_tool" {
 		t.Fatalf("store2.Get.Name = %q, want %q", got.Name, "persisted_tool")
+	}
+}
+
+func TestSQLiteStoreMigratesLegacyColumnSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tools.db")
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+
+	legacySchema := `
+CREATE TABLE IF NOT EXISTS tool_registrations (
+  name TEXT PRIMARY KEY,
+  manifest_json TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL,
+  registered_at TEXT,
+  last_health_check TEXT,
+  health_failures INTEGER NOT NULL DEFAULT 0,
+  overlay_path TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1
+);`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy schema error = %v", err)
+	}
+
+	manifest := NewManifest("legacy_tool")
+	manifest.Transport = NewHTTPTransport(HTTPTransport{Endpoint: "http://localhost:9911"})
+	manifest.Actions["run"] = ActionSpec{
+		Outputs: map[string]FieldSpec{
+			"ok": {Type: TypeBoolean},
+		},
+	}
+	manifest.Config = map[string]FieldSpec{
+		"api_key": {Type: TypeString, Sensitive: true},
+	}
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest error = %v", err)
+	}
+
+	configJSON := `{"api_key":"legacy-secret"}`
+	if _, err := db.Exec(
+		`INSERT INTO tool_registrations
+		  (name, manifest_json, origin, config_json, status, registered_at, last_health_check, health_failures, overlay_path, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy_tool",
+		string(manifestJSON),
+		string(OriginHTTP),
+		configJSON,
+		string(StatusReady),
+		"2026-02-17T00:00:00Z",
+		"2026-02-17T01:00:00Z",
+		1,
+		"./legacy.overlay.yaml",
+		1,
+	); err != nil {
+		t.Fatalf("insert legacy row error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close() error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(SQLiteStoreConfig{
+		DSN:   path,
+		Scope: path,
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() migration error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	got, ok, err := store.Get(context.Background(), "legacy_tool")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Get() ok = false, want true")
+	}
+	if got.Origin != OriginHTTP {
+		t.Fatalf("Origin = %q, want %q", got.Origin, OriginHTTP)
+	}
+	if got.Status != StatusReady {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusReady)
+	}
+	if got.Config["api_key"] != "legacy-secret" {
+		t.Fatalf("Config[api_key] = %q, want legacy-secret", got.Config["api_key"])
+	}
+	if got.Overlay == nil || got.Overlay.Path != "./legacy.overlay.yaml" {
+		t.Fatalf("Overlay = %#v, want ./legacy.overlay.yaml", got.Overlay)
+	}
+
+	var (
+		payload   string
+		updatedAt string
+	)
+	if err := store.db.QueryRow(
+		`SELECT payload, updated_at FROM tool_registrations WHERE name = ?`,
+		"legacy_tool",
+	).Scan(&payload, &updatedAt); err != nil {
+		t.Fatalf("query migrated payload error = %v", err)
+	}
+	if strings.TrimSpace(payload) == "" {
+		t.Fatal("payload should be populated after migration")
+	}
+	if strings.Contains(payload, "legacy-secret") {
+		t.Fatalf("migrated payload leaked plaintext secret: %s", payload)
+	}
+	if !strings.Contains(payload, encryptedValuePrefix) {
+		t.Fatalf("migrated payload missing encrypted value prefix %q", encryptedValuePrefix)
+	}
+	if strings.TrimSpace(updatedAt) == "" {
+		t.Fatal("updated_at should be populated after migration")
 	}
 }

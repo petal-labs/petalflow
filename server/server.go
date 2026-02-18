@@ -98,6 +98,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
+	mux.HandleFunc("/api/workflows/{id}/webhooks/{trigger_id}", s.handleWorkflowWebhook)
 	mux.HandleFunc("GET /api/workflows/{id}/schedules", s.handleListWorkflowSchedules)
 	mux.HandleFunc("POST /api/workflows/{id}/schedules", s.handleCreateWorkflowSchedule)
 	mux.HandleFunc("GET /api/workflows/{id}/schedules/{schedule_id}", s.handleGetWorkflowSchedule)

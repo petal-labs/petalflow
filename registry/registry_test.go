@@ -228,7 +228,8 @@ func TestBuiltins_AllExpectedTypesRegistered(t *testing.T) {
 		"human",
 		"map",
 		"cache",
-		"sink",
+		"webhook_trigger",
+		"webhook_call",
 		"noop",
 		"func",
 	}
@@ -258,7 +259,8 @@ func TestBuiltins_Categories(t *testing.T) {
 		{"human", "control"},
 		{"map", "control"},
 		{"cache", "data"},
-		{"sink", "data"},
+		{"webhook_trigger", "control"},
+		{"webhook_call", "data"},
 		{"noop", "control"},
 		{"func", "control"},
 	}

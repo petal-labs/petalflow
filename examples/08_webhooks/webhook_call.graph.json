@@ -1,0 +1,54 @@
+{
+  "id": "webhook_call_demo",
+  "version": "1.0",
+  "nodes": [
+    {
+      "id": "prepare_message",
+      "type": "transform",
+      "config": {
+        "transform": "template",
+        "template": "{{.event_type}}/{{.event_id}}",
+        "output_var": "event_key"
+      }
+    },
+    {
+      "id": "send_webhook",
+      "type": "webhook_call",
+      "config": {
+        "url": "http://localhost:8787/webhook",
+        "method": "POST",
+        "headers": {
+          "Content-Type": "application/json",
+          "x-petalflow-source": "petalflow-example"
+        },
+        "template": "{\"event_type\":\"{{.vars.event_type}}\",\"event_id\":\"{{.vars.event_id}}\",\"tenant\":\"{{.vars.tenant}}\",\"event_key\":\"{{.vars.event_key}}\",\"payload\":{{ json .vars }}}",
+        "result_var": "webhook_result",
+        "error_policy": "fail"
+      }
+    },
+    {
+      "id": "result_summary",
+      "type": "transform",
+      "config": {
+        "transform": "template",
+        "template": "status={{.webhook_result.status_code}} ok={{.webhook_result.ok}}",
+        "output_var": "status_line"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "prepare_message",
+      "sourceHandle": "output",
+      "target": "send_webhook",
+      "targetHandle": "input"
+    },
+    {
+      "source": "send_webhook",
+      "sourceHandle": "output",
+      "target": "result_summary",
+      "targetHandle": "input"
+    }
+  ],
+  "entry": "prepare_message"
+}

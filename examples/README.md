@@ -94,3 +94,29 @@ Demonstrates:
 - Passing input data and provider credentials via flags
 
 No Go code required — just workflow definition files and the `petalflow` CLI.
+
+---
+
+### 07_mcp_overlay
+**MCP discovery, overlay merge, and tool registration.**
+
+Demonstrates:
+- Registering an MCP server via stdio
+- Overlay-based tool metadata customization
+- Inspecting discovered and merged actions
+- Running test invocations through the CLI
+
+No external dependencies required.
+
+---
+
+### 08_webhooks
+**Inbound + outbound webhook workflows (ngrok-ready).**
+
+Demonstrates:
+- `webhook_trigger` for inbound HTTP webhook entrypoints
+- `webhook_call` for outbound HTTP webhook delivery
+- Header-token auth via `env:` token references
+- End-to-end local testing using `ngrok` tunnels + a local TypeScript receiver
+
+See `./08_webhooks/README.md` for setup and `curl` commands.

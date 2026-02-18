@@ -129,6 +129,47 @@ func validGraphJSON(id string) []byte {
 	return b
 }
 
+func validWebhookGraphJSON(id string, methods []string, auth map[string]any) []byte {
+	methodVals := make([]any, 0, len(methods))
+	for _, method := range methods {
+		methodVals = append(methodVals, method)
+	}
+
+	triggerConfig := map[string]any{
+		"methods": methodVals,
+	}
+	if auth != nil {
+		triggerConfig["auth"] = auth
+	}
+
+	gd := map[string]any{
+		"id":      id,
+		"version": "1.0",
+		"nodes": []map[string]any{
+			{
+				"id":     "incoming",
+				"type":   "webhook_trigger",
+				"config": triggerConfig,
+			},
+			{
+				"id":   "extract_event",
+				"type": "transform",
+				"config": map[string]any{
+					"transform":  "template",
+					"template":   "{{.webhook_body.event}}",
+					"output_var": "event_name",
+				},
+			},
+		},
+		"edges": []map[string]any{
+			{"source": "incoming", "target": "extract_event"},
+		},
+		"entry": "extract_event",
+	}
+	b, _ := json.Marshal(gd)
+	return b
+}
+
 func TestGraphWorkflow_CRUD(t *testing.T) {
 	srv := testServer(t)
 	handler := srv.Handler()
@@ -262,6 +303,123 @@ func TestRunWorkflow_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("got %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestRunWorkflow_WebhookTriggerSuccess(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	workflowID := "webhook-success"
+	createReq := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(validWebhookGraphJSON(workflowID, []string{"POST"}, nil)))
+	createW := httptest.NewRecorder()
+	handler.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create workflow status = %d, want %d body=%s", createW.Code, http.StatusCreated, createW.Body.String())
+	}
+
+	webhookBody := `{"event":"order.created","id":"evt_123"}`
+	runReq := httptest.NewRequest(http.MethodPost, "/api/workflows/"+workflowID+"/webhooks/incoming", strings.NewReader(webhookBody))
+	runReq.Header.Set("Content-Type", "application/json")
+	runW := httptest.NewRecorder()
+	handler.ServeHTTP(runW, runReq)
+	if runW.Code != http.StatusOK {
+		t.Fatalf("webhook run status = %d, want %d body=%s", runW.Code, http.StatusOK, runW.Body.String())
+	}
+
+	var resp RunResponse
+	if err := json.Unmarshal(runW.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+	if resp.RunID == "" {
+		t.Fatal("run_id should not be empty")
+	}
+	if got := resp.Output.Vars["event_name"]; got != "order.created" {
+		t.Fatalf("event_name = %v, want order.created", got)
+	}
+
+	rawBody, ok := resp.Output.Vars["webhook_body"]
+	if !ok {
+		t.Fatal("expected webhook_body var in run output")
+	}
+	bodyMap, ok := rawBody.(map[string]any)
+	if !ok || bodyMap["event"] != "order.created" {
+		t.Fatalf("webhook_body = %#v, want event=order.created", rawBody)
+	}
+
+	eventsReq := httptest.NewRequest(http.MethodGet, "/api/runs/"+resp.RunID+"/events", nil)
+	eventsW := httptest.NewRecorder()
+	handler.ServeHTTP(eventsW, eventsReq)
+	if eventsW.Code != http.StatusOK {
+		t.Fatalf("events status = %d, want 200 body=%s", eventsW.Code, eventsW.Body.String())
+	}
+	eventsBody := eventsW.Body.String()
+	if !strings.Contains(eventsBody, `"trigger":"webhook"`) {
+		t.Fatalf("expected webhook trigger metadata in events: %s", eventsBody)
+	}
+	if !strings.Contains(eventsBody, `"webhook_trigger_id":"incoming"`) {
+		t.Fatalf("expected webhook_trigger_id metadata in events: %s", eventsBody)
+	}
+}
+
+func TestRunWorkflow_WebhookTriggerMethodNotAllowed(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	workflowID := "webhook-method"
+	createReq := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(validWebhookGraphJSON(workflowID, []string{"PUT"}, nil)))
+	createW := httptest.NewRecorder()
+	handler.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create workflow status = %d, want %d body=%s", createW.Code, http.StatusCreated, createW.Body.String())
+	}
+
+	runReq := httptest.NewRequest(http.MethodPost, "/api/workflows/"+workflowID+"/webhooks/incoming", strings.NewReader(`{"event":"x"}`))
+	runReq.Header.Set("Content-Type", "application/json")
+	runW := httptest.NewRecorder()
+	handler.ServeHTTP(runW, runReq)
+	if runW.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d body=%s", runW.Code, http.StatusMethodNotAllowed, runW.Body.String())
+	}
+	if !strings.Contains(runW.Body.String(), `"METHOD_NOT_ALLOWED"`) {
+		t.Fatalf("expected METHOD_NOT_ALLOWED code, body=%s", runW.Body.String())
+	}
+}
+
+func TestRunWorkflow_WebhookTriggerHeaderTokenAuth(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	t.Setenv("PETALFLOW_WEBHOOK_TEST_TOKEN", "secret-token")
+	authCfg := map[string]any{
+		"type":   "header_token",
+		"header": "X-Test-Webhook-Token",
+		"token":  "env:PETALFLOW_WEBHOOK_TEST_TOKEN",
+	}
+
+	workflowID := "webhook-auth"
+	createReq := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(validWebhookGraphJSON(workflowID, []string{"POST"}, authCfg)))
+	createW := httptest.NewRecorder()
+	handler.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create workflow status = %d, want %d body=%s", createW.Code, http.StatusCreated, createW.Body.String())
+	}
+
+	missingAuthReq := httptest.NewRequest(http.MethodPost, "/api/workflows/"+workflowID+"/webhooks/incoming", strings.NewReader(`{"event":"x"}`))
+	missingAuthReq.Header.Set("Content-Type", "application/json")
+	missingAuthW := httptest.NewRecorder()
+	handler.ServeHTTP(missingAuthW, missingAuthReq)
+	if missingAuthW.Code != http.StatusUnauthorized {
+		t.Fatalf("missing auth status = %d, want %d body=%s", missingAuthW.Code, http.StatusUnauthorized, missingAuthW.Body.String())
+	}
+
+	authedReq := httptest.NewRequest(http.MethodPost, "/api/workflows/"+workflowID+"/webhooks/incoming", strings.NewReader(`{"event":"x"}`))
+	authedReq.Header.Set("Content-Type", "application/json")
+	authedReq.Header.Set("X-Test-Webhook-Token", "secret-token")
+	authedW := httptest.NewRecorder()
+	handler.ServeHTTP(authedW, authedReq)
+	if authedW.Code != http.StatusOK {
+		t.Fatalf("authed status = %d, want %d body=%s", authedW.Code, http.StatusOK, authedW.Body.String())
 	}
 }
 

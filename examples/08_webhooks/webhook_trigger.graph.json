@@ -1,0 +1,56 @@
+{
+  "id": "webhook_trigger_demo",
+  "version": "1.0",
+  "nodes": [
+    {
+      "id": "incoming",
+      "type": "webhook_trigger",
+      "config": {
+        "methods": ["POST"],
+        "auth": {
+          "type": "header_token",
+          "header": "x-petalflow-webhook-token",
+          "token": "env:PETALFLOW_WEBHOOK_TOKEN"
+        },
+        "request_var": "webhook_request",
+        "body_var": "webhook_body",
+        "headers_var": "webhook_headers",
+        "query_var": "webhook_query",
+        "metadata_var": "webhook_meta"
+      }
+    },
+    {
+      "id": "extract_event",
+      "type": "transform",
+      "config": {
+        "transform": "template",
+        "template": "{{.webhook_body.event_type}}",
+        "output_var": "event_type"
+      }
+    },
+    {
+      "id": "summarize",
+      "type": "transform",
+      "config": {
+        "transform": "template",
+        "template": "event={{.event_type}} id={{.webhook_body.event_id}}",
+        "output_var": "summary"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "incoming",
+      "sourceHandle": "output",
+      "target": "extract_event",
+      "targetHandle": "input"
+    },
+    {
+      "source": "extract_event",
+      "sourceHandle": "output",
+      "target": "summarize",
+      "targetHandle": "input"
+    }
+  ],
+  "entry": "incoming"
+}

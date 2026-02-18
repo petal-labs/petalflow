@@ -249,6 +249,25 @@ func (gd *GraphDefinition) ValidateWithRegistry(reg *registry.Registry) []Diagno
 		}
 	}
 
+	// GR-009: webhook_trigger nodes must not have inbound edges.
+	inboundCount := make(map[string]int, len(gd.Nodes))
+	for _, edge := range gd.Edges {
+		inboundCount[edge.Target]++
+	}
+	for i, node := range gd.Nodes {
+		if node.Type != "webhook_trigger" {
+			continue
+		}
+		if inboundCount[node.ID] > 0 {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-009",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Node %q (webhook_trigger) must not have inbound edges", node.ID),
+				Path:     fmt.Sprintf("nodes[%d]", i),
+			})
+		}
+	}
+
 	return diags
 }
 

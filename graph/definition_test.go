@@ -407,6 +407,32 @@ func TestValidateWithRegistry_GR008_FunctionCallToolAsNode(t *testing.T) {
 	}
 }
 
+func TestValidateWithRegistry_GR009_WebhookTriggerHasInboundEdge(t *testing.T) {
+	reg := registry.Global()
+
+	gd := GraphDefinition{
+		ID:      "webhook-inbound",
+		Version: "1.0",
+		Nodes: []NodeDef{
+			{ID: "a", Type: "noop"},
+			{ID: "trigger", Type: "webhook_trigger"},
+		},
+		Edges: []EdgeDef{
+			{Source: "a", SourceHandle: "output", Target: "trigger", TargetHandle: "input"},
+		},
+		Entry: "a",
+	}
+
+	diags := gd.ValidateWithRegistry(reg)
+	found := findDiag(diags, "GR-009")
+	if found == nil {
+		t.Fatal("expected GR-009 diagnostic for inbound webhook_trigger edge")
+	}
+	if found.Severity != SeverityError {
+		t.Fatalf("GR-009 severity = %q, want %q", found.Severity, SeverityError)
+	}
+}
+
 func TestValidateWithRegistry_GR006_InvalidSourceHandle(t *testing.T) {
 	reg := registry.Global()
 

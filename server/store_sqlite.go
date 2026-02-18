@@ -50,6 +50,28 @@ ON workflow_schedules(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due
 ON workflow_schedules(enabled, next_run_at);`
 
+var workflowInsertQueries = [8]string{
+	"INSERT INTO workflows (id, schema_kind, name, source, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, name, source, source_json, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, source_json, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, name, source, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, name, source, source_json, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+	"INSERT INTO workflows (id, schema_kind, kind, name, source, source_json, compiled, compiled_json, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+}
+
+var workflowUpdateQueries = [8]string{
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+	"UPDATE workflows\nSET schema_kind = ?, kind = ?, name = ?, source = ?, source_json = ?, compiled = ?, compiled_json = ?, created_at = ?, updated_at = ?\nWHERE id = ?",
+}
+
 // SQLiteStoreConfig configures the SQLite workflow store.
 type SQLiteStoreConfig struct {
 	DSN string
@@ -57,7 +79,10 @@ type SQLiteStoreConfig struct {
 
 // SQLiteStore persists workflow records in SQLite.
 type SQLiteStore struct {
-	db *sql.DB
+	db                            *sql.DB
+	workflowHasLegacyKind         bool
+	workflowHasLegacySourceJSON   bool
+	workflowHasLegacyCompiledJSON bool
 }
 
 // NewSQLiteStore opens (or creates) a SQLite-backed workflow store.
@@ -84,8 +109,22 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("workflow sqlite store create schema: %w", err)
 	}
+	if err := migrateLegacyWorkflowSQLiteSchema(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	workflowColumns, err := sqliteTableColumns(db, "workflows")
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{
+		db:                            db,
+		workflowHasLegacyKind:         workflowColumns["kind"],
+		workflowHasLegacySourceJSON:   workflowColumns["source_json"],
+		workflowHasLegacyCompiledJSON: workflowColumns["compiled_json"],
+	}, nil
 }
 
 func (s *SQLiteStore) List(ctx context.Context) ([]WorkflowRecord, error) {
@@ -139,22 +178,32 @@ func (s *SQLiteStore) Create(ctx context.Context, rec WorkflowRecord) error {
 		rec.UpdatedAt = rec.CreatedAt
 	}
 
+	sourceBytes := normalizeWorkflowSource(rec.Source)
 	compiled, err := marshalCompiledGraph(rec.Compiled)
 	if err != nil {
 		return err
 	}
+	legacyCompiled := normalizeLegacyWorkflowCompiled(compiled)
 
-	_, err = s.db.ExecContext(ctx, `
-INSERT INTO workflows (id, schema_kind, name, source, compiled, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		rec.ID,
-		string(rec.SchemaKind),
-		rec.Name,
-		[]byte(rec.Source),
-		compiled,
+	args := []any{rec.ID, string(rec.SchemaKind)}
+	if s.workflowHasLegacyKind {
+		args = append(args, string(rec.SchemaKind))
+	}
+	args = append(args, rec.Name, sourceBytes)
+	if s.workflowHasLegacySourceJSON {
+		args = append(args, sourceBytes)
+	}
+	args = append(args, compiled)
+	if s.workflowHasLegacyCompiledJSON {
+		args = append(args, legacyCompiled)
+	}
+	args = append(args,
 		rec.CreatedAt.UTC().Format(time.RFC3339Nano),
 		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	)
+	query := workflowInsertQueries[s.workflowLegacyColumnMask()]
+
+	_, err = s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		if isWorkflowSQLiteUniqueViolation(err) {
 			return ErrWorkflowExists
@@ -165,27 +214,37 @@ VALUES (?, ?, ?, ?, ?, ?, ?)`,
 }
 
 func (s *SQLiteStore) Update(ctx context.Context, rec WorkflowRecord) error {
+	sourceBytes := normalizeWorkflowSource(rec.Source)
 	compiled, err := marshalCompiledGraph(rec.Compiled)
 	if err != nil {
 		return err
 	}
+	legacyCompiled := normalizeLegacyWorkflowCompiled(compiled)
 
 	if rec.UpdatedAt.IsZero() {
 		rec.UpdatedAt = time.Now().UTC()
 	}
 
-	res, err := s.db.ExecContext(ctx, `
-UPDATE workflows
-SET schema_kind = ?, name = ?, source = ?, compiled = ?, created_at = ?, updated_at = ?
-WHERE id = ?`,
-		string(rec.SchemaKind),
-		rec.Name,
-		[]byte(rec.Source),
-		compiled,
+	args := []any{string(rec.SchemaKind)}
+	if s.workflowHasLegacyKind {
+		args = append(args, string(rec.SchemaKind))
+	}
+	args = append(args, rec.Name, sourceBytes)
+	if s.workflowHasLegacySourceJSON {
+		args = append(args, sourceBytes)
+	}
+	args = append(args, compiled)
+	if s.workflowHasLegacyCompiledJSON {
+		args = append(args, legacyCompiled)
+	}
+	args = append(args,
 		rec.CreatedAt.UTC().Format(time.RFC3339Nano),
 		rec.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		rec.ID,
 	)
+	args = append(args, rec.ID)
+	query := workflowUpdateQueries[s.workflowLegacyColumnMask()]
+
+	res, err := s.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("workflow sqlite store update: %w", err)
 	}
@@ -654,6 +713,177 @@ func nullIfEmpty(value string) any {
 		return nil
 	}
 	return value
+}
+
+func (s *SQLiteStore) workflowLegacyColumnMask() int {
+	mask := 0
+	if s.workflowHasLegacyKind {
+		mask |= 1
+	}
+	if s.workflowHasLegacySourceJSON {
+		mask |= 2
+	}
+	if s.workflowHasLegacyCompiledJSON {
+		mask |= 4
+	}
+	return mask
+}
+
+func normalizeWorkflowSource(raw json.RawMessage) []byte {
+	data := []byte(raw)
+	if len(data) == 0 {
+		return []byte(`{}`)
+	}
+	return data
+}
+
+func normalizeLegacyWorkflowCompiled(compiled []byte) []byte {
+	if len(compiled) == 0 {
+		return []byte(`{}`)
+	}
+	return compiled
+}
+
+func migrateLegacyWorkflowSQLiteSchema(db *sql.DB) error {
+	if db == nil {
+		return errors.New("workflow sqlite store db is nil")
+	}
+
+	columns, err := sqliteTableColumns(db, "workflows")
+	if err != nil {
+		return err
+	}
+	if len(columns) == 0 {
+		return nil
+	}
+	if !columns["id"] {
+		return errors.New("workflow sqlite store workflows table missing id column")
+	}
+
+	if !columns["seq"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN seq INTEGER`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.seq: %w", err)
+		}
+	}
+	if !columns["schema_kind"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN schema_kind TEXT`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.schema_kind: %w", err)
+		}
+	}
+	if !columns["name"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN name TEXT`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.name: %w", err)
+		}
+	}
+	if !columns["source"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN source BLOB`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.source: %w", err)
+		}
+	}
+	if !columns["compiled"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN compiled BLOB`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.compiled: %w", err)
+		}
+	}
+	if !columns["created_at"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN created_at TEXT`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.created_at: %w", err)
+		}
+	}
+	if !columns["updated_at"] {
+		if _, err := db.Exec(`ALTER TABLE workflows ADD COLUMN updated_at TEXT`); err != nil {
+			return fmt.Errorf("workflow sqlite store add workflows.updated_at: %w", err)
+		}
+	}
+
+	// Ensure seq is always populated for older schemas where seq was added later.
+	if _, err := db.Exec(`
+CREATE TRIGGER IF NOT EXISTS workflows_set_seq_after_insert
+AFTER INSERT ON workflows
+FOR EACH ROW
+WHEN NEW.seq IS NULL
+BEGIN
+	UPDATE workflows SET seq = NEW.rowid WHERE rowid = NEW.rowid;
+END;
+`); err != nil {
+		return fmt.Errorf("workflow sqlite store create seq trigger: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE workflows SET seq = rowid WHERE seq IS NULL`); err != nil {
+		return fmt.Errorf("workflow sqlite store backfill workflows.seq: %w", err)
+	}
+	if columns["kind"] {
+		if _, err := db.Exec(`
+UPDATE workflows
+SET schema_kind = kind
+WHERE (schema_kind IS NULL OR TRIM(schema_kind) = '')
+  AND kind IS NOT NULL
+  AND TRIM(kind) <> ''`); err != nil {
+			return fmt.Errorf("workflow sqlite store backfill workflows.schema_kind from kind: %w", err)
+		}
+	}
+	if columns["source_json"] {
+		if _, err := db.Exec(`
+UPDATE workflows
+SET source = source_json
+WHERE source IS NULL
+  AND source_json IS NOT NULL`); err != nil {
+			return fmt.Errorf("workflow sqlite store backfill workflows.source from source_json: %w", err)
+		}
+	}
+	if columns["compiled_json"] {
+		if _, err := db.Exec(`
+UPDATE workflows
+SET compiled = compiled_json
+WHERE compiled IS NULL
+  AND compiled_json IS NOT NULL`); err != nil {
+			return fmt.Errorf("workflow sqlite store backfill workflows.compiled from compiled_json: %w", err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE workflows SET schema_kind = ? WHERE schema_kind IS NULL OR TRIM(schema_kind) = ''`, string(loader.SchemaKindGraph)); err != nil {
+		return fmt.Errorf("workflow sqlite store backfill workflows.schema_kind: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE workflows SET source = '{}' WHERE source IS NULL`); err != nil {
+		return fmt.Errorf("workflow sqlite store backfill workflows.source: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE workflows SET created_at = ? WHERE created_at IS NULL OR TRIM(created_at) = ''`, now); err != nil {
+		return fmt.Errorf("workflow sqlite store backfill workflows.created_at: %w", err)
+	}
+	if _, err := db.Exec(`UPDATE workflows SET updated_at = created_at WHERE updated_at IS NULL OR TRIM(updated_at) = ''`); err != nil {
+		return fmt.Errorf("workflow sqlite store backfill workflows.updated_at: %w", err)
+	}
+
+	return nil
+}
+
+func sqliteTableColumns(db *sql.DB, table string) (map[string]bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("workflow sqlite store inspect schema for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			colType   string
+			notNull   int
+			dfltValue any
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return nil, fmt.Errorf("workflow sqlite store scan schema for %s: %w", table, err)
+		}
+		columns[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow sqlite store schema rows for %s: %w", table, err)
+	}
+
+	return columns, nil
 }
 
 var _ WorkflowStore = (*SQLiteStore)(nil)

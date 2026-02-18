@@ -191,16 +191,33 @@ func registerBuiltins(r *Registry) {
 	})
 
 	r.Register(NodeTypeDef{
-		Type:        "sink",
-		Category:    "data",
-		DisplayName: "Sink",
-		Description: "Send data to external destinations (file, webhook, log, metric)",
+		Type:        "webhook_trigger",
+		Category:    "control",
+		DisplayName: "Webhook Trigger",
+		Description: "Receive inbound webhook payloads and map request context into workflow vars",
 		Ports: PortSchema{
 			Inputs: []PortDef{
-				{Name: "input", Type: "any", Required: true},
+				{Name: "input", Type: "any", Required: false},
 			},
 			Outputs: []PortDef{
 				{Name: "output", Type: "any"},
+				{Name: "request", Type: "object"},
+			},
+		},
+	})
+
+	r.Register(NodeTypeDef{
+		Type:        "webhook_call",
+		Category:    "data",
+		DisplayName: "Webhook Call",
+		Description: "Send outbound HTTP webhook requests with envelope-derived payloads",
+		Ports: PortSchema{
+			Inputs: []PortDef{
+				{Name: "input", Type: "any", Required: false},
+			},
+			Outputs: []PortDef{
+				{Name: "output", Type: "any"},
+				{Name: "response", Type: "object"},
 			},
 		},
 	})

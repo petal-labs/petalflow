@@ -104,8 +104,10 @@ func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 		return buildGateNode(nd)
 	case "guardian":
 		return buildGuardianNode(nd)
-	case "sink":
-		return buildSinkNode(nd)
+	case "webhook_trigger":
+		return buildWebhookTriggerNode(nd)
+	case "webhook_call":
+		return buildWebhookCallNode(nd)
 	case "map":
 		return buildMapNode(r, nd)
 	case "cache":
@@ -779,40 +781,18 @@ func buildGuardianNode(nd graph.NodeDef) (core.Node, error) {
 	return nodes.NewGuardianNode(nd.ID, cfg), nil
 }
 
-func buildSinkNode(nd graph.NodeDef) (core.Node, error) {
-	cfg := nodes.SinkNodeConfig{
-		Template:    configString(nd.Config, "template"),
-		ErrorPolicy: nodes.SinkErrorPolicy(configString(nd.Config, "error_policy")),
-		ResultVar:   configString(nd.Config, "result_var"),
+func buildWebhookTriggerNode(nd graph.NodeDef) (core.Node, error) {
+	cfg, err := nodes.ParseWebhookTriggerConfig(nd.Config)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: invalid webhook_trigger config: %w", nd.ID, err)
 	}
-	if inputVars, ok := configStringSlice(nd.Config, "input_vars"); ok {
-		cfg.InputVars = inputVars
-	}
-	if includeArtifacts, ok := nd.Config["include_artifacts"].(bool); ok {
-		cfg.IncludeArtifacts = includeArtifacts
-	}
-	if includeMessages, ok := nd.Config["include_messages"].(bool); ok {
-		cfg.IncludeMessages = includeMessages
-	}
-	if includeTrace, ok := nd.Config["include_trace"].(bool); ok {
-		cfg.IncludeTrace = includeTrace
-	}
+	return nodes.NewWebhookTriggerNode(nd.ID, cfg), nil
+}
 
-	sinksRaw, _ := nd.Config["sinks"].([]any)
-	for _, raw := range sinksRaw {
-		sinkMap, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		target := nodes.SinkTarget{
-			Type: nodes.SinkType(configMapString(sinkMap, "type")),
-			Name: configMapString(sinkMap, "name"),
-		}
-		if c, ok := sinkMap["config"].(map[string]any); ok {
-			target.Config = c
-		}
-		cfg.Sinks = append(cfg.Sinks, target)
+func buildWebhookCallNode(nd graph.NodeDef) (core.Node, error) {
+	cfg, err := nodes.ParseWebhookCallConfig(nd.Config)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: invalid webhook_call config: %w", nd.ID, err)
 	}
-
-	return nodes.NewSinkNode(nd.ID, cfg), nil
+	return nodes.NewWebhookCallNode(nd.ID, cfg), nil
 }
