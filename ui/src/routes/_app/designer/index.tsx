@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useWorkflowStore } from '@/stores/workflow'
 import { Icon } from '@/components/ui/icon'
-import { AgentDesigner } from '@/components/designer'
+import { AgentDesigner, GraphDesigner } from '@/components/designer'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/_app/designer/')({
@@ -44,43 +44,6 @@ function DesignerPage() {
     return <AgentDesigner />
   }
 
-  // Graph Designer placeholder - will be built in Phase 6
-  return (
-    <div className="flex h-full overflow-hidden">
-      {/* Canvas placeholder */}
-      <div className="flex-1 flex flex-col bg-surface-1">
-        <div className="px-5 py-4 border-b border-border bg-surface-0">
-          <div className="flex items-center gap-3">
-            <Icon name="file" size={16} className="text-muted-foreground" />
-            <span className="font-semibold text-foreground">{activeWorkflow.name}</span>
-            <span className="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-teal-soft text-teal">
-              graph
-            </span>
-          </div>
-          <p className="text-xs text-muted-foreground mt-1">
-            Graph Designer • Visual node-based editor
-          </p>
-        </div>
-        <div className="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-          <div className="text-center">
-            <Icon name="git" size={48} className="mx-auto mb-3 opacity-30" />
-            <p className="font-medium">React Flow Canvas</p>
-            <p className="text-xs mt-1">Coming in Phase 6</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Node inspector placeholder */}
-      <div className="w-80 border-l border-border bg-surface-0 flex flex-col">
-        <div className="px-4 py-3 border-b border-border">
-          <span className="text-xs text-muted-foreground uppercase tracking-wide font-semibold">
-            Node Inspector
-          </span>
-        </div>
-        <div className="flex-1 flex items-center justify-center p-4 text-center text-sm text-muted-foreground">
-          Select a node to configure
-        </div>
-      </div>
-    </div>
-  )
+  // Render Graph Designer for graph workflows
+  return <GraphDesigner />
 }
