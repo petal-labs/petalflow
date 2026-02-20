@@ -1,6 +1,8 @@
+import { useState, useRef, useEffect } from 'react'
 import { useSettingsStore } from '@/stores/settings'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUIStore } from '@/stores/ui'
+import { useAuthStore } from '@/stores/auth'
 import { Icon } from '@/components/ui/icon'
 import { WorkflowKindBadge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
@@ -8,6 +10,24 @@ import { cn } from '@/lib/utils'
 export function TopBar() {
   const theme = useSettingsStore((s) => s.theme)
   const setTheme = useSettingsStore((s) => s.setTheme)
+
+  const user = useAuthStore((s) => s.user)
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
+  const logout = useAuthStore((s) => s.logout)
+
+  const [showUserMenu, setShowUserMenu] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+
+  // Close menu on click outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setShowUserMenu(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
   const isDirty = useWorkflowStore((s) => s.isDirty)
@@ -99,8 +119,67 @@ export function TopBar() {
           <Icon name={isDark ? 'sun' : 'moon'} size={16} />
         </button>
 
-        <div className="w-7 h-7 rounded-full bg-surface-2 flex items-center justify-center">
-          <Icon name="user" size={14} className="text-muted-foreground" />
+        {/* User Menu */}
+        <div className="relative" ref={userMenuRef}>
+          <button
+            onClick={() => setShowUserMenu(!showUserMenu)}
+            className="flex items-center gap-2 p-1 rounded-lg hover:bg-surface-1 transition-colors"
+          >
+            {isAuthenticated && user?.avatar ? (
+              <img
+                src={user.avatar}
+                alt={user.name}
+                className="w-7 h-7 rounded-full"
+              />
+            ) : (
+              <div className="w-7 h-7 rounded-full bg-surface-2 flex items-center justify-center">
+                <Icon name="user" size={14} className="text-muted-foreground" />
+              </div>
+            )}
+          </button>
+
+          {showUserMenu && (
+            <div className="absolute right-0 top-full mt-1 w-56 py-1 bg-surface-0 border border-border rounded-lg shadow-lg z-50">
+              {isAuthenticated && user ? (
+                <>
+                  <div className="px-3 py-2 border-b border-border">
+                    <div className="font-medium text-sm text-foreground">{user.name}</div>
+                    <div className="text-xs text-muted-foreground">{user.email}</div>
+                  </div>
+                  <a
+                    href="/settings"
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-surface-1 transition-colors"
+                    onClick={() => setShowUserMenu(false)}
+                  >
+                    <Icon name="settings" size={14} />
+                    Settings
+                  </a>
+                  <button
+                    onClick={() => {
+                      logout()
+                      setShowUserMenu(false)
+                      window.location.href = '/login'
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-surface-1 transition-colors"
+                  >
+                    <Icon name="logout" size={14} />
+                    Sign out
+                  </button>
+                </>
+              ) : (
+                <>
+                  <a
+                    href="/login"
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-foreground hover:bg-surface-1 transition-colors"
+                    onClick={() => setShowUserMenu(false)}
+                  >
+                    <Icon name="user" size={14} />
+                    Sign in
+                  </a>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </header>

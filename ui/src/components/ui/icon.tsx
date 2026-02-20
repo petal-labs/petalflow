@@ -32,6 +32,9 @@ export type IconName =
   | 'edit'
   | 'copy'
   | 'code'
+  | 'eye'
+  | 'eye-off'
+  | 'logout'
 
 interface IconProps {
   name: IconName
@@ -216,6 +219,26 @@ const icons: Record<IconName, React.ReactNode> = {
       strokeLinecap="round"
       strokeLinejoin="round"
     />
+  ),
+  eye: (
+    <>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" strokeWidth="2" fill="none" />
+      <circle cx="12" cy="12" r="3" strokeWidth="2" fill="none" />
+    </>
+  ),
+  'eye-off': (
+    <>
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" strokeWidth="2" fill="none" />
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" strokeWidth="2" fill="none" />
+      <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" strokeWidth="2" fill="none" />
+      <path d="M1 1l22 22" strokeWidth="2" strokeLinecap="round" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" strokeWidth="2" />
+      <path d="M16 17l5-5-5-5M21 12H9" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </>
   ),
 }
 
