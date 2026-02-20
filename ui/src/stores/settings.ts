@@ -15,12 +15,19 @@ export interface RunPreferences {
   defaultConcurrency: number
 }
 
+export interface OnboardingState {
+  completed: boolean
+  completedAt: string | null
+  skipped: boolean
+}
+
 export interface SettingsState {
   theme: Theme
   defaultProvider: string | null
   defaultModel: string | null
   editor: EditorPreferences
   run: RunPreferences
+  onboarding: OnboardingState
 }
 
 export interface SettingsActions {
@@ -35,6 +42,9 @@ export interface SettingsActions {
     key: K,
     value: RunPreferences[K]
   ) => void
+  completeOnboarding: () => void
+  skipOnboarding: () => void
+  resetOnboarding: () => void
 }
 
 const initialState: SettingsState = {
@@ -50,6 +60,11 @@ const initialState: SettingsState = {
     streamingEnabled: true,
     tracingEnabled: true,
     defaultConcurrency: 4,
+  },
+  onboarding: {
+    completed: false,
+    completedAt: null,
+    skipped: false,
   },
 }
 
@@ -73,6 +88,33 @@ export const useSettingsStore = create<SettingsState & SettingsActions>()(
         set((state) => ({
           run: { ...state.run, [key]: value },
         })),
+
+      completeOnboarding: () =>
+        set({
+          onboarding: {
+            completed: true,
+            completedAt: new Date().toISOString(),
+            skipped: false,
+          },
+        }),
+
+      skipOnboarding: () =>
+        set({
+          onboarding: {
+            completed: true,
+            completedAt: new Date().toISOString(),
+            skipped: true,
+          },
+        }),
+
+      resetOnboarding: () =>
+        set({
+          onboarding: {
+            completed: false,
+            completedAt: null,
+            skipped: false,
+          },
+        }),
     }),
     {
       name: 'petalflow-settings',
