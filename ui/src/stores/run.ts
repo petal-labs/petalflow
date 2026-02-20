@@ -6,6 +6,7 @@ export interface RunState {
   runs: Run[]
   activeRun: Run | null
   events: RunEvent[]
+  selectedEventId: number | null
   loading: boolean
   error: string | null
   eventSubscription: (() => void) | null
@@ -19,6 +20,7 @@ export interface RunActions {
   subscribeToEvents: (runId: string) => void
   unsubscribeFromEvents: () => void
   addEvent: (event: RunEvent) => void
+  selectEvent: (eventId: number | null) => void
   clearEvents: () => void
   exportRun: (runId: string) => void
   clearError: () => void
@@ -28,6 +30,7 @@ const initialState: RunState = {
   runs: [],
   activeRun: null,
   events: [],
+  selectedEventId: null,
   loading: false,
   error: null,
   eventSubscription: null,
@@ -122,7 +125,9 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
     })
   },
 
-  clearEvents: () => set({ events: [] }),
+  selectEvent: (eventId) => set({ selectedEventId: eventId }),
+
+  clearEvents: () => set({ events: [], selectedEventId: null }),
 
   exportRun: (runId) => runsApi.export(runId),
 

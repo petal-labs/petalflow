@@ -1,0 +1,212 @@
+import { useState } from 'react'
+import { useNavigate } from '@tanstack/react-router'
+import { useUIStore } from '@/stores/ui'
+import { useWorkflowStore } from '@/stores/workflow'
+import { useRunStore } from '@/stores/run'
+import { Icon } from '@/components/ui/icon'
+import { cn } from '@/lib/utils'
+
+export function RunModal() {
+  const isOpen = useUIStore((s) => s.runModalOpen)
+  const closeModal = useUIStore((s) => s.closeRunModal)
+  const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
+  const startRun = useRunStore((s) => s.startRun)
+  const navigate = useNavigate()
+
+  const [input, setInput] = useState('{\n  "topic": "AI agents in 2025"\n}')
+  const [options, setOptions] = useState({
+    streaming: true,
+    tracing: true,
+    concurrency: 1,
+    timeout: 300,
+  })
+  const [isRunning, setIsRunning] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleRun = async () => {
+    if (!activeWorkflow) return
+
+    setIsRunning(true)
+    setError(null)
+
+    try {
+      const parsedInput = JSON.parse(input)
+      const run = await startRun(activeWorkflow.id, parsedInput)
+      closeModal()
+      navigate({ to: '/runs', search: { viewRun: run.run_id } })
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setIsRunning(false)
+    }
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      onClick={closeModal}
+    >
+      <div
+        className="bg-surface-0 rounded-xl shadow-lg border border-border p-6 w-full max-w-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-center mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-foreground">Run Workflow</h2>
+            {activeWorkflow && (
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {activeWorkflow.name}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={closeModal}
+            className="p-1 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Icon name="x" size={18} />
+          </button>
+        </div>
+
+        {/* Input JSON */}
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+            Input JSON
+          </label>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            className={cn(
+              'w-full h-32 px-3 py-2 rounded-lg border border-border bg-surface-1',
+              'text-foreground text-sm font-mono',
+              'focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary',
+              'resize-none'
+            )}
+            placeholder='{"key": "value"}'
+          />
+        </div>
+
+        {/* Options */}
+        <div className="mb-4 space-y-3">
+          <label className="block text-xs font-semibold text-muted-foreground mb-2">
+            Options
+          </label>
+
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={options.streaming}
+              onChange={(e) =>
+                setOptions((o) => ({ ...o, streaming: e.target.checked }))
+              }
+              className="accent-primary"
+            />
+            <div>
+              <div className="text-sm font-medium text-foreground">Streaming</div>
+              <div className="text-[11px] text-muted-foreground">
+                Show incremental output as it arrives
+              </div>
+            </div>
+          </label>
+
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={options.tracing}
+              onChange={(e) =>
+                setOptions((o) => ({ ...o, tracing: e.target.checked }))
+              }
+              className="accent-primary"
+            />
+            <div>
+              <div className="text-sm font-medium text-foreground">Tracing</div>
+              <div className="text-[11px] text-muted-foreground">
+                Enable OpenTelemetry trace collection
+              </div>
+            </div>
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Concurrency
+              </label>
+              <input
+                type="number"
+                value={options.concurrency}
+                onChange={(e) =>
+                  setOptions((o) => ({
+                    ...o,
+                    concurrency: parseInt(e.target.value) || 1,
+                  }))
+                }
+                min={1}
+                max={10}
+                className={cn(
+                  'w-full px-2.5 py-2 rounded-lg border border-border bg-surface-1',
+                  'text-foreground text-sm',
+                  'focus:outline-none focus:ring-1 focus:ring-primary'
+                )}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+                Timeout (s)
+              </label>
+              <input
+                type="number"
+                value={options.timeout}
+                onChange={(e) =>
+                  setOptions((o) => ({
+                    ...o,
+                    timeout: parseInt(e.target.value) || 300,
+                  }))
+                }
+                min={10}
+                max={3600}
+                className={cn(
+                  'w-full px-2.5 py-2 rounded-lg border border-border bg-surface-1',
+                  'text-foreground text-sm',
+                  'focus:outline-none focus:ring-1 focus:ring-primary'
+                )}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="mb-4 p-3 rounded-lg bg-red-soft text-red text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={closeModal}
+            className={cn(
+              'px-4 py-2 rounded-lg font-semibold text-sm transition-colors',
+              'bg-transparent text-muted-foreground hover:text-foreground'
+            )}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleRun}
+            disabled={isRunning || !activeWorkflow}
+            className={cn(
+              'inline-flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-sm transition-all',
+              'bg-primary text-white hover:bg-primary/90',
+              (isRunning || !activeWorkflow) && 'opacity-50 cursor-not-allowed'
+            )}
+          >
+            <Icon name="play" size={14} />
+            {isRunning ? 'Starting...' : 'Run'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -15,6 +15,7 @@ export type IconName =
   | 'sun'
   | 'moon'
   | 'chevron'
+  | 'chevron-right'
   | 'plus'
   | 'cpu'
   | 'git'
@@ -24,11 +25,13 @@ export type IconName =
   | 'bot'
   | 'list'
   | 'arrow'
+  | 'arrow-left'
   | 'export'
   | 'eject'
   | 'trash'
   | 'edit'
   | 'copy'
+  | 'code'
 
 interface IconProps {
   name: IconName
@@ -98,6 +101,9 @@ const icons: Record<IconName, React.ReactNode> = {
   chevron: (
     <path d="M9 18l6-6-6-6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
   ),
+  'chevron-right': (
+    <path d="M9 18l6-6-6-6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+  ),
   plus: <path d="M12 5v14m-7-7h14" strokeWidth="2" strokeLinecap="round" />,
   cpu: (
     <>
@@ -156,6 +162,14 @@ const icons: Record<IconName, React.ReactNode> = {
       strokeLinejoin="round"
     />
   ),
+  'arrow-left': (
+    <path
+      d="M19 12H5m7 7l-7-7 7-7"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  ),
   export: (
     <>
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" strokeWidth="2" />
@@ -194,6 +208,14 @@ const icons: Record<IconName, React.ReactNode> = {
       <rect x="9" y="9" width="13" height="13" rx="2" strokeWidth="2" fill="none" />
       <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" strokeWidth="2" />
     </>
+  ),
+  code: (
+    <path
+      d="M16 18l6-6-6-6M8 6l-6 6 6 6"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
   ),
 }
 
