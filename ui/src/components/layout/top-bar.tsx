@@ -1,10 +1,21 @@
 import { useSettingsStore } from '@/stores/settings'
+import { useWorkflowStore } from '@/stores/workflow'
+import { useUIStore } from '@/stores/ui'
 import { Icon } from '@/components/ui/icon'
+import { WorkflowKindBadge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
 export function TopBar() {
   const theme = useSettingsStore((s) => s.theme)
   const setTheme = useSettingsStore((s) => s.setTheme)
+
+  const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
+  const isDirty = useWorkflowStore((s) => s.isDirty)
+  const activeSource = useWorkflowStore((s) => s.activeSource)
+  const validateWorkflow = useWorkflowStore((s) => s.validateWorkflow)
+  const validationResult = useWorkflowStore((s) => s.validationResult)
+
+  const openRunModal = useUIStore((s) => s.openRunModal)
 
   const toggleTheme = () => {
     if (theme === 'dark') {
@@ -16,22 +27,65 @@ export function TopBar() {
 
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
+  const handleValidate = async () => {
+    if (activeSource) {
+      await validateWorkflow(activeSource)
+    }
+  }
+
+  const handleRun = () => {
+    if (activeWorkflow) {
+      openRunModal()
+    }
+  }
+
   return (
     <header className="h-[52px] min-h-[52px] flex items-center justify-between px-5 border-b border-border bg-surface-0">
-      {/* Left: Active workflow info (placeholder for now) */}
+      {/* Left: Active workflow info */}
       <div className="flex items-center gap-2.5">
-        {/* Workflow info will be populated when a workflow is active */}
+        {activeWorkflow ? (
+          <>
+            <Icon name="file" size={15} className="text-muted-foreground" />
+            <span className="font-semibold text-sm text-foreground">{activeWorkflow.name}</span>
+            <WorkflowKindBadge kind={activeWorkflow.kind} />
+            {isDirty && (
+              <span
+                className="w-[7px] h-[7px] rounded-full bg-amber ml-0.5"
+                title="Unsaved changes"
+              />
+            )}
+            {validationResult && !validationResult.valid && (
+              <span
+                className="w-[7px] h-[7px] rounded-full bg-red ml-0.5"
+                title="Validation errors"
+              />
+            )}
+          </>
+        ) : (
+          <span className="text-sm text-muted-foreground">No workflow selected</span>
+        )}
       </div>
 
       {/* Right: Actions */}
       <div className="flex items-center gap-2">
-        <Button variant="secondary" size="sm">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleValidate}
+          disabled={!activeSource}
+        >
           Validate
         </Button>
-        <Button variant="secondary" size="sm">
+        <Button variant="secondary" size="sm" disabled={!activeSource}>
           Compile
         </Button>
-        <Button variant="primary" size="sm" icon="play">
+        <Button
+          variant="primary"
+          size="sm"
+          icon="play"
+          onClick={handleRun}
+          disabled={!activeWorkflow}
+        >
           Run
         </Button>
 
@@ -39,7 +93,8 @@ export function TopBar() {
 
         <button
           onClick={toggleTheme}
-          className="p-1.5 text-muted-foreground hover:text-foreground"
+          className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+          title={`Switch to ${isDark ? 'light' : 'dark'} mode`}
         >
           <Icon name={isDark ? 'sun' : 'moon'} size={16} />
         </button>
@@ -52,7 +107,7 @@ export function TopBar() {
   )
 }
 
-// Simple button component for the top bar
+// Button component for the top bar
 interface ButtonProps {
   children: React.ReactNode
   variant?: 'primary' | 'secondary' | 'ghost'
