@@ -1,0 +1,156 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 10%;
+    --card: 0 0% 98%;
+    --card-foreground: 240 10% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 10%;
+    --primary: 252 56% 57%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 6% 41%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 55%;
+    --accent: 252 56% 57%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 252 56% 57% / 0.1;
+    --destructive: 0 72% 63%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 252 56% 57%;
+    --radius: 0.5rem;
+
+    /* PetalFlow semantic colors - Light */
+    --teal: 161 61% 46%;
+    --teal-soft: 161 61% 46% / 0.1;
+    --green: 142 71% 45%;
+    --green-soft: 142 71% 45% / 0.1;
+    --red: 0 84% 70%;
+    --red-soft: 0 84% 70% / 0.1;
+    --amber: 38 92% 54%;
+    --amber-soft: 38 92% 54% / 0.1;
+
+    /* Surface layers - Light */
+    --surface-0: 0 0% 100%;
+    --surface-1: 0 0% 98%;
+    --surface-2: 240 5% 95%;
+    --surface-active: 252 56% 57% / 0.06;
+    --canvas: 240 5% 97%;
+
+    /* Text hierarchy */
+    --text-1: 240 10% 10%;
+    --text-2: 240 6% 41%;
+    --text-3: 240 4% 55%;
+
+    /* Badge */
+    --badge-bg: 240 5% 91%;
+    --badge-fg: 240 4% 50%;
+
+    /* Shadow */
+    --shadow: 0 0% 0% / 0.08;
+  }
+
+  .dark {
+    --background: 240 10% 7%;
+    --foreground: 240 5% 91%;
+    --card: 240 10% 9%;
+    --card-foreground: 240 5% 91%;
+    --popover: 240 10% 7%;
+    --popover-foreground: 240 5% 91%;
+    --primary: 252 56% 70%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 8% 15%;
+    --secondary-foreground: 240 5% 65%;
+    --muted: 240 8% 15%;
+    --muted-foreground: 240 5% 51%;
+    --accent: 252 56% 70%;
+    --accent-foreground: 0 0% 100%;
+    --accent-soft: 252 56% 70% / 0.12;
+    --destructive: 0 63% 70%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 7% 22%;
+    --input: 240 7% 22%;
+    --ring: 252 56% 70%;
+
+    /* PetalFlow semantic colors - Dark */
+    --teal: 161 61% 50%;
+    --teal-soft: 161 61% 50% / 0.12;
+    --green: 142 71% 45%;
+    --green-soft: 142 71% 45% / 0.12;
+    --red: 0 84% 70%;
+    --red-soft: 0 84% 70% / 0.12;
+    --amber: 38 92% 54%;
+    --amber-soft: 38 92% 54% / 0.12;
+
+    /* Surface layers - Dark */
+    --surface-0: 240 10% 7%;
+    --surface-1: 240 10% 9%;
+    --surface-2: 240 8% 15%;
+    --surface-active: 252 56% 70% / 0.08;
+    --canvas: 240 12% 5%;
+
+    /* Text hierarchy */
+    --text-1: 240 5% 91%;
+    --text-2: 240 5% 67%;
+    --text-3: 240 5% 51%;
+
+    /* Badge */
+    --badge-bg: 240 8% 15%;
+    --badge-fg: 240 5% 55%;
+
+    /* Shadow */
+    --shadow: 0 0% 0% / 0.3;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-border rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/50;
+}
+
+/* React Flow overrides */
+.react-flow__background {
+  background-color: hsl(var(--canvas)) !important;
+}
+
+.react-flow__minimap {
+  @apply bg-surface-0 border border-border rounded-lg;
+}
+
+.react-flow__controls {
+  @apply bg-surface-0 border border-border rounded-lg shadow-sm;
+}
+
+.react-flow__controls-button {
+  @apply bg-surface-1 border-border hover:bg-surface-2;
+}

@@ -38,6 +38,12 @@ go.work.sum
 # misc
 .DS_STORE
 
+# UI (Node.js)
+ui/node_modules/
+ui/dist/
+ui/.vite/
+*.local
+
 # Example binaries (Go builds binaries with directory names)
 examples/01_hello_world/01_hello_world
 examples/02_iris_integration/02_iris_integration
