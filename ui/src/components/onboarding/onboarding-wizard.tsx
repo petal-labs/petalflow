@@ -24,7 +24,7 @@ interface ProviderConfig {
 }
 
 interface AccountConfig {
-  username: string
+  email: string
   password: string
   confirmPassword: string
 }
@@ -40,7 +40,7 @@ export function OnboardingWizard() {
 
   const [currentStep, setCurrentStep] = useState<Step>('welcome')
   const [accountConfig, setAccountConfig] = useState<AccountConfig>({
-    username: '',
+    email: '',
     password: '',
     confirmPassword: '',
   })
@@ -54,6 +54,7 @@ export function OnboardingWizard() {
     helloPetalflow: true,
     researchCritique: true,
     graphPipeline: true,
+    dataTransform: true,
   })
   const [loading, setLoading] = useState(false)
   const [accountError, setAccountError] = useState<string | null>(null)
@@ -74,8 +75,13 @@ export function OnboardingWizard() {
       setCurrentStep('account')
     } else if (currentStep === 'account') {
       // Validate account
-      if (!accountConfig.username.trim()) {
-        setAccountError('Username is required')
+      if (!accountConfig.email.trim()) {
+        setAccountError('Email is required')
+        return
+      }
+      // Basic email format validation
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(accountConfig.email)) {
+        setAccountError('Please enter a valid email address')
         return
       }
       if (accountConfig.password.length < 6) {
@@ -93,18 +99,17 @@ export function OnboardingWizard() {
     } else if (currentStep === 'demo') {
       setLoading(true)
       try {
-        // Create provider if API key provided
-        if (providerConfig.apiKey.trim()) {
-          const provider = await addProvider({
-            type: providerConfig.type,
-            name: providerConfig.name,
-            status: 'connected',
-            default_model: providerConfig.model,
-            api_key: providerConfig.apiKey,
-          })
-          setDefaultProvider(provider.id)
-          setDefaultModel(providerConfig.model)
-        }
+        // Always create the provider (status depends on API key)
+        const hasApiKey = providerConfig.apiKey.trim().length > 0
+        const provider = await addProvider({
+          type: providerConfig.type,
+          name: providerConfig.name,
+          status: hasApiKey ? 'connected' : 'disconnected',
+          default_model: providerConfig.model,
+          api_key: hasApiKey ? providerConfig.apiKey : undefined,
+        })
+        setDefaultProvider(provider.id)
+        setDefaultModel(providerConfig.model)
 
         // Create demo workflows based on selection
         if (createDemos.helloPetalflow) {
@@ -247,6 +252,80 @@ export function OnboardingWizard() {
             entry: 'input',
           })
         }
+
+        if (createDemos.dataTransform) {
+          // Data Transform - Graph IR: input → router → merge → output (demonstrates branching)
+          await createGraphWorkflow({
+            id: crypto.randomUUID(),
+            version: '1.0.0',
+            metadata: { name: 'Data Transform' },
+            nodes: [
+              {
+                id: 'input',
+                type: 'input',
+                config: {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      text: { type: 'string', description: 'Text to analyze' },
+                      mode: { type: 'string', description: 'Processing mode: summarize or expand' },
+                    },
+                    required: ['text', 'mode'],
+                  },
+                },
+              },
+              {
+                id: 'router',
+                type: 'router',
+                config: {
+                  routes: [
+                    { condition: 'mode == "summarize"', target: 'summarize' },
+                    { condition: 'mode == "expand"', target: 'expand' },
+                  ],
+                  default: 'summarize',
+                },
+              },
+              {
+                id: 'summarize',
+                type: 'llm_prompt',
+                config: {
+                  provider: providerConfig.type,
+                  model: providerConfig.model,
+                  system: 'Summarize the following text concisely.',
+                },
+              },
+              {
+                id: 'expand',
+                type: 'llm_prompt',
+                config: {
+                  provider: providerConfig.type,
+                  model: providerConfig.model,
+                  system: 'Expand on the following text with more details and examples.',
+                },
+              },
+              {
+                id: 'merge',
+                type: 'merge',
+                config: {},
+              },
+              {
+                id: 'output',
+                type: 'output',
+                config: {},
+              },
+            ],
+            edges: [
+              { source: 'input', source_handle: 'text', target: 'router', target_handle: 'input' },
+              { source: 'input', source_handle: 'mode', target: 'router', target_handle: 'mode' },
+              { source: 'router', source_handle: 'summarize', target: 'summarize', target_handle: 'prompt' },
+              { source: 'router', source_handle: 'expand', target: 'expand', target_handle: 'prompt' },
+              { source: 'summarize', source_handle: 'response', target: 'merge', target_handle: 'a' },
+              { source: 'expand', source_handle: 'response', target: 'merge', target_handle: 'b' },
+              { source: 'merge', source_handle: 'output', target: 'output', target_handle: 'result' },
+            ],
+            entry: 'input',
+          })
+        }
       } catch {
         // Continue even if creation fails - user can set up manually
       }
@@ -363,21 +442,22 @@ export function OnboardingWizard() {
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-2">
-                    Username
+                    Email
                   </label>
                   <input
-                    type="text"
-                    value={accountConfig.username}
+                    type="email"
+                    value={accountConfig.email}
                     onChange={(e) =>
-                      setAccountConfig({ ...accountConfig, username: e.target.value })
+                      setAccountConfig({ ...accountConfig, email: e.target.value })
                     }
                     className={cn(
                       'w-full px-3 py-2 rounded-lg border border-border bg-surface-1',
                       'text-foreground text-sm',
                       'focus:outline-none focus:ring-1 focus:ring-primary'
                     )}
-                    placeholder="Enter a username"
+                    placeholder="you@example.com"
                     autoFocus
+                    autoComplete="email"
                   />
                 </div>
 
@@ -534,6 +614,13 @@ export function OnboardingWizard() {
                   description="Raw graph mode: input → template → LLM → output. Shows the low-level execution model."
                   checked={createDemos.graphPipeline}
                   onChange={(v) => setCreateDemos({ ...createDemos, graphPipeline: v })}
+                />
+                <DemoOption
+                  title="Data Transform"
+                  badge="Graph IR"
+                  description="Branching graph: router → conditional paths → merge. Demonstrates routing and parallel execution."
+                  checked={createDemos.dataTransform}
+                  onChange={(v) => setCreateDemos({ ...createDemos, dataTransform: v })}
                 />
               </div>
             </div>

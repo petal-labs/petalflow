@@ -140,51 +140,11 @@ function LoginPage() {
           </button>
         </form>
 
-        {/* Divider */}
-        <div className="flex items-center gap-4 my-6">
-          <div className="flex-1 h-px bg-border" />
-          <span className="text-xs text-muted-foreground">or continue with</span>
-          <div className="flex-1 h-px bg-border" />
-        </div>
-
-        {/* Social Login */}
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            type="button"
-            className={cn(
-              'px-4 py-2.5 rounded-lg border border-border bg-surface-1',
-              'text-foreground text-sm font-medium',
-              'hover:bg-surface-2 transition-colors',
-              'flex items-center justify-center gap-2'
-            )}
-          >
-            <svg className="w-4 h-4" viewBox="0 0 24 24">
-              <path
-                fill="currentColor"
-                d="M12.545,10.239v3.821h5.445c-0.712,2.315-2.647,3.972-5.445,3.972c-3.332,0-6.033-2.701-6.033-6.032s2.701-6.032,6.033-6.032c1.498,0,2.866,0.549,3.921,1.453l2.814-2.814C17.503,2.988,15.139,2,12.545,2C7.021,2,2.543,6.477,2.543,12s4.478,10,10.002,10c8.396,0,10.249-7.85,9.426-11.748L12.545,10.239z"
-              />
-            </svg>
-            Google
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'px-4 py-2.5 rounded-lg border border-border bg-surface-1',
-              'text-foreground text-sm font-medium',
-              'hover:bg-surface-2 transition-colors',
-              'flex items-center justify-center gap-2'
-            )}
-          >
-            <Icon name="git" size={16} />
-            GitHub
-          </button>
-        </div>
-
         {/* Sign Up Link */}
         <p className="text-center text-sm text-muted-foreground mt-6">
-          Don't have an account?{' '}
-          <a href="#" className="text-primary hover:text-primary/80 transition-colors">
-            Sign up
+          New to PetalFlow?{' '}
+          <a href="/" className="text-primary hover:text-primary/80 transition-colors">
+            Start with setup wizard
           </a>
         </p>
 

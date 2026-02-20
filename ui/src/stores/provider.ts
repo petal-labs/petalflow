@@ -115,10 +115,34 @@ export const PROVIDER_NAMES: Record<ProviderType, string> = {
   ollama: 'Ollama',
 }
 
-// Default models per provider type
+// Default models per provider type (updated Feb 2026)
 export const DEFAULT_MODELS: Record<ProviderType, string[]> = {
-  anthropic: ['claude-sonnet-4-20250514', 'claude-3-5-haiku-20241022', 'claude-opus-4-20250514'],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-  google: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash-exp'],
-  ollama: ['llama3.2', 'llama3.1', 'mistral', 'codellama'],
+  anthropic: [
+    'claude-sonnet-4-20250514',
+    'claude-opus-4-20250514',
+    'claude-3-5-haiku-20241022',
+    'claude-3-5-sonnet-20241022',
+  ],
+  openai: [
+    'gpt-4o',
+    'gpt-4o-mini',
+    'o1',
+    'o1-mini',
+    'o3-mini',
+    'gpt-4-turbo',
+  ],
+  google: [
+    'gemini-2.0-flash',
+    'gemini-2.0-pro',
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+  ],
+  ollama: [
+    'llama3.3',
+    'llama3.2',
+    'llama3.1',
+    'mistral',
+    'codellama',
+    'qwen2.5',
+  ],
 }

@@ -139,6 +139,12 @@ export function GraphDesigner() {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges)
 
+  // Sync nodes/edges when activeSource changes (when a different workflow is selected)
+  useEffect(() => {
+    setNodes(initialNodes)
+    setEdges(initialEdges)
+  }, [activeSource, initialNodes, initialEdges, setNodes, setEdges])
+
   const onConnect = useCallback(
     (connection: Connection) => {
       setEdges((eds) =>
