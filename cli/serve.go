@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	petalotel "github.com/petal-labs/petalflow/otel"
 	"github.com/petal-labs/petalflow/server"
 	"github.com/petal-labs/petalflow/tool"
+	"github.com/petal-labs/petalflow/ui"
 )
 
 // NewServeCmd creates the "serve" subcommand.
@@ -188,11 +190,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// Compose both handlers on one mux.
 	// Workflow routes: /health, /api/workflows/*, /api/runs/*, /api/node-types
 	// Daemon routes: /api/tools/*
+	// UI routes: /* (SPA fallback)
 	mux := http.NewServeMux()
 	workflowServer.RegisterRoutes(mux)
 	daemonHandler := daemonServer.Handler()
 	mux.Handle("/api/tools/", daemonHandler)
 	mux.Handle("/api/tools", daemonHandler)
+
+	// Mount embedded UI assets with SPA fallback
+	uiFS, err := ui.DistFS()
+	if err != nil {
+		return fmt.Errorf("loading embedded UI: %w", err)
+	}
+	mux.Handle("/", spaHandler(uiFS))
 
 	handler := withCORS(mux, corsOrigin)
 	handler = maxBodyMiddleware(handler, maxBody)
@@ -290,5 +300,32 @@ func maxBodyMiddleware(next http.Handler, maxBody int64) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 		next.ServeHTTP(w, r)
+	})
+}
+
+// spaHandler returns an http.Handler that serves static files from the given
+// filesystem and falls back to index.html for SPA client-side routing.
+func spaHandler(staticFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(staticFS))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if path == "/" {
+			path = "index.html"
+		} else {
+			path = strings.TrimPrefix(path, "/")
+		}
+
+		// Try to open the file to check if it exists
+		_, err := staticFS.Open(path)
+		if err != nil {
+			// File not found - serve index.html for SPA routing
+			r.URL.Path = "/"
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// File exists - let the file server handle it
+		fileServer.ServeHTTP(w, r)
 	})
 }
