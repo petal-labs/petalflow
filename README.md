@@ -11,6 +11,7 @@ Use PetalFlow when you want your AI workflows to behave like software systems, n
 
 - Build workflows as graphs with explicit nodes and edges.
 - Combine LLM steps, tool calls, routing, transforms, human gates, and webhooks.
+- Design visually with the built-in workflow designer UI.
 - Run workflows from Go code, the CLI, or an HTTP daemon.
 - Persist workflows, schedules, tools, and events in SQLite.
 - Stream and inspect runtime events for debugging and observability.
@@ -198,6 +199,54 @@ execution:
     - research
     - write_report
 ```
+
+## PetalFlow Designer
+
+PetalFlow includes a built-in visual workflow designer accessible through the daemon.
+
+### Features
+
+- **Visual Graph Editor**: Drag-and-drop workflow design with React Flow canvas
+- **Agent/Task Designer**: Form-based editing for agent workflows
+- **Multi-Provider Support**: Configure OpenAI, Anthropic, Google, and Ollama
+- **Real-time Run Viewer**: Stream execution events with live timeline
+- **Tools Registry**: Register and manage MCP, HTTP, and native tools
+- **Dark/Light Themes**: System-aware theming with manual override
+- **Onboarding Wizard**: Guided setup for first-time users
+
+### Running the Designer
+
+Start the daemon to access the designer at `http://localhost:8080`:
+
+```bash
+petalflow serve --port 8080
+```
+
+The designer UI is embedded in the binary and served automatically. No separate frontend build or server required.
+
+### Designer Pages
+
+| Page | Description |
+|------|-------------|
+| `/workflows` | Browse and manage saved workflows |
+| `/designer` | Visual graph editor with node palette |
+| `/runs` | View execution history and run details |
+| `/tools` | Register and configure tools |
+| `/providers` | Manage LLM provider connections |
+| `/settings` | Configure preferences and defaults |
+
+### Building the UI (Development)
+
+If you're modifying the designer UI:
+
+```bash
+cd ui
+npm install
+npm run dev      # Development server with hot reload
+npm run build    # Production build to ui/dist/
+```
+
+The Go binary embeds `ui/dist/` via `go:embed`. After running `npm run build`, rebuild the Go binary to include your changes.
 
 ## Daemon API
 
