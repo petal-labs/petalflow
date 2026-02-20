@@ -6,12 +6,13 @@ import { Icon, type IconName } from '@/components/ui/icon'
 import { cn } from '@/lib/utils'
 import type { ProviderType } from '@/lib/api-types'
 
-type Step = 'welcome' | 'provider' | 'demo' | 'complete'
+type Step = 'welcome' | 'account' | 'provider' | 'demo' | 'complete'
 
 const STEPS: { key: Step; label: string }[] = [
   { key: 'welcome', label: 'Welcome' },
+  { key: 'account', label: 'Account' },
   { key: 'provider', label: 'Provider' },
-  { key: 'demo', label: 'Demo Workflows' },
+  { key: 'demo', label: 'Demos' },
   { key: 'complete', label: 'Complete' },
 ]
 
@@ -20,6 +21,12 @@ interface ProviderConfig {
   name: string
   apiKey: string
   model: string
+}
+
+interface AccountConfig {
+  username: string
+  password: string
+  confirmPassword: string
 }
 
 export function OnboardingWizard() {
@@ -32,6 +39,11 @@ export function OnboardingWizard() {
   const createGraphWorkflow = useWorkflowStore((s) => s.createGraphWorkflow)
 
   const [currentStep, setCurrentStep] = useState<Step>('welcome')
+  const [accountConfig, setAccountConfig] = useState<AccountConfig>({
+    username: '',
+    password: '',
+    confirmPassword: '',
+  })
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
     type: 'anthropic',
     name: 'My Anthropic',
@@ -39,10 +51,12 @@ export function OnboardingWizard() {
     model: 'claude-sonnet-4-20250514',
   })
   const [createDemos, setCreateDemos] = useState({
-    simple: true,
-    agent: false,
+    helloPetalflow: true,
+    researchCritique: true,
+    graphPipeline: true,
   })
   const [loading, setLoading] = useState(false)
+  const [accountError, setAccountError] = useState<string | null>(null)
 
   const currentStepIndex = STEPS.findIndex((s) => s.key === currentStep)
 
@@ -57,6 +71,22 @@ export function OnboardingWizard() {
 
   const handleNext = async () => {
     if (currentStep === 'welcome') {
+      setCurrentStep('account')
+    } else if (currentStep === 'account') {
+      // Validate account
+      if (!accountConfig.username.trim()) {
+        setAccountError('Username is required')
+        return
+      }
+      if (accountConfig.password.length < 6) {
+        setAccountError('Password must be at least 6 characters')
+        return
+      }
+      if (accountConfig.password !== accountConfig.confirmPassword) {
+        setAccountError('Passwords do not match')
+        return
+      }
+      setAccountError(null)
       setCurrentStep('provider')
     } else if (currentStep === 'provider') {
       setCurrentStep('demo')
@@ -76,21 +106,132 @@ export function OnboardingWizard() {
           setDefaultModel(providerConfig.model)
         }
 
-        // Create demo workflows if selected
-        if (createDemos.simple) {
+        // Create demo workflows based on selection
+        if (createDemos.helloPetalflow) {
+          // Hello PetalFlow - Agent/Task: 1 agent, 1 task, sequential
+          await createAgentWorkflow({
+            version: '1.0.0',
+            kind: 'agent_workflow',
+            id: crypto.randomUUID(),
+            name: 'Hello PetalFlow',
+            agents: {
+              greeter: {
+                id: 'greeter',
+                role: 'Friendly Greeter',
+                goal: 'Welcome users and demonstrate basic LLM interaction',
+                provider: providerConfig.type,
+                model: providerConfig.model,
+              },
+            },
+            tasks: {
+              greet: {
+                id: 'greet',
+                description: 'Say hello and provide a brief, friendly welcome message about PetalFlow',
+                agent: 'greeter',
+                expected_output: 'A warm welcome message',
+              },
+            },
+            execution: {
+              strategy: 'sequential',
+              task_order: ['greet'],
+            },
+          })
+        }
+
+        if (createDemos.researchCritique) {
+          // Research & Critique - Agent/Task: 3 agents, sequential
+          await createAgentWorkflow({
+            version: '1.0.0',
+            kind: 'agent_workflow',
+            id: crypto.randomUUID(),
+            name: 'Research & Critique',
+            agents: {
+              researcher: {
+                id: 'researcher',
+                role: 'Research Analyst',
+                goal: 'Gather comprehensive information about topics',
+                provider: providerConfig.type,
+                model: providerConfig.model,
+              },
+              critic: {
+                id: 'critic',
+                role: 'Critical Reviewer',
+                goal: 'Identify gaps, biases, and areas for improvement in research',
+                provider: providerConfig.type,
+                model: providerConfig.model,
+              },
+              writer: {
+                id: 'writer',
+                role: 'Technical Writer',
+                goal: 'Synthesize research and critique into polished output',
+                provider: providerConfig.type,
+                model: providerConfig.model,
+              },
+            },
+            tasks: {
+              research: {
+                id: 'research',
+                description: 'Research {{input.topic}} thoroughly. Gather key facts, statistics, and perspectives.',
+                agent: 'researcher',
+                expected_output: 'Structured research notes with sources',
+              },
+              critique: {
+                id: 'critique',
+                description: 'Review the research from {{tasks.research.output}}. Identify gaps, potential biases, and suggest improvements.',
+                agent: 'critic',
+                expected_output: 'Critical analysis with specific improvement suggestions',
+                depends_on: ['research'],
+              },
+              write: {
+                id: 'write',
+                description: 'Using {{tasks.research.output}} and {{tasks.critique.output}}, write a balanced, well-structured report.',
+                agent: 'writer',
+                expected_output: 'Final polished report',
+                depends_on: ['critique'],
+              },
+            },
+            execution: {
+              strategy: 'sequential',
+              task_order: ['research', 'critique', 'write'],
+            },
+          })
+        }
+
+        if (createDemos.graphPipeline) {
+          // Graph Pipeline - Graph IR: input → template_render → llm_prompt → output
           await createGraphWorkflow({
             id: crypto.randomUUID(),
             version: '1.0.0',
+            metadata: { name: 'Graph Pipeline' },
             nodes: [
               {
                 id: 'input',
                 type: 'input',
-                config: { schema: { type: 'object', properties: { prompt: { type: 'string' } } } },
+                config: {
+                  schema: {
+                    type: 'object',
+                    properties: {
+                      topic: { type: 'string', description: 'The topic to explore' },
+                    },
+                    required: ['topic'],
+                  },
+                },
+              },
+              {
+                id: 'template',
+                type: 'template_render',
+                config: {
+                  template: 'Write a concise explanation of: {{topic}}',
+                },
               },
               {
                 id: 'llm',
-                type: 'llm',
-                config: { provider: '', model: '', system: 'You are a helpful assistant.' },
+                type: 'llm_prompt',
+                config: {
+                  provider: providerConfig.type,
+                  model: providerConfig.model,
+                  system: 'You are a helpful assistant that provides clear, educational explanations.',
+                },
               },
               {
                 id: 'output',
@@ -99,39 +240,11 @@ export function OnboardingWizard() {
               },
             ],
             edges: [
-              { source: 'input', source_handle: 'out', target: 'llm', target_handle: 'prompt' },
-              { source: 'llm', source_handle: 'response', target: 'output', target_handle: 'in' },
+              { source: 'input', source_handle: 'topic', target: 'template', target_handle: 'topic' },
+              { source: 'template', source_handle: 'rendered', target: 'llm', target_handle: 'prompt' },
+              { source: 'llm', source_handle: 'response', target: 'output', target_handle: 'result' },
             ],
             entry: 'input',
-          })
-        }
-        if (createDemos.agent) {
-          await createAgentWorkflow({
-            version: '1.0.0',
-            kind: 'agent_workflow',
-            id: crypto.randomUUID(),
-            name: 'Research Assistant',
-            agents: {
-              researcher: {
-                id: 'researcher',
-                role: 'Research Assistant',
-                goal: 'Help users research topics and answer questions',
-                provider: '',
-                model: '',
-              },
-            },
-            tasks: {
-              research: {
-                id: 'research',
-                description: 'Research the given topic and provide a comprehensive answer',
-                agent: 'researcher',
-                expected_output: 'A detailed answer to the research question',
-              },
-            },
-            execution: {
-              strategy: 'sequential',
-              task_order: ['research'],
-            },
           })
         }
       } catch {
@@ -139,14 +252,14 @@ export function OnboardingWizard() {
       }
       setLoading(false)
       setCurrentStep('complete')
-    } else if (currentStep === 'complete') {
-      completeOnboarding()
     }
   }
 
   const handleBack = () => {
-    if (currentStep === 'provider') {
+    if (currentStep === 'account') {
       setCurrentStep('welcome')
+    } else if (currentStep === 'provider') {
+      setCurrentStep('account')
     } else if (currentStep === 'demo') {
       setCurrentStep('provider')
     }
@@ -154,6 +267,11 @@ export function OnboardingWizard() {
 
   const handleSkip = () => {
     skipOnboarding()
+  }
+
+  const handleComplete = (navigateTo: string) => {
+    completeOnboarding()
+    window.location.href = navigateTo
   }
 
   return (
@@ -182,7 +300,7 @@ export function OnboardingWizard() {
               {idx < STEPS.length - 1 && (
                 <div
                   className={cn(
-                    'w-12 h-0.5',
+                    'w-8 h-0.5',
                     idx < currentStepIndex ? 'bg-primary' : 'bg-muted'
                   )}
                 />
@@ -202,10 +320,11 @@ export function OnboardingWizard() {
               <h1 className="text-2xl font-bold text-foreground mb-2">
                 Welcome to PetalFlow
               </h1>
-              <p className="text-muted-foreground mb-8 max-w-md mx-auto">
-                Build, orchestrate, and deploy AI agents and workflows with a powerful visual designer and Go-native runtime.
+              <p className="text-muted-foreground mb-4 max-w-md mx-auto">
+                PetalFlow runs AI workflows. Choose <strong>Agent mode</strong> for simple multi-step tasks,
+                or <strong>Graph mode</strong> for full control. Same engine either way.
               </p>
-              <div className="grid grid-cols-3 gap-4 text-left mb-8">
+              <div className="grid grid-cols-3 gap-4 text-left mb-6">
                 <FeatureCard
                   icon="workflows"
                   title="Visual Designer"
@@ -221,6 +340,84 @@ export function OnboardingWizard() {
                   title="Real-time Runs"
                   description="Stream execution with live events"
                 />
+              </div>
+            </div>
+          )}
+
+          {/* Account Step */}
+          {currentStep === 'account' && (
+            <div>
+              <h2 className="text-xl font-bold text-foreground mb-2">
+                Create Your Account
+              </h2>
+              <p className="text-muted-foreground mb-6">
+                Set up a local account to secure your workspace.
+              </p>
+
+              {accountError && (
+                <div className="p-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-sm">
+                  {accountError}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">
+                    Username
+                  </label>
+                  <input
+                    type="text"
+                    value={accountConfig.username}
+                    onChange={(e) =>
+                      setAccountConfig({ ...accountConfig, username: e.target.value })
+                    }
+                    className={cn(
+                      'w-full px-3 py-2 rounded-lg border border-border bg-surface-1',
+                      'text-foreground text-sm',
+                      'focus:outline-none focus:ring-1 focus:ring-primary'
+                    )}
+                    placeholder="Enter a username"
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={accountConfig.password}
+                    onChange={(e) =>
+                      setAccountConfig({ ...accountConfig, password: e.target.value })
+                    }
+                    className={cn(
+                      'w-full px-3 py-2 rounded-lg border border-border bg-surface-1',
+                      'text-foreground text-sm',
+                      'focus:outline-none focus:ring-1 focus:ring-primary'
+                    )}
+                    placeholder="At least 6 characters"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-foreground mb-2">
+                    Confirm Password
+                  </label>
+                  <input
+                    type="password"
+                    value={accountConfig.confirmPassword}
+                    onChange={(e) =>
+                      setAccountConfig({ ...accountConfig, confirmPassword: e.target.value })
+                    }
+                    className={cn(
+                      'w-full px-3 py-2 rounded-lg border border-border bg-surface-1',
+                      'text-foreground text-sm',
+                      'focus:outline-none focus:ring-1 focus:ring-primary'
+                    )}
+                    placeholder="Re-enter your password"
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -260,25 +457,6 @@ export function OnboardingWizard() {
 
                 <div>
                   <label className="block text-sm font-medium text-foreground mb-2">
-                    Name
-                  </label>
-                  <input
-                    type="text"
-                    value={providerConfig.name}
-                    onChange={(e) =>
-                      setProviderConfig({ ...providerConfig, name: e.target.value })
-                    }
-                    className={cn(
-                      'w-full px-3 py-2 rounded-lg border border-border bg-surface-1',
-                      'text-foreground text-sm',
-                      'focus:outline-none focus:ring-1 focus:ring-primary'
-                    )}
-                    placeholder="e.g., Production Anthropic"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-foreground mb-2">
                     API Key
                   </label>
                   <input
@@ -292,10 +470,10 @@ export function OnboardingWizard() {
                       'text-foreground text-sm font-mono',
                       'focus:outline-none focus:ring-1 focus:ring-primary'
                     )}
-                    placeholder={`sk-... or your ${PROVIDER_NAMES[providerConfig.type]} API key`}
+                    placeholder={`Enter your ${PROVIDER_NAMES[providerConfig.type]} API key`}
                   />
                   <p className="text-xs text-muted-foreground mt-1">
-                    Optional - you can add this later in Settings
+                    Optional for now - you can add this later in Providers settings
                   </p>
                 </div>
 
@@ -329,24 +507,33 @@ export function OnboardingWizard() {
           {currentStep === 'demo' && (
             <div>
               <h2 className="text-xl font-bold text-foreground mb-2">
-                Create Demo Workflows
+                Install Demo Workflows
               </h2>
               <p className="text-muted-foreground mb-6">
-                Start with example workflows to learn how PetalFlow works.
+                These examples help you learn PetalFlow quickly. Each includes sample inputs and can be run immediately.
               </p>
 
               <div className="space-y-3">
                 <DemoOption
-                  title="Hello World (Graph)"
-                  description="A simple graph workflow that demonstrates basic LLM interaction with input/output nodes"
-                  checked={createDemos.simple}
-                  onChange={(v) => setCreateDemos({ ...createDemos, simple: v })}
+                  title="Hello PetalFlow"
+                  badge="Agent/Task"
+                  description="Minimal hello world - 1 agent, 1 task. Proves your provider works."
+                  checked={createDemos.helloPetalflow}
+                  onChange={(v) => setCreateDemos({ ...createDemos, helloPetalflow: v })}
                 />
                 <DemoOption
-                  title="Research Assistant (Agent)"
-                  description="An agent workflow with tool-use capabilities for researching topics"
-                  checked={createDemos.agent}
-                  onChange={(v) => setCreateDemos({ ...createDemos, agent: v })}
+                  title="Research & Critique"
+                  badge="Agent/Task"
+                  description="Multi-agent workflow: researcher → critic → writer. Shows visible handoffs between agents."
+                  checked={createDemos.researchCritique}
+                  onChange={(v) => setCreateDemos({ ...createDemos, researchCritique: v })}
+                />
+                <DemoOption
+                  title="Graph Pipeline"
+                  badge="Graph IR"
+                  description="Raw graph mode: input → template → LLM → output. Shows the low-level execution model."
+                  checked={createDemos.graphPipeline}
+                  onChange={(v) => setCreateDemos({ ...createDemos, graphPipeline: v })}
                 />
               </div>
             </div>
@@ -362,27 +549,27 @@ export function OnboardingWizard() {
                 You're All Set!
               </h2>
               <p className="text-muted-foreground mb-6 max-w-md mx-auto">
-                Your workspace is ready. Start building AI workflows with the visual designer or explore the demo workflows.
+                Your workspace is ready. Explore your demo workflows and start building.
               </p>
               <div className="flex flex-col gap-2 max-w-xs mx-auto">
-                <a
-                  href="/workflows"
+                <button
+                  onClick={() => handleComplete('/workflows')}
                   className={cn(
                     'px-4 py-3 rounded-lg font-medium text-sm',
                     'bg-primary text-primary-foreground hover:bg-primary/90 transition-colors'
                   )}
                 >
                   Go to Workflows
-                </a>
-                <a
-                  href="/designer"
+                </button>
+                <button
+                  onClick={() => handleComplete('/designer')}
                   className={cn(
                     'px-4 py-3 rounded-lg font-medium text-sm',
                     'bg-surface-1 border border-border text-foreground hover:bg-surface-2 transition-colors'
                   )}
                 >
                   Open Designer
-                </a>
+                </button>
               </div>
             </div>
           )}
@@ -417,7 +604,7 @@ export function OnboardingWizard() {
                     'disabled:opacity-50 disabled:cursor-not-allowed'
                   )}
                 >
-                  {loading ? 'Setting up...' : currentStep === 'demo' ? 'Finish' : 'Continue'}
+                  {loading ? 'Setting up...' : currentStep === 'demo' ? 'Finish Setup' : 'Continue'}
                 </button>
               </div>
             </div>
@@ -426,7 +613,7 @@ export function OnboardingWizard() {
           {currentStep === 'complete' && (
             <div className="mt-8 pt-6 border-t border-border text-center">
               <button
-                onClick={handleNext}
+                onClick={() => handleComplete('/workflows')}
                 className="text-sm text-muted-foreground hover:text-foreground transition-colors"
               >
                 Close wizard
@@ -463,11 +650,13 @@ function FeatureCard({
 
 function DemoOption({
   title,
+  badge,
   description,
   checked,
   onChange,
 }: {
   title: string
+  badge: string
   description: string
   checked: boolean
   onChange: (checked: boolean) => void
@@ -495,9 +684,14 @@ function DemoOption({
       >
         {checked && <Icon name="check" size={12} className="text-white" />}
       </div>
-      <div>
-        <div className="text-sm font-medium text-foreground">{title}</div>
-        <div className="text-xs text-muted-foreground">{description}</div>
+      <div className="flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-foreground">{title}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-muted-foreground font-medium">
+            {badge}
+          </span>
+        </div>
+        <div className="text-xs text-muted-foreground mt-0.5">{description}</div>
       </div>
     </label>
   )
