@@ -49,7 +49,11 @@ export function TopBar() {
 
   const handleValidate = async () => {
     if (activeSource) {
-      await validateWorkflow(activeSource)
+      // Convert to string if needed - backend expects JSON string
+      const sourceStr = typeof activeSource === 'string'
+        ? activeSource
+        : JSON.stringify(activeSource)
+      await validateWorkflow(sourceStr)
     }
   }
 

@@ -31,10 +31,12 @@ export const useProviderStore = create<ProviderState & ProviderActions>()((set) 
   fetchProviders: async () => {
     set({ loading: true, error: null })
     try {
-      const providers = await providersApi.list()
+      const response = await providersApi.list()
+      // Defensive: ensure providers is always an array
+      const providers = Array.isArray(response) ? response : []
       set({ providers, loading: false })
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: (err as Error).message, loading: false, providers: [] })
     }
   },
 
@@ -97,7 +99,9 @@ export const useProviderStore = create<ProviderState & ProviderActions>()((set) 
 // Helper to get provider options for dropdowns
 export function useProviderOptions() {
   const providers = useProviderStore((s) => s.providers)
-  return providers
+  // Defensive: ensure providers is array before filtering
+  const safeProviders = Array.isArray(providers) ? providers : []
+  return safeProviders
     .filter((p) => p.status === 'connected')
     .map((p) => ({
       value: p.id,

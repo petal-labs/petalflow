@@ -19,11 +19,14 @@ const PROVIDER_COLORS: Record<ProviderType, string> = {
 }
 
 function ProvidersPage() {
-  const providers = useProviderStore((s) => s.providers)
+  const rawProviders = useProviderStore((s) => s.providers)
   const loading = useProviderStore((s) => s.loading)
   const fetchProviders = useProviderStore((s) => s.fetchProviders)
   const deleteProvider = useProviderStore((s) => s.deleteProvider)
   const testProvider = useProviderStore((s) => s.testProvider)
+
+  // Defensive: ensure providers is always an array
+  const providers = Array.isArray(rawProviders) ? rawProviders : []
 
   const [selectedProvider, setSelectedProvider] = useState<Provider | null>(null)
   const [showAddModal, setShowAddModal] = useState(false)

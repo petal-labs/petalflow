@@ -32,10 +32,12 @@ export const useToolStore = create<ToolState & ToolActions>()((set) => ({
   fetchTools: async () => {
     set({ loading: true, error: null })
     try {
-      const tools = await toolsApi.list()
+      const response = await toolsApi.list()
+      // Defensive: ensure tools is always an array
+      const tools = Array.isArray(response) ? response : []
       set({ tools, loading: false })
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: (err as Error).message, loading: false, tools: [] })
     }
   },
 
@@ -127,21 +129,25 @@ export const useToolStore = create<ToolState & ToolActions>()((set) => ({
 // Helper to get tools grouped by origin
 export function useToolsByOrigin() {
   const tools = useToolStore((s) => s.tools)
+  // Defensive: ensure tools is array before filtering
+  const safeTools = Array.isArray(tools) ? tools : []
   return {
-    native: tools.filter((t) => t.origin === 'native'),
-    mcp: tools.filter((t) => t.origin === 'mcp'),
-    http: tools.filter((t) => t.origin === 'http'),
-    stdio: tools.filter((t) => t.origin === 'stdio'),
+    native: safeTools.filter((t) => t.origin === 'native'),
+    mcp: safeTools.filter((t) => t.origin === 'mcp'),
+    http: safeTools.filter((t) => t.origin === 'http'),
+    stdio: safeTools.filter((t) => t.origin === 'stdio'),
   }
 }
 
 // Helper to get tools as options for dropdowns
 export function useToolOptions() {
   const tools = useToolStore((s) => s.tools)
-  return tools
+  // Defensive: ensure tools is array before filtering
+  const safeTools = Array.isArray(tools) ? tools : []
+  return safeTools
     .filter((t) => t.status === 'ready')
     .flatMap((t) =>
-      t.manifest.actions.map((a) => ({
+      (t.manifest?.actions || []).map((a) => ({
         value: `${t.name}.${a.name}`,
         label: `${t.name}.${a.name}`,
         description: a.description,

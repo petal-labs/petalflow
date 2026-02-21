@@ -33,11 +33,21 @@ async function request<T>(
 
   if (!response.ok) {
     const text = await response.text()
+    // Check if we got an HTML response (likely a 404 page)
+    if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
+      throw new ApiError(response.status, `API endpoint not available: ${path}`)
+    }
     throw new ApiError(response.status, text || `Request failed: ${response.statusText}`)
   }
 
   if (response.status === 204) {
     return undefined as T
+  }
+
+  // Check content type to avoid parsing HTML as JSON
+  const contentType = response.headers.get('content-type')
+  if (contentType && !contentType.includes('application/json')) {
+    throw new ApiError(response.status, `Expected JSON response but got: ${contentType}`)
   }
 
   return response.json()

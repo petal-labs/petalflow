@@ -156,10 +156,24 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}()
 	logger := slog.Default()
 
+	// Create provider store using the same SQLite connection
+	providerStore, err := server.NewProviderSQLiteStore(workflowStore.DB())
+	if err != nil {
+		return fmt.Errorf("opening sqlite provider store: %w", err)
+	}
+
+	// Create auth store using the same SQLite connection
+	authStore, err := server.NewAuthSQLiteStore(workflowStore.DB())
+	if err != nil {
+		return fmt.Errorf("opening sqlite auth store: %w", err)
+	}
+
 	workflowServer := server.NewServer(server.ServerConfig{
 		Store:         workflowStore,
 		ScheduleStore: workflowStore,
 		ToolStore:     toolStore,
+		ProviderStore: providerStore,
+		AuthStore:     authStore,
 		Providers:     providers,
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return llmprovider.NewClient(name, cfg)

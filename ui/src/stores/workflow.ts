@@ -5,7 +5,7 @@ import { workflowsApi } from '@/lib/api-client'
 export interface WorkflowState {
   workflows: Workflow[]
   activeWorkflow: Workflow | null
-  activeSource: string | null
+  activeSource: string | Record<string, unknown> | null  // Can be string or parsed object from API
   isDirty: boolean
   loading: boolean
   error: string | null
@@ -43,10 +43,12 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>()((set) 
   fetchWorkflows: async () => {
     set({ loading: true, error: null })
     try {
-      const workflows = await workflowsApi.list()
+      const response = await workflowsApi.list()
+      // Defensive: ensure workflows is always an array
+      const workflows = Array.isArray(response) ? response : []
       set({ workflows, loading: false })
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: (err as Error).message, loading: false, workflows: [] })
     }
   },
 

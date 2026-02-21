@@ -12,11 +12,14 @@ export const Route = createFileRoute('/_app/workflows/')({
 })
 
 function WorkflowsPage() {
-  const workflows = useWorkflowStore((s) => s.workflows)
+  const rawWorkflows = useWorkflowStore((s) => s.workflows)
   const loading = useWorkflowStore((s) => s.loading)
   const error = useWorkflowStore((s) => s.error)
   const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows)
   const openCreateModal = useUIStore((s) => s.openCreateWorkflowModal)
+
+  // Defensive: ensure workflows is always an array
+  const workflows = Array.isArray(rawWorkflows) ? rawWorkflows : []
 
   useEffect(() => {
     fetchWorkflows()
@@ -299,29 +302,30 @@ function getWorkflowStats(workflow: Workflow): {
   nodes: number
   edges: number
 } {
-  if (workflow.kind === 'agent_workflow') {
+  // Parse source - handle both string and object formats (API sends json.RawMessage as object)
+  let parsed: Record<string, unknown> | null = null
+  if (typeof workflow.source === 'object' && workflow.source !== null) {
+    parsed = workflow.source as Record<string, unknown>
+  } else if (typeof workflow.source === 'string' && workflow.source) {
     try {
-      // Try to parse as JSON first, then YAML structure
-      const parsed = JSON.parse(workflow.source)
-      return {
-        agents: Object.keys(parsed.agents || {}).length,
-        tasks: Object.keys(parsed.tasks || {}).length,
-        nodes: 0,
-        edges: 0,
-      }
+      parsed = JSON.parse(workflow.source)
     } catch {
-      // Fallback: count from YAML (simplified)
-      const agentMatches = workflow.source.match(/agents:/g)
-      const taskMatches = workflow.source.match(/tasks:/g)
+      parsed = null
+    }
+  }
+
+  if (workflow.kind === 'agent_workflow') {
+    if (parsed) {
       return {
-        agents: agentMatches ? 1 : 0,
-        tasks: taskMatches ? 1 : 0,
+        agents: Object.keys((parsed.agents as Record<string, unknown>) || {}).length,
+        tasks: Object.keys((parsed.tasks as Record<string, unknown>) || {}).length,
         nodes: 0,
         edges: 0,
       }
     }
+    return { agents: 0, tasks: 0, nodes: 0, edges: 0 }
   } else {
-    // Graph workflow
+    // Graph workflow - prefer compiled if available
     if (workflow.compiled) {
       return {
         agents: 0,
@@ -330,17 +334,15 @@ function getWorkflowStats(workflow: Workflow): {
         edges: workflow.compiled.edges?.length || 0,
       }
     }
-    try {
-      const parsed = JSON.parse(workflow.source)
+    if (parsed) {
       return {
         agents: 0,
         tasks: 0,
-        nodes: parsed.nodes?.length || 0,
-        edges: parsed.edges?.length || 0,
+        nodes: (parsed.nodes as unknown[])?.length || 0,
+        edges: (parsed.edges as unknown[])?.length || 0,
       }
-    } catch {
-      return { agents: 0, tasks: 0, nodes: 0, edges: 0 }
     }
+    return { agents: 0, tasks: 0, nodes: 0, edges: 0 }
   }
 }
 

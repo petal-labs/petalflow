@@ -21,7 +21,14 @@ export function AgentDesigner() {
   const workflowData = useMemo((): AgentWorkflow | null => {
     if (!activeSource) return null
     try {
-      return JSON.parse(activeSource) as AgentWorkflow
+      // Handle both string (needs parsing) and object (already parsed) formats
+      // The backend sends source as json.RawMessage which becomes an object when parsed
+      if (typeof activeSource === 'string') {
+        return JSON.parse(activeSource) as AgentWorkflow
+      } else if (typeof activeSource === 'object') {
+        return activeSource as unknown as AgentWorkflow
+      }
+      return null
     } catch {
       // Could be YAML - for now return null, full YAML support in later phase
       return null

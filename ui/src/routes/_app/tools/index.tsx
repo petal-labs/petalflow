@@ -11,12 +11,15 @@ export const Route = createFileRoute('/_app/tools/')({
 })
 
 function ToolsPage() {
-  const tools = useToolStore((s) => s.tools)
+  const rawTools = useToolStore((s) => s.tools)
   const loading = useToolStore((s) => s.loading)
   const fetchTools = useToolStore((s) => s.fetchTools)
   const deleteTool = useToolStore((s) => s.deleteTool)
   const checkHealth = useToolStore((s) => s.checkHealth)
   const toolsByOrigin = useToolsByOrigin()
+
+  // Defensive: ensure tools is always an array
+  const tools = Array.isArray(rawTools) ? rawTools : []
 
   const [selectedTool, setSelectedTool] = useState<Tool | null>(null)
   const [showRegisterModal, setShowRegisterModal] = useState(false)

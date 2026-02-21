@@ -18,6 +18,7 @@ export interface AuthState {
 
 export interface AuthActions {
   login: (email: string, password: string) => Promise<void>
+  register: (email: string, password: string, name?: string) => Promise<void>
   logout: () => void
   checkAuth: () => Promise<void>
   clearError: () => void
@@ -51,6 +52,37 @@ export const useAuthStore = create<AuthState & AuthActions>()(
           if (!response.ok) {
             const data = await response.json().catch(() => ({}))
             throw new Error(data.error?.message || 'Login failed')
+          }
+
+          const data = await response.json()
+          set({
+            user: data.user,
+            token: data.token,
+            isAuthenticated: true,
+            loading: false,
+          })
+        } catch (err) {
+          set({
+            error: (err as Error).message,
+            loading: false,
+            isAuthenticated: false,
+          })
+          throw err
+        }
+      },
+
+      register: async (email: string, password: string, name?: string) => {
+        set({ loading: true, error: null })
+        try {
+          const response = await fetch(`${API_BASE}/api/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password, name }),
+          })
+
+          if (!response.ok) {
+            const data = await response.json().catch(() => ({}))
+            throw new Error(data.error?.message || 'Registration failed')
           }
 
           const data = await response.json()
@@ -112,9 +144,9 @@ export const useAuthStore = create<AuthState & AuthActions>()(
             return
           }
 
-          const data = await response.json()
+          const user = await response.json()
           set({
-            user: data.user,
+            user,
             isAuthenticated: true,
             loading: false,
           })

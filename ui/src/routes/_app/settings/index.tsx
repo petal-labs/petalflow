@@ -21,8 +21,11 @@ function SettingsPage() {
   const run = useSettingsStore((s) => s.run)
   const updateRunPreference = useSettingsStore((s) => s.updateRunPreference)
 
-  const providers = useProviderStore((s) => s.providers)
+  const rawProviders = useProviderStore((s) => s.providers)
   const fetchProviders = useProviderStore((s) => s.fetchProviders)
+
+  // Defensive: ensure providers is always an array
+  const providers = Array.isArray(rawProviders) ? rawProviders : []
 
   useEffect(() => {
     fetchProviders()

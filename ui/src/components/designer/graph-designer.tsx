@@ -87,6 +87,7 @@ const nodeTypes: NodeTypes = {
 }
 
 export function GraphDesigner() {
+  const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
   const activeSource = useWorkflowStore((s) => s.activeSource)
   const selectedNodeId = useUIStore((s) => s.selectedNodeId)
   const selectNode = useUIStore((s) => s.selectNode)
@@ -99,14 +100,35 @@ export function GraphDesigner() {
   }, [fetchNodeTypes])
 
   // Parse source into graph definition
+  // Falls back to compiled field when source doesn't have nodes (common for pre-compiled workflows)
   const graphDef = useMemo((): GraphDefinition | null => {
-    if (!activeSource) return null
-    try {
-      return JSON.parse(activeSource) as GraphDefinition
-    } catch {
-      return null
+    let parsed: GraphDefinition | null = null
+
+    // Try to parse activeSource first
+    if (activeSource) {
+      try {
+        if (typeof activeSource === 'string') {
+          parsed = JSON.parse(activeSource) as GraphDefinition
+        } else if (typeof activeSource === 'object') {
+          parsed = activeSource as unknown as GraphDefinition
+        }
+      } catch {
+        parsed = null
+      }
     }
-  }, [activeSource])
+
+    // If parsed source has nodes, use it; otherwise fall back to compiled
+    if (parsed?.nodes && parsed.nodes.length > 0) {
+      return parsed
+    }
+
+    // Fall back to compiled field from activeWorkflow
+    if (activeWorkflow?.compiled?.nodes && activeWorkflow.compiled.nodes.length > 0) {
+      return activeWorkflow.compiled
+    }
+
+    return parsed
+  }, [activeSource, activeWorkflow])
 
   // Convert graph definition to React Flow nodes/edges
   const initialNodes = useMemo((): Node[] => {

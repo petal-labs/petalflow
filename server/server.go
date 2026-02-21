@@ -16,6 +16,8 @@ type ServerConfig struct {
 	Store         WorkflowStore
 	ScheduleStore WorkflowScheduleStore
 	ToolStore     tool.Store
+	ProviderStore ProviderStore
+	AuthStore     AuthStore
 	Providers     hydrate.ProviderMap
 	ClientFactory hydrate.ClientFactory
 	Bus           bus.EventBus
@@ -32,6 +34,8 @@ type Server struct {
 	store         WorkflowStore
 	scheduleStore WorkflowScheduleStore
 	toolStore     tool.Store
+	providerStore ProviderStore
+	authStore     AuthStore
 	providers     hydrate.ProviderMap
 	clientFactory hydrate.ClientFactory
 	bus           bus.EventBus
@@ -61,6 +65,8 @@ func NewServer(cfg ServerConfig) *Server {
 		store:         cfg.Store,
 		scheduleStore: cfg.ScheduleStore,
 		toolStore:     cfg.ToolStore,
+		providerStore: cfg.ProviderStore,
+		authStore:     cfg.AuthStore,
 		providers:     cfg.Providers,
 		clientFactory: cfg.ClientFactory,
 		bus:           cfg.Bus,
@@ -105,6 +111,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}/schedules/{schedule_id}", s.handleUpdateWorkflowSchedule)
 	mux.HandleFunc("DELETE /api/workflows/{id}/schedules/{schedule_id}", s.handleDeleteWorkflowSchedule)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
+
+	// Provider routes
+	mux.HandleFunc("GET /api/providers", s.handleListProviders)
+	mux.HandleFunc("POST /api/providers", s.handleCreateProvider)
+	mux.HandleFunc("GET /api/providers/{id}", s.handleGetProvider)
+	mux.HandleFunc("PUT /api/providers/{id}", s.handleUpdateProvider)
+	mux.HandleFunc("DELETE /api/providers/{id}", s.handleDeleteProvider)
+	mux.HandleFunc("POST /api/providers/{id}/test", s.handleTestProvider)
+
+	// Auth routes
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /api/auth/me", s.handleMe)
+	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 }
 
 // --- Middleware ---

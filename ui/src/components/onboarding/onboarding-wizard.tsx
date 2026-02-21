@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useSettingsStore } from '@/stores/settings'
 import { useProviderStore, PROVIDER_NAMES, DEFAULT_MODELS } from '@/stores/provider'
 import { useWorkflowStore } from '@/stores/workflow'
+import { useAuthStore } from '@/stores/auth'
 import { Icon, type IconName } from '@/components/ui/icon'
 import { cn } from '@/lib/utils'
 import type { ProviderType } from '@/lib/api-types'
@@ -37,6 +38,7 @@ export function OnboardingWizard() {
   const addProvider = useProviderStore((s) => s.addProvider)
   const createAgentWorkflow = useWorkflowStore((s) => s.createAgentWorkflow)
   const createGraphWorkflow = useWorkflowStore((s) => s.createGraphWorkflow)
+  const register = useAuthStore((s) => s.register)
 
   const [currentStep, setCurrentStep] = useState<Step>('welcome')
   const [accountConfig, setAccountConfig] = useState<AccountConfig>({
@@ -84,8 +86,8 @@ export function OnboardingWizard() {
         setAccountError('Please enter a valid email address')
         return
       }
-      if (accountConfig.password.length < 6) {
-        setAccountError('Password must be at least 6 characters')
+      if (accountConfig.password.length < 8) {
+        setAccountError('Password must be at least 8 characters')
         return
       }
       if (accountConfig.password !== accountConfig.confirmPassword) {
@@ -93,7 +95,18 @@ export function OnboardingWizard() {
         return
       }
       setAccountError(null)
-      setCurrentStep('provider')
+
+      // Register the user account
+      setLoading(true)
+      try {
+        await register(accountConfig.email, accountConfig.password)
+        setLoading(false)
+        setCurrentStep('provider')
+      } catch (err) {
+        setAccountError((err as Error).message || 'Registration failed')
+        setLoading(false)
+        return
+      }
     } else if (currentStep === 'provider') {
       setCurrentStep('demo')
     } else if (currentStep === 'demo') {

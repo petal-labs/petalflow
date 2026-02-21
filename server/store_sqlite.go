@@ -494,6 +494,11 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the underlying database connection for sharing with other stores.
+func (s *SQLiteStore) DB() *sql.DB {
+	return s.db
+}
+
 func marshalCompiledGraph(compiled *graph.GraphDefinition) ([]byte, error) {
 	if compiled == nil {
 		return nil, nil

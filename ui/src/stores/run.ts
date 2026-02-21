@@ -42,10 +42,12 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
   fetchRuns: async (params) => {
     set({ loading: true, error: null })
     try {
-      const runs = await runsApi.list(params)
+      const response = await runsApi.list(params)
+      // Defensive: ensure runs is always an array
+      const runs = Array.isArray(response) ? response : []
       set({ runs, loading: false })
     } catch (err) {
-      set({ error: (err as Error).message, loading: false })
+      set({ error: (err as Error).message, loading: false, runs: [] })
     }
   },
 

@@ -6,7 +6,7 @@ export interface Workflow {
   id: string
   name: string
   kind: WorkflowKind
-  source: string // Raw YAML/JSON
+  source: string | Record<string, unknown> // Raw JSON - can be string or object from API
   compiled?: GraphDefinition
   created_at: string
   updated_at: string

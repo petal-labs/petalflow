@@ -46,12 +46,16 @@ function formatDuration(run: Run): string {
 
 function RunsPage() {
   const search = useSearch({ from: '/_app/runs/' })
-  const runs = useRunStore((s) => s.runs)
+  const rawRuns = useRunStore((s) => s.runs)
   const loading = useRunStore((s) => s.loading)
   const fetchRuns = useRunStore((s) => s.fetchRuns)
   const setActiveRun = useRunStore((s) => s.setActiveRun)
-  const workflows = useWorkflowStore((s) => s.workflows)
+  const rawWorkflows = useWorkflowStore((s) => s.workflows)
   const fetchWorkflows = useWorkflowStore((s) => s.fetchWorkflows)
+
+  // Defensive: ensure arrays are always arrays
+  const runs = Array.isArray(rawRuns) ? rawRuns : []
+  const workflows = Array.isArray(rawWorkflows) ? rawWorkflows : []
 
   // Fetch runs and workflows on mount
   useEffect(() => {
