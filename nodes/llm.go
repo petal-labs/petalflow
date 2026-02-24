@@ -292,7 +292,11 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 func (n *LLMNode) buildPrompt(env *core.Envelope) (string, error) {
 	// If a template is provided, use it
 	if n.config.PromptTemplate != "" {
-		return n.executeTemplate(env)
+		prompt, err := n.executeTemplate(env)
+		if err != nil {
+			return "", err
+		}
+		return appendInputTextFallback(prompt, n.config.PromptTemplate, env), nil
 	}
 
 	// Otherwise, concatenate input variables
@@ -304,6 +308,32 @@ func (n *LLMNode) buildPrompt(env *core.Envelope) (string, error) {
 	}
 
 	return strings.Join(parts, "\n"), nil
+}
+
+func appendInputTextFallback(prompt string, promptTemplate string, env *core.Envelope) string {
+	// Preserve template-driven behavior when prompt text already contains template actions.
+	if strings.Contains(promptTemplate, "{{") {
+		return prompt
+	}
+	if env == nil {
+		return prompt
+	}
+
+	rawInputText, ok := env.GetVar("input_text")
+	if !ok {
+		return prompt
+	}
+
+	inputText := strings.TrimSpace(toString(rawInputText))
+	if inputText == "" {
+		return prompt
+	}
+
+	base := strings.TrimSpace(prompt)
+	if base == "" {
+		return inputText
+	}
+	return base + "\n\nInput Text:\n" + inputText
 }
 
 // executeTemplate executes the prompt template with envelope variables.

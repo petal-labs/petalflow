@@ -197,6 +197,59 @@ func TestLLMNode_Run_WithLegacyInputTemplateReference(t *testing.T) {
 	}
 }
 
+func TestLLMNode_Run_StaticTemplate_AppendsInputText(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: "Answer"},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:          "gpt-4",
+		PromptTemplate: "Say hello with a friendly greeting.",
+	})
+
+	env := core.NewEnvelope().
+		WithVar("input_text", "Hello from runtime input")
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(client.requests))
+	}
+	expected := "Say hello with a friendly greeting.\n\nInput Text:\nHello from runtime input"
+	if got := client.requests[0].InputText; got != expected {
+		t.Fatalf("request prompt = %q, want %q", got, expected)
+	}
+}
+
+func TestLLMNode_Run_DynamicTemplate_DoesNotAppendInputText(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: "Answer"},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:          "gpt-4",
+		PromptTemplate: "Topic: {{.topic}}",
+	})
+
+	env := core.NewEnvelope().
+		WithVar("topic", "PetalFlow").
+		WithVar("input_text", "This should not be auto-appended")
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(client.requests))
+	}
+	expected := "Topic: PetalFlow"
+	if got := client.requests[0].InputText; got != expected {
+		t.Fatalf("request prompt = %q, want %q", got, expected)
+	}
+}
+
 func TestLLMNode_Run_WithJSONSchema(t *testing.T) {
 	client := &mockLLMClient{
 		response: core.LLMResponse{

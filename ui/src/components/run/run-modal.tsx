@@ -13,7 +13,8 @@ export function RunModal() {
   const startRun = useRunStore((s) => s.startRun)
   const navigate = useNavigate()
 
-  const [input, setInput] = useState('{\n  "topic": "AI agents in 2025"\n}')
+  const [inputText, setInputText] = useState('AI agents in 2025')
+  const [input, setInput] = useState('{}')
   const [options, setOptions] = useState({
     humanMode: 'strict' as 'strict' | 'auto_approve' | 'auto_reject',
     timeout: 300,
@@ -28,8 +29,18 @@ export function RunModal() {
     setError(null)
 
     try {
-      const parsedInput = JSON.parse(input)
-      const run = await startRun(activeWorkflow.id, parsedInput, {
+      const parsedInput = JSON.parse(input) as Record<string, unknown>
+      const normalizedInputText = inputText.trim()
+      const runInput: Record<string, unknown> = { ...parsedInput }
+
+      if (normalizedInputText !== '') {
+        runInput.input_text = normalizedInputText
+        if (typeof runInput.topic !== 'string' || runInput.topic.trim() === '') {
+          runInput.topic = normalizedInputText
+        }
+      }
+
+      const run = await startRun(activeWorkflow.id, runInput, {
         stream: true,
         timeoutSeconds: options.timeout,
         humanMode: options.humanMode,
@@ -71,10 +82,31 @@ export function RunModal() {
           </button>
         </div>
 
-        {/* Input JSON */}
+        {/* Input Text */}
         <div className="mb-4">
           <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
-            Input JSON
+            Input Text
+          </label>
+          <textarea
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            className={cn(
+              'w-full h-20 px-3 py-2 rounded-lg border border-border bg-surface-1',
+              'text-foreground text-sm',
+              'focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary',
+              'resize-none'
+            )}
+            placeholder="What should the workflow work on?"
+          />
+          <p className="mt-1 text-xs text-muted-foreground">
+            Passed as <code>input_text</code>. If <code>topic</code> is not provided, it also populates <code>topic</code>.
+          </p>
+        </div>
+
+        {/* Additional input JSON */}
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+            Additional Inputs (JSON)
           </label>
           <textarea
             value={input}
