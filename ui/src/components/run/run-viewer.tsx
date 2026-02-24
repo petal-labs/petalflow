@@ -103,23 +103,61 @@ export function RunViewer({ runId }: RunViewerProps) {
   const runs = useRunStore((s) => s.runs)
   const activeRun = useRunStore((s) => s.activeRun)
   const events = useRunStore((s) => s.events)
+  const exportRun = useRunStore((s) => s.exportRun)
   const subscribeToEvents = useRunStore((s) => s.subscribeToEvents)
   const unsubscribeFromEvents = useRunStore((s) => s.unsubscribeFromEvents)
   const [tick, setTick] = useState(() => Date.now())
+  const [persistedEvents, setPersistedEvents] = useState<typeof events>([])
+  const [persistedEventsLoading, setPersistedEventsLoading] = useState(false)
+  const [persistedEventsError, setPersistedEventsError] = useState<string | null>(null)
 
   const run = activeRun?.run_id === runId ? activeRun : runs.find((candidate) => candidate.run_id === runId)
 
   useEffect(() => {
     if (!run) return undefined
-    subscribeToEvents(runId)
-    return () => unsubscribeFromEvents()
-  }, [run, runId, subscribeToEvents, unsubscribeFromEvents])
+    if (run.status === 'running') {
+      setPersistedEvents([])
+      setPersistedEventsError(null)
+      setPersistedEventsLoading(false)
+      subscribeToEvents(runId)
+      return () => unsubscribeFromEvents()
+    }
+
+    unsubscribeFromEvents()
+    let cancelled = false
+    setPersistedEventsLoading(true)
+    setPersistedEventsError(null)
+    void exportRun(runId)
+      .then((exported) => {
+        if (cancelled) return
+        setPersistedEvents(exported.events)
+        setPersistedEventsLoading(false)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setPersistedEvents([])
+        setPersistedEventsLoading(false)
+        setPersistedEventsError((err as Error).message || 'Failed to load persisted run events')
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [run, runId, subscribeToEvents, unsubscribeFromEvents, exportRun])
+
+  const runEvents = useMemo(() => {
+    if (!run) return []
+    if (run.status === 'running') {
+      return events.filter((event) => event.run_id === run.run_id)
+    }
+    return persistedEvents
+  }, [run, events, persistedEvents])
 
   const activity = useMemo(() => {
     const indexByNode = new Map<string, number>()
     const items: ActivityItem[] = []
 
-    for (const event of events) {
+    for (const event of runEvents) {
       if (!event.node_id) continue
       const nodeId = event.node_id
       let idx = indexByNode.get(nodeId)
@@ -166,7 +204,7 @@ export function RunViewer({ runId }: RunViewerProps) {
     }
 
     return items
-  }, [events, run])
+  }, [runEvents, run])
 
   const currentActivity = useMemo(() => {
     const running = activity.filter((item) => item.status === 'running')
@@ -214,7 +252,7 @@ export function RunViewer({ runId }: RunViewerProps) {
   const artifacts = useMemo(() => {
     const list: ArtifactItem[] = []
 
-    for (const event of events) {
+    for (const event of runEvents) {
       if (event.event_type !== 'artifact') continue
       const payload = asObject(event.payload)
       list.push({
@@ -236,7 +274,7 @@ export function RunViewer({ runId }: RunViewerProps) {
     }
 
     return list
-  }, [events, run?.output])
+  }, [runEvents, run?.output])
 
   if (!run) {
     return (
@@ -283,6 +321,9 @@ export function RunViewer({ runId }: RunViewerProps) {
           <div className="text-[11px] text-muted-foreground">
             Elapsed: {formatDuration(runElapsedMs)}
           </div>
+          {persistedEventsError && run.status !== 'running' && (
+            <div className="text-[11px] text-red">{persistedEventsError}</div>
+          )}
         </div>
 
         <div className="flex-1 overflow-auto p-4 space-y-4">
@@ -291,7 +332,9 @@ export function RunViewer({ runId }: RunViewerProps) {
               Task Activity
             </div>
             <div className="p-3 space-y-2">
-              {activity.length === 0 ? (
+              {persistedEventsLoading && run.status !== 'running' ? (
+                <div className="text-sm text-muted-foreground">Loading run events...</div>
+              ) : activity.length === 0 ? (
                 <div className="text-sm text-muted-foreground">No node activity recorded yet.</div>
               ) : (
                 activity.map((item) => {
