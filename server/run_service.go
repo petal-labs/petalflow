@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
@@ -115,6 +117,14 @@ func (s *Server) executeWorkflowRunSync(
 	plan *workflowRunPlan,
 	extraDecorator runtime.EventEmitterDecorator,
 ) (RunResponse, error) {
+	runID := strings.TrimSpace(plan.env.Trace.RunID)
+	if runID == "" {
+		runID = uuid.NewString()
+		plan.env.Trace.RunID = runID
+	}
+	s.markRunActive(runID)
+	defer s.markRunInactive(runID)
+
 	runCtx, cancel := context.WithTimeout(ctx, plan.timeout)
 	defer cancel()
 
@@ -145,14 +155,17 @@ func (s *Server) executeWorkflowRunSync(
 		return RunResponse{}, &runAPIError{Status: http.StatusInternalServerError, Code: "RUNTIME_ERROR", Message: err.Error()}
 	}
 
-	runID := ""
+	resolvedRunID := runID
 	if result != nil {
-		runID = result.Trace.RunID
+		candidate := strings.TrimSpace(result.Trace.RunID)
+		if candidate != "" {
+			resolvedRunID = candidate
+		}
 	}
 
 	return RunResponse{
 		ID:          workflowID,
-		RunID:       runID,
+		RunID:       resolvedRunID,
 		Status:      "completed",
 		StartedAt:   startedAt,
 		CompletedAt: completedAt,

@@ -525,9 +525,11 @@ func (s *Server) startStreamingRuntime(
 
 	// Set run ID on envelope before runtime execution.
 	env.Trace.RunID = runID
+	s.markRunActive(runID)
 
 	doneCh := make(chan error, 1)
 	go func() {
+		defer s.markRunInactive(runID)
 		runCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
@@ -570,6 +572,7 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			continue
 		}
+		summary = s.reconcileRunSummary(summary, events)
 
 		if statusFilter != "" && strings.ToLower(summary.Status) != statusFilter {
 			continue
@@ -610,6 +613,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
 		return
 	}
+	summary = s.reconcileRunSummary(summary, events)
 
 	writeJSON(w, http.StatusOK, summary)
 }
@@ -633,6 +637,7 @@ func (s *Server) handleExportRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
 		return
 	}
+	summary = s.reconcileRunSummary(summary, events)
 
 	writeJSON(w, http.StatusOK, RunExportResponse{
 		Run:    summary,

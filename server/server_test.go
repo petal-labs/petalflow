@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // testServer creates a Server with defaults suitable for testing.
@@ -957,6 +959,71 @@ func TestRunHistory_ListGetExport(t *testing.T) {
 	}
 	if len(exportResp.Events) == 0 {
 		t.Fatal("expected exported events to be non-empty")
+	}
+}
+
+func TestRunHistory_OrphanedRunningRunIsNotReportedAsRunning(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	startedAt := time.Now().Add(-90 * time.Second).UTC()
+	started := runtime.NewEvent(runtime.EventRunStarted, "orphan-run")
+	started.Time = startedAt
+	started.Seq = 1
+	started.Payload = map[string]any{
+		"workflow_id": "orphan-workflow",
+	}
+	if err := srv.eventStore.Append(context.Background(), started); err != nil {
+		t.Fatalf("append started event: %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/runs/orphan-run", nil)
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("get run status = %d, want %d body=%s", getW.Code, http.StatusOK, getW.Body.String())
+	}
+
+	var fetched runHistoryItemForTest
+	if err := json.Unmarshal(getW.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("unmarshal get run: %v", err)
+	}
+	if fetched.Status == "running" {
+		t.Fatalf("orphaned run status = %q, expected terminal status", fetched.Status)
+	}
+}
+
+func TestRunHistory_ActiveRunningRunRemainsRunning(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	startedAt := time.Now().Add(-15 * time.Second).UTC()
+	started := runtime.NewEvent(runtime.EventRunStarted, "active-run")
+	started.Time = startedAt
+	started.Seq = 1
+	started.Payload = map[string]any{
+		"workflow_id": "active-workflow",
+	}
+	if err := srv.eventStore.Append(context.Background(), started); err != nil {
+		t.Fatalf("append started event: %v", err)
+	}
+
+	srv.markRunActive("active-run")
+	defer srv.markRunInactive("active-run")
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/runs/active-run", nil)
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("get run status = %d, want %d body=%s", getW.Code, http.StatusOK, getW.Body.String())
+	}
+
+	var fetched runHistoryItemForTest
+	if err := json.Unmarshal(getW.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("unmarshal get run: %v", err)
+	}
+	if fetched.Status != "running" {
+		t.Fatalf("active run status = %q, want %q", fetched.Status, "running")
 	}
 }
 

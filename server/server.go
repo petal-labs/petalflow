@@ -48,6 +48,8 @@ type Server struct {
 	corsOrigin    string
 	maxBody       int64
 	logger        *slog.Logger
+	activeRunsMu  sync.RWMutex
+	activeRuns    map[string]struct{}
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -79,6 +81,7 @@ func NewServer(cfg ServerConfig) *Server {
 		corsOrigin:    corsOrigin,
 		maxBody:       maxBody,
 		logger:        logger,
+		activeRuns:    make(map[string]struct{}),
 	}
 }
 
