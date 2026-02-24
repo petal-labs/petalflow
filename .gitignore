@@ -42,7 +42,18 @@ go.work.sum
 ui/node_modules/
 ui/dist/
 ui/.vite/
+ui/tsconfig.tsbuildinfo
 *.local
+
+# Local tooling and debug artifacts
+.playwright-mcp/
+/petalflow
+designer-after-click.png
+designer-test.png
+graph-designer-nodes-test.png
+graph-designer-working.png
+node-inspector-working.png
+webhook-workflow-working.png
 
 # Example binaries (Go builds binaries with directory names)
 examples/01_hello_world/01_hello_world
