@@ -14,12 +14,17 @@ interface RunsSearch {
   status?: string
 }
 
+const RUN_FILTER_STATUSES = new Set(['running', 'completed', 'failed'])
+
 export const Route = createFileRoute('/_app/runs/')({
   component: RunsPage,
   validateSearch: (search: Record<string, unknown>): RunsSearch => ({
     viewRun: search.viewRun as string | undefined,
     workflowId: search.workflowId as string | undefined,
-    status: search.status as string | undefined,
+    status:
+      typeof search.status === 'string' && RUN_FILTER_STATUSES.has(search.status)
+        ? search.status
+        : undefined,
   }),
 })
 
@@ -295,7 +300,6 @@ function RunsPage() {
             <option value="running">Running</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
-            <option value="canceled">Canceled</option>
           </select>
         </div>
       </div>
