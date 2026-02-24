@@ -10,6 +10,13 @@ export const Route = createFileRoute('/_app/tools/')({
   component: ToolsPage,
 })
 
+function toolStatusBadge(tool: Tool): 'ready' | 'unhealthy' | 'unverified' | 'disabled' {
+  if (tool.status === 'ready') return 'ready'
+  if (tool.status === 'unhealthy') return 'unhealthy'
+  if (tool.status === 'unverified') return 'unverified'
+  return 'disabled'
+}
+
 function ToolsPage() {
   const rawTools = useToolStore((s) => s.tools)
   const loading = useToolStore((s) => s.loading)
@@ -172,7 +179,7 @@ function ToolCard({ tool, selected, onSelect, onHealthCheck, onDelete }: ToolCar
         </div>
         <div className="flex items-center gap-2">
           <ToolOriginBadge origin={tool.origin} />
-          <StatusBadge status={tool.status === 'ready' ? 'ready' : tool.status === 'unhealthy' ? 'unhealthy' : 'disabled'} />
+          <StatusBadge status={toolStatusBadge(tool)} />
         </div>
       </div>
 
@@ -236,7 +243,7 @@ function ToolDetail({ tool, onClose }: ToolDetailProps) {
         <div className="p-3 rounded-lg bg-surface-1 border border-border">
           <div className="flex items-center gap-2 mb-2">
             <ToolOriginBadge origin={tool.origin} />
-            <StatusBadge status={tool.status === 'ready' ? 'ready' : tool.status === 'unhealthy' ? 'unhealthy' : 'disabled'} />
+            <StatusBadge status={toolStatusBadge(tool)} />
           </div>
           <div className="font-bold text-sm text-foreground">{tool.name}</div>
           {tool.manifest.description && (
@@ -336,16 +343,79 @@ function RegisterToolModal({ onClose }: RegisterToolModalProps) {
     setError(null)
 
     try {
+      const trimmedName = name.trim()
+      const target = endpoint.trim()
+      if (!trimmedName) {
+        throw new Error('Tool name is required')
+      }
+      if (!/^[a-z][a-z0-9_]{1,63}$/.test(trimmedName)) {
+        throw new Error('Tool name must match ^[a-z][a-z0-9_]{1,63}$')
+      }
+
+      const actionDescription = description.trim() || `Execute ${trimmedName}`
+
+      let transport: Record<string, unknown>
+      if (origin === 'http') {
+        if (!target) {
+          throw new Error('HTTP endpoint is required')
+        }
+        transport = {
+          type: 'http',
+          endpoint: target,
+        }
+      } else if (origin === 'stdio') {
+        if (!target) {
+          throw new Error('Command is required')
+        }
+        const [command, ...args] = target.split(/\s+/).filter(Boolean)
+        transport = {
+          type: 'stdio',
+          command,
+          args,
+        }
+      } else {
+        if (!target) {
+          throw new Error('MCP target is required')
+        }
+        if (/^https?:\/\//i.test(target)) {
+          transport = {
+            type: 'mcp',
+            mode: 'sse',
+            endpoint: target,
+          }
+        } else {
+          const [command, ...args] = target.split(/\s+/).filter(Boolean)
+          transport = {
+            type: 'mcp',
+            mode: 'stdio',
+            command,
+            args,
+          }
+        }
+      }
+
       await registerTool({
-        name,
-        origin,
+        name: trimmedName,
+        type: origin,
         manifest: {
-          name,
-          description,
-          actions: [],
+          manifest_version: '1.0',
+          tool: {
+            name: trimmedName,
+            description: description.trim() || undefined,
+          },
+          transport,
+          actions: {
+            run: {
+              description: actionDescription,
+              inputs: {
+                input: { type: 'object' },
+              },
+              outputs: {
+                output: { type: 'object' },
+              },
+            },
+          },
         },
-        config: endpoint ? { endpoint } : undefined,
-        status: 'ready',
       })
       onClose()
     } catch (err) {
@@ -408,7 +478,7 @@ function RegisterToolModal({ onClose }: RegisterToolModalProps) {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="my-tool"
+              placeholder="my_tool"
               required
               className={cn(
                 'w-full px-3 py-2 rounded-lg border border-border bg-surface-1',

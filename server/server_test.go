@@ -3,11 +3,16 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
@@ -485,6 +490,191 @@ func TestRunWorkflow_WithFuncNode(t *testing.T) {
 	}
 }
 
+func TestRunWorkflow_UsesProviderConfiguredViaAPI(t *testing.T) {
+	workflowStore := newTestSQLiteStore(t)
+	providerStore, err := NewProviderSQLiteStore(workflowStore.DB())
+	if err != nil {
+		t.Fatalf("NewProviderSQLiteStore() error = %v", err)
+	}
+
+	srv := NewServer(ServerConfig{
+		Store:         workflowStore,
+		ScheduleStore: workflowStore,
+		ProviderStore: providerStore,
+		Providers:     hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			if name != "anthropic" {
+				return nil, fmt.Errorf("unexpected provider %q", name)
+			}
+			if cfg.APIKey != "sk-ant-test" {
+				return nil, fmt.Errorf("unexpected api key %q", cfg.APIKey)
+			}
+			return &workflowLifecycleLLMClient{provider: name}, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: newTestEventStore(t),
+	})
+	handler := srv.Handler()
+
+	createProviderBody := map[string]any{
+		"type":          "anthropic",
+		"name":          "My Anthropic",
+		"default_model": "claude-sonnet-4-20250514",
+		"api_key":       "sk-ant-test",
+	}
+	createProviderReq := httptest.NewRequest(http.MethodPost, "/api/providers", bytes.NewReader(mustJSON(t, createProviderBody)))
+	createProviderReq.Header.Set("Content-Type", "application/json")
+	createProviderW := httptest.NewRecorder()
+	handler.ServeHTTP(createProviderW, createProviderReq)
+	if createProviderW.Code != http.StatusCreated {
+		t.Fatalf("create provider failed: status=%d body=%s", createProviderW.Code, createProviderW.Body.String())
+	}
+
+	wf := agent.AgentWorkflow{
+		Version: "1.0.0",
+		Kind:    "agent_workflow",
+		ID:      "hello-petalflow",
+		Name:    "Hello PetalFlow",
+		Agents: map[string]agent.Agent{
+			"greeter": {
+				Role:     "Friendly Greeter",
+				Goal:     "Welcome users",
+				Provider: "anthropic",
+				Model:    "claude-sonnet-4-20250514",
+			},
+		},
+		Tasks: map[string]agent.Task{
+			"greet": {
+				Description:    "Say hello to {{input.name}}.",
+				Agent:          "greeter",
+				ExpectedOutput: "A welcome message",
+			},
+		},
+		Execution: agent.ExecutionConfig{
+			Strategy:  "sequential",
+			TaskOrder: []string{"greet"},
+		},
+	}
+	postAgentWorkflow(t, handler, wf)
+
+	runResp := runWorkflow(t, handler, wf.ID, map[string]any{"name": "PetalFlow"})
+	if runResp.Status != "completed" {
+		t.Fatalf("run status = %q, want completed", runResp.Status)
+	}
+}
+
+func TestRunWorkflow_UsesPersistedProviderAPIKeyAfterRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "petalflow.sqlite")
+
+	workflowStore1, err := NewSQLiteStore(SQLiteStoreConfig{DSN: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(store1) error = %v", err)
+	}
+	providerStore1, err := NewProviderSQLiteStore(workflowStore1.DB())
+	if err != nil {
+		t.Fatalf("NewProviderSQLiteStore(store1) error = %v", err)
+	}
+
+	srv1 := NewServer(ServerConfig{
+		Store:         workflowStore1,
+		ScheduleStore: workflowStore1,
+		ProviderStore: providerStore1,
+		Providers:     hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			if name != "anthropic" {
+				return nil, fmt.Errorf("unexpected provider %q", name)
+			}
+			if cfg.APIKey != "sk-ant-restart" {
+				return nil, fmt.Errorf("unexpected api key %q", cfg.APIKey)
+			}
+			return &workflowLifecycleLLMClient{provider: name}, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: newTestEventStore(t),
+	})
+	handler1 := srv1.Handler()
+
+	createProviderBody := map[string]any{
+		"type":          "anthropic",
+		"name":          "My Anthropic",
+		"default_model": "claude-sonnet-4-20250514",
+		"api_key":       "sk-ant-restart",
+	}
+	createProviderReq := httptest.NewRequest(http.MethodPost, "/api/providers", bytes.NewReader(mustJSON(t, createProviderBody)))
+	createProviderReq.Header.Set("Content-Type", "application/json")
+	createProviderW := httptest.NewRecorder()
+	handler1.ServeHTTP(createProviderW, createProviderReq)
+	if createProviderW.Code != http.StatusCreated {
+		t.Fatalf("create provider failed: status=%d body=%s", createProviderW.Code, createProviderW.Body.String())
+	}
+
+	wf := agent.AgentWorkflow{
+		Version: "1.0.0",
+		Kind:    "agent_workflow",
+		ID:      "hello-petalflow-restart",
+		Name:    "Hello PetalFlow",
+		Agents: map[string]agent.Agent{
+			"greeter": {
+				Role:     "Friendly Greeter",
+				Goal:     "Welcome users",
+				Provider: "anthropic",
+				Model:    "claude-sonnet-4-20250514",
+			},
+		},
+		Tasks: map[string]agent.Task{
+			"greet": {
+				Description:    "Say hello to {{input.name}}.",
+				Agent:          "greeter",
+				ExpectedOutput: "A welcome message",
+			},
+		},
+		Execution: agent.ExecutionConfig{
+			Strategy:  "sequential",
+			TaskOrder: []string{"greet"},
+		},
+	}
+	postAgentWorkflow(t, handler1, wf)
+
+	if err := workflowStore1.Close(); err != nil {
+		t.Fatalf("workflowStore1.Close() error = %v", err)
+	}
+
+	workflowStore2, err := NewSQLiteStore(SQLiteStoreConfig{DSN: dbPath})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(store2) error = %v", err)
+	}
+	t.Cleanup(func() { _ = workflowStore2.Close() })
+
+	providerStore2, err := NewProviderSQLiteStore(workflowStore2.DB())
+	if err != nil {
+		t.Fatalf("NewProviderSQLiteStore(store2) error = %v", err)
+	}
+
+	srv2 := NewServer(ServerConfig{
+		Store:         workflowStore2,
+		ScheduleStore: workflowStore2,
+		ProviderStore: providerStore2,
+		Providers:     hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			if name != "anthropic" {
+				return nil, fmt.Errorf("unexpected provider %q", name)
+			}
+			if cfg.APIKey != "sk-ant-restart" {
+				return nil, fmt.Errorf("unexpected api key %q", cfg.APIKey)
+			}
+			return &workflowLifecycleLLMClient{provider: name}, nil
+		},
+		Bus:        bus.NewMemBus(bus.MemBusConfig{}),
+		EventStore: newTestEventStore(t),
+	})
+	handler2 := srv2.Handler()
+
+	runResp := runWorkflow(t, handler2, wf.ID, map[string]any{"name": "PetalFlow"})
+	if runResp.Status != "completed" {
+		t.Fatalf("run status = %q, want completed", runResp.Status)
+	}
+}
+
 func TestRunWorkflow_StreamNoBus_EmitsCompletionEvent(t *testing.T) {
 	srv := NewServer(ServerConfig{
 		Store:     newTestWorkflowStore(t),
@@ -569,6 +759,50 @@ func TestRunWorkflow_StreamWithBus_EmitsCompletionEvent(t *testing.T) {
 	}
 }
 
+func TestRunWorkflow_StreamWithBus_RunIDMatchesPersistedEvents(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	workflowBody := validGraphJSON("stream-with-bus-events")
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(workflowBody))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	runBody, _ := json.Marshal(RunRequest{
+		Options: RunReqOptions{Stream: true},
+	})
+	r = httptest.NewRequest(http.MethodPost, "/api/workflows/stream-with-bus-events/run", bytes.NewReader(runBody))
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("stream run: got %d, want %d; body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	streamBody := w.Body.String()
+	runID := firstRunIDFromSSE(streamBody)
+	if strings.TrimSpace(runID) == "" {
+		t.Fatalf("expected run_id in stream body, got: %s", streamBody)
+	}
+
+	eventsReq := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/events", nil)
+	eventsW := httptest.NewRecorder()
+	handler.ServeHTTP(eventsW, eventsReq)
+	if eventsW.Code != http.StatusOK {
+		t.Fatalf("events status = %d, want %d body=%s", eventsW.Code, http.StatusOK, eventsW.Body.String())
+	}
+
+	eventsBody := eventsW.Body.String()
+	if !strings.Contains(eventsBody, `"RunID":"`+runID+`"`) {
+		t.Fatalf("expected persisted events for run_id=%q, body=%s", runID, eventsBody)
+	}
+	if !strings.Contains(eventsBody, "event: run.started") {
+		t.Fatalf("expected run.started event in persisted events stream, body=%s", eventsBody)
+	}
+}
+
 func TestRunEvents_NoStore(t *testing.T) {
 	srv := NewServer(ServerConfig{
 		Store:     newTestWorkflowStore(t),
@@ -585,6 +819,219 @@ func TestRunEvents_NoStore(t *testing.T) {
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("got %d, want %d", w.Code, http.StatusNotImplemented)
 	}
+}
+
+func TestRunHistory_ListGetExport(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	createBody := validGraphJSON("history-run-workflow")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(createBody))
+	createW := httptest.NewRecorder()
+	handler.ServeHTTP(createW, createReq)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create workflow status = %d, want %d body=%s", createW.Code, http.StatusCreated, createW.Body.String())
+	}
+
+	runReqBody, _ := json.Marshal(RunRequest{
+		Input: map[string]any{"topic": "history"},
+	})
+	runReq := httptest.NewRequest(http.MethodPost, "/api/workflows/history-run-workflow/run", bytes.NewReader(runReqBody))
+	runW := httptest.NewRecorder()
+	handler.ServeHTTP(runW, runReq)
+	if runW.Code != http.StatusOK {
+		t.Fatalf("run workflow status = %d, want %d body=%s", runW.Code, http.StatusOK, runW.Body.String())
+	}
+
+	var runResp RunResponse
+	if err := json.Unmarshal(runW.Body.Bytes(), &runResp); err != nil {
+		t.Fatalf("unmarshal run response: %v", err)
+	}
+	if strings.TrimSpace(runResp.RunID) == "" {
+		t.Fatal("run response run_id should not be empty")
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/runs", nil)
+	listW := httptest.NewRecorder()
+	handler.ServeHTTP(listW, listReq)
+	if listW.Code != http.StatusOK {
+		t.Fatalf("list runs status = %d, want %d body=%s", listW.Code, http.StatusOK, listW.Body.String())
+	}
+
+	var listed []runHistoryItemForTest
+	if err := json.Unmarshal(listW.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("unmarshal list runs: %v", err)
+	}
+	if len(listed) == 0 {
+		t.Fatal("expected at least one run in list response")
+	}
+	sort.Slice(listed, func(i, j int) bool {
+		return listed[i].RunID < listed[j].RunID
+	})
+
+	var found *runHistoryItemForTest
+	for i := range listed {
+		if listed[i].RunID == runResp.RunID {
+			found = &listed[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("run_id %q not found in list response: %+v", runResp.RunID, listed)
+	}
+	if found.Status != "completed" {
+		t.Fatalf("list status = %q, want %q", found.Status, "completed")
+	}
+	if found.WorkflowID != "history-run-workflow" {
+		t.Fatalf("list workflow_id = %q, want %q", found.WorkflowID, "history-run-workflow")
+	}
+	if found.StartedAt.IsZero() {
+		t.Fatal("list started_at should be set")
+	}
+	if found.CompletedAt == nil || found.CompletedAt.IsZero() {
+		t.Fatal("list completed_at should be set")
+	}
+
+	statusFilterReq := httptest.NewRequest(http.MethodGet, "/api/runs?status=completed", nil)
+	statusFilterW := httptest.NewRecorder()
+	handler.ServeHTTP(statusFilterW, statusFilterReq)
+	if statusFilterW.Code != http.StatusOK {
+		t.Fatalf("status filter runs status = %d, want %d body=%s", statusFilterW.Code, http.StatusOK, statusFilterW.Body.String())
+	}
+	var statusFiltered []runHistoryItemForTest
+	if err := json.Unmarshal(statusFilterW.Body.Bytes(), &statusFiltered); err != nil {
+		t.Fatalf("unmarshal status-filter list runs: %v", err)
+	}
+	if len(statusFiltered) == 0 {
+		t.Fatal("expected at least one run in status filtered response")
+	}
+
+	workflowFilterReq := httptest.NewRequest(http.MethodGet, "/api/runs?workflow_id=history-run-workflow", nil)
+	workflowFilterW := httptest.NewRecorder()
+	handler.ServeHTTP(workflowFilterW, workflowFilterReq)
+	if workflowFilterW.Code != http.StatusOK {
+		t.Fatalf("workflow filter runs status = %d, want %d body=%s", workflowFilterW.Code, http.StatusOK, workflowFilterW.Body.String())
+	}
+	var workflowFiltered []runHistoryItemForTest
+	if err := json.Unmarshal(workflowFilterW.Body.Bytes(), &workflowFiltered); err != nil {
+		t.Fatalf("unmarshal workflow-filter list runs: %v", err)
+	}
+	if len(workflowFiltered) == 0 {
+		t.Fatal("expected at least one run in workflow filtered response")
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/runs/"+runResp.RunID, nil)
+	getW := httptest.NewRecorder()
+	handler.ServeHTTP(getW, getReq)
+	if getW.Code != http.StatusOK {
+		t.Fatalf("get run status = %d, want %d body=%s", getW.Code, http.StatusOK, getW.Body.String())
+	}
+
+	var fetched runHistoryItemForTest
+	if err := json.Unmarshal(getW.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("unmarshal get run: %v", err)
+	}
+	if fetched.RunID != runResp.RunID {
+		t.Fatalf("get run_id = %q, want %q", fetched.RunID, runResp.RunID)
+	}
+	if fetched.Status != "completed" {
+		t.Fatalf("get status = %q, want %q", fetched.Status, "completed")
+	}
+
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/runs/"+runResp.RunID+"/export", nil)
+	exportW := httptest.NewRecorder()
+	handler.ServeHTTP(exportW, exportReq)
+	if exportW.Code != http.StatusOK {
+		t.Fatalf("export run status = %d, want %d body=%s", exportW.Code, http.StatusOK, exportW.Body.String())
+	}
+	if contentType := exportW.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("export content-type = %q, want application/json", contentType)
+	}
+
+	var exportResp runExportForTest
+	if err := json.Unmarshal(exportW.Body.Bytes(), &exportResp); err != nil {
+		t.Fatalf("unmarshal export run: %v", err)
+	}
+	if exportResp.Run.RunID != runResp.RunID {
+		t.Fatalf("export run_id = %q, want %q", exportResp.Run.RunID, runResp.RunID)
+	}
+	if len(exportResp.Events) == 0 {
+		t.Fatal("expected exported events to be non-empty")
+	}
+}
+
+func TestRunHistory_NoStore(t *testing.T) {
+	srv := NewServer(ServerConfig{
+		Store:     newTestWorkflowStore(t),
+		Providers: hydrate.ProviderMap{},
+		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+			return nil, nil
+		},
+	})
+	handler := srv.Handler()
+
+	cases := []string{
+		"/api/runs",
+		"/api/runs/some-run",
+		"/api/runs/some-run/export",
+	}
+
+	for _, path := range cases {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusNotImplemented {
+			t.Fatalf("GET %s status = %d, want %d", path, w.Code, http.StatusNotImplemented)
+		}
+	}
+}
+
+func TestRunHistory_GetAndExportMissingRun(t *testing.T) {
+	srv := testServer(t)
+	handler := srv.Handler()
+
+	for _, path := range []string{
+		"/api/runs/missing-run",
+		"/api/runs/missing-run/export",
+	} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status = %d, want %d", path, w.Code, http.StatusNotFound)
+		}
+	}
+}
+
+type runHistoryItemForTest struct {
+	ID          string     `json:"id"`
+	RunID       string     `json:"run_id"`
+	WorkflowID  string     `json:"workflow_id"`
+	Status      string     `json:"status"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	DurationMs  int64      `json:"duration_ms,omitempty"`
+}
+
+func firstRunIDFromSSE(body string) string {
+	for _, marker := range []string{`"run_id":"`, `"RunID":"`} {
+		idx := strings.Index(body, marker)
+		if idx < 0 {
+			continue
+		}
+		start := idx + len(marker)
+		end := strings.Index(body[start:], `"`)
+		if end < 0 {
+			continue
+		}
+		return body[start : start+end]
+	}
+	return ""
+}
+
+type runExportForTest struct {
+	Run    runHistoryItemForTest `json:"run"`
+	Events []map[string]any      `json:"events"`
 }
 
 func TestIntegrationFlow(t *testing.T) {

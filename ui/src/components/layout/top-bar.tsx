@@ -32,8 +32,10 @@ export function TopBar() {
   const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
   const isDirty = useWorkflowStore((s) => s.isDirty)
   const activeSource = useWorkflowStore((s) => s.activeSource)
+  const updateWorkflow = useWorkflowStore((s) => s.updateWorkflow)
   const validateWorkflow = useWorkflowStore((s) => s.validateWorkflow)
   const validationResult = useWorkflowStore((s) => s.validationResult)
+  const [saving, setSaving] = useState(false)
 
   const openRunModal = useUIStore((s) => s.openRunModal)
 
@@ -60,6 +62,27 @@ export function TopBar() {
   const handleRun = () => {
     if (activeWorkflow) {
       openRunModal()
+    }
+  }
+
+  const handleSave = async () => {
+    if (!activeWorkflow || !activeSource || saving) {
+      return
+    }
+
+    const sourceStr = typeof activeSource === 'string'
+      ? activeSource
+      : JSON.stringify(activeSource)
+
+    setSaving(true)
+    try {
+      const validation = await validateWorkflow(sourceStr)
+      if (!validation.valid) {
+        return
+      }
+      await updateWorkflow(activeWorkflow.id, sourceStr)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -100,8 +123,13 @@ export function TopBar() {
         >
           Validate
         </Button>
-        <Button variant="secondary" size="sm" disabled={!activeSource}>
-          Compile
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleSave}
+          disabled={!activeWorkflow || !activeSource || !isDirty || saving}
+        >
+          {saving ? 'Saving...' : 'Save'}
         </Button>
         <Button
           variant="primary"

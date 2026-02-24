@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -306,6 +307,25 @@ type RunResponse struct {
 	Output      EnvelopeJSON `json:"output"`
 }
 
+type RunHistoryResponse struct {
+	ID          string     `json:"id,omitempty"`
+	RunID       string     `json:"run_id"`
+	WorkflowID  string     `json:"workflow_id,omitempty"`
+	Status      string     `json:"status"`
+	StartedAt   time.Time  `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at,omitempty"`
+	DurationMs  int64      `json:"duration_ms,omitempty"`
+}
+
+type RunExportResponse struct {
+	Run    RunHistoryResponse `json:"run"`
+	Events []runtime.Event    `json:"events"`
+}
+
+type runIDLister interface {
+	RunIDs(ctx context.Context) ([]string, error)
+}
+
 // handleRunWorkflow executes a workflow.
 func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -397,7 +417,7 @@ func (s *Server) handleRunSync(
 		execGraph: execGraph,
 		env:       env,
 		timeout:   timeout,
-	}, nil)
+	}, workflowRunMetadataDecorator(id))
 	if err != nil {
 		writeRunAPIError(w, err)
 		return
@@ -420,8 +440,6 @@ func (s *Server) handleRunStreaming(
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
 	writer.startResponse()
 
 	runID := uuid.New().String()
@@ -430,14 +448,14 @@ func (s *Server) handleRunStreaming(
 		defer sub.Close()
 	}
 
-	doneCh := s.startStreamingRuntime(ctx, execGraph, env, runID)
+	doneCh := s.startStreamingRuntime(execGraph, env, runID, timeout, workflowRunMetadataDecorator(id))
 	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
 
 	if sub == nil {
 		s.streamWithoutSubscription(writer, doneCh, runID)
 		return
 	}
-	s.streamWithSubscription(ctx, writer, sub, doneCh, runID)
+	s.streamWithSubscription(r.Context(), writer, sub, doneCh, runID)
 }
 
 type sseWriter struct {
@@ -483,14 +501,15 @@ func (s *Server) subscribeRun(runID string) bus.Subscription {
 }
 
 func (s *Server) startStreamingRuntime(
-	ctx context.Context,
 	execGraph *graph.BasicGraph,
 	env *core.Envelope,
 	runID string,
+	timeout time.Duration,
+	extraDecorator runtime.EventEmitterDecorator,
 ) <-chan error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
-	opts.EventEmitterDecorator = s.emitDecorator
+	opts.EventEmitterDecorator = combineEmitDecorators(s.emitDecorator, extraDecorator)
 	if s.bus != nil {
 		opts.EventBus = s.bus
 	}
@@ -509,10 +528,116 @@ func (s *Server) startStreamingRuntime(
 
 	doneCh := make(chan error, 1)
 	go func() {
-		_, err := rt.Run(ctx, execGraph, env, opts)
+		runCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		_, err := rt.Run(runCtx, execGraph, env, opts)
 		doneCh <- err
 	}()
 	return doneCh
+}
+
+// handleListRuns returns persisted run summaries from the event store.
+func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	if s.eventStore == nil {
+		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "event store not configured")
+		return
+	}
+
+	runIDStore, ok := s.eventStore.(runIDLister)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "event store does not support run listing")
+		return
+	}
+
+	runIDs, err := runIDStore.RunIDs(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+
+	statusFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	workflowFilter := strings.TrimSpace(r.URL.Query().Get("workflow_id"))
+
+	runs := make([]RunHistoryResponse, 0, len(runIDs))
+	for _, runID := range runIDs {
+		events, err := s.eventStore.List(r.Context(), runID, 0, 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+			return
+		}
+		summary, ok := summarizeRunEvents(runID, events)
+		if !ok {
+			continue
+		}
+
+		if statusFilter != "" && strings.ToLower(summary.Status) != statusFilter {
+			continue
+		}
+		if workflowFilter != "" && summary.WorkflowID != workflowFilter {
+			continue
+		}
+
+		runs = append(runs, summary)
+	}
+
+	sort.SliceStable(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].RunID > runs[j].RunID
+		}
+		return runs[i].StartedAt.After(runs[j].StartedAt)
+	})
+
+	writeJSON(w, http.StatusOK, runs)
+}
+
+// handleGetRun returns a run summary by run ID.
+func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
+	if s.eventStore == nil {
+		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "event store not configured")
+		return
+	}
+
+	runID := strings.TrimSpace(r.PathValue("run_id"))
+	events, err := s.eventStore.List(r.Context(), runID, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+
+	summary, ok := summarizeRunEvents(runID, events)
+	if !ok {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleExportRun exports run summary and all persisted events.
+func (s *Server) handleExportRun(w http.ResponseWriter, r *http.Request) {
+	if s.eventStore == nil {
+		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "event store not configured")
+		return
+	}
+
+	runID := strings.TrimSpace(r.PathValue("run_id"))
+	events, err := s.eventStore.List(r.Context(), runID, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+
+	summary, ok := summarizeRunEvents(runID, events)
+	if !ok {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("run %q not found", runID))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, RunExportResponse{
+		Run:    summary,
+		Events: events,
+	})
 }
 
 func (s *Server) streamWithoutSubscription(writer *sseWriter, doneCh <-chan error, runID string) {
@@ -525,7 +650,7 @@ func (s *Server) streamWithoutSubscription(writer *sseWriter, doneCh <-chan erro
 }
 
 func (s *Server) streamWithSubscription(
-	ctx context.Context,
+	requestCtx context.Context,
 	writer *sseWriter,
 	sub bus.Subscription,
 	doneCh <-chan error,
@@ -549,8 +674,7 @@ func (s *Server) streamWithSubscription(
 			return
 		case <-heartbeat.C:
 			writer.writeHeartbeat()
-		case <-ctx.Done():
-			writer.writeEvent("run.error", map[string]string{"error": "timeout"})
+		case <-requestCtx.Done():
 			return
 		}
 	}
@@ -625,6 +749,68 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Kind, jsonData)
 	}
 	flusher.Flush()
+}
+
+func summarizeRunEvents(runID string, events []runtime.Event) (RunHistoryResponse, bool) {
+	if len(events) == 0 {
+		return RunHistoryResponse{}, false
+	}
+
+	summary := RunHistoryResponse{
+		RunID:     runID,
+		Status:    "running",
+		StartedAt: events[0].Time.UTC(),
+	}
+
+	for _, event := range events {
+		if event.Kind == runtime.EventRunStarted {
+			if summary.StartedAt.IsZero() || event.Time.Before(summary.StartedAt) {
+				summary.StartedAt = event.Time.UTC()
+			}
+			if summary.WorkflowID == "" {
+				summary.WorkflowID = workflowIDFromPayload(event.Payload)
+			}
+		}
+
+		if event.Kind == runtime.EventRunFinished {
+			completedAt := event.Time.UTC()
+			summary.CompletedAt = &completedAt
+			summary.Status = "completed"
+
+			if rawStatus, ok := event.Payload["status"].(string); ok && strings.TrimSpace(rawStatus) != "" {
+				summary.Status = strings.TrimSpace(rawStatus)
+			}
+
+			if summary.WorkflowID == "" {
+				summary.WorkflowID = workflowIDFromPayload(event.Payload)
+			}
+
+			if event.Elapsed > 0 {
+				summary.DurationMs = event.Elapsed.Milliseconds()
+			}
+		}
+	}
+
+	if summary.CompletedAt != nil && summary.DurationMs == 0 {
+		if delta := summary.CompletedAt.Sub(summary.StartedAt); delta > 0 {
+			summary.DurationMs = delta.Milliseconds()
+		}
+	}
+
+	summary.ID = summary.WorkflowID
+	return summary, true
+}
+
+func workflowIDFromPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+
+	workflowID, ok := payload["workflow_id"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(workflowID)
 }
 
 // --- helpers ---

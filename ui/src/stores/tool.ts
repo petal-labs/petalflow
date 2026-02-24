@@ -11,12 +11,12 @@ export interface ToolState {
 export interface ToolActions {
   fetchTools: () => Promise<void>
   getTool: (name: string) => Promise<Tool>
-  registerTool: (tool: Partial<Tool>) => Promise<Tool>
-  updateTool: (name: string, updates: Partial<Tool>) => Promise<Tool>
+  registerTool: (tool: Record<string, unknown>) => Promise<Tool>
+  updateTool: (name: string, updates: Record<string, unknown>) => Promise<Tool>
   deleteTool: (name: string) => Promise<void>
   testTool: (name: string, action: string, input: Record<string, unknown>) => Promise<Record<string, unknown>>
   refreshTool: (name: string) => Promise<Tool>
-  checkHealth: (name: string) => Promise<{ status: string }>
+  checkHealth: (name: string) => Promise<{ status: 'ready' | 'unhealthy' | 'unverified' }>
   clearError: () => void
 }
 

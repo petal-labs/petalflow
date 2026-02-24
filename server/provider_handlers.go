@@ -131,6 +131,12 @@ func (s *Server) handleCreateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Keep runtime provider map aligned with configured provider types.
+	s.ensureRuntimeProviderType(req.Type)
+	if req.APIKey != "" {
+		s.setRuntimeProviderAPIKey(req.Type, req.APIKey)
+	}
+
 	// Store API key separately if provided
 	if req.APIKey != "" {
 		if err := s.providerStore.SetAPIKey(r.Context(), rec.ID, req.APIKey); err != nil {
@@ -180,8 +186,11 @@ func (s *Server) handleUpdateProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.ensureRuntimeProviderType(rec.Type)
+
 	// Update API key if provided
 	if req.APIKey != nil {
+		s.setRuntimeProviderAPIKey(rec.Type, *req.APIKey)
 		if err := s.providerStore.SetAPIKey(r.Context(), rec.ID, *req.APIKey); err != nil {
 			s.logger.Warn("failed to update API key", "provider_id", rec.ID, "error", err)
 		}

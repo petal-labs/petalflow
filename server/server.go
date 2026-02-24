@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
@@ -36,6 +38,7 @@ type Server struct {
 	toolStore     tool.Store
 	providerStore ProviderStore
 	authStore     AuthStore
+	providersMu   sync.RWMutex
 	providers     hydrate.ProviderMap
 	clientFactory hydrate.ClientFactory
 	bus           bus.EventBus
@@ -67,7 +70,7 @@ func NewServer(cfg ServerConfig) *Server {
 		toolStore:     cfg.ToolStore,
 		providerStore: cfg.ProviderStore,
 		authStore:     cfg.AuthStore,
-		providers:     cfg.Providers,
+		providers:     cloneProviderMap(cfg.Providers),
 		clientFactory: cfg.ClientFactory,
 		bus:           cfg.Bus,
 		eventStore:    cfg.EventStore,
@@ -77,6 +80,18 @@ func NewServer(cfg ServerConfig) *Server {
 		maxBody:       maxBody,
 		logger:        logger,
 	}
+}
+
+func cloneProviderMap(source hydrate.ProviderMap) hydrate.ProviderMap {
+	cloned := make(hydrate.ProviderMap, len(source))
+	for name, cfg := range source {
+		normalizedName := strings.ToLower(strings.TrimSpace(name))
+		if normalizedName == "" {
+			continue
+		}
+		cloned[normalizedName] = cfg
+	}
+	return cloned
 }
 
 // Handler returns an http.Handler with all routes and middleware wired.
@@ -110,6 +125,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/workflows/{id}/schedules/{schedule_id}", s.handleGetWorkflowSchedule)
 	mux.HandleFunc("PUT /api/workflows/{id}/schedules/{schedule_id}", s.handleUpdateWorkflowSchedule)
 	mux.HandleFunc("DELETE /api/workflows/{id}/schedules/{schedule_id}", s.handleDeleteWorkflowSchedule)
+	mux.HandleFunc("GET /api/runs", s.handleListRuns)
+	mux.HandleFunc("GET /api/runs/{run_id}", s.handleGetRun)
+	mux.HandleFunc("GET /api/runs/{run_id}/export", s.handleExportRun)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
 
 	// Provider routes

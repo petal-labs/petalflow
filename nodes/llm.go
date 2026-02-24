@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"text/template"
 	"time"
@@ -307,21 +308,11 @@ func (n *LLMNode) buildPrompt(env *core.Envelope) (string, error) {
 
 // executeTemplate executes the prompt template with envelope variables.
 func (n *LLMNode) executeTemplate(env *core.Envelope) (string, error) {
-	tmpl, err := template.New("prompt").Parse(n.config.PromptTemplate)
+	data, funcs := llmTemplateContext(env)
+
+	tmpl, err := template.New("prompt").Funcs(funcs).Parse(n.config.PromptTemplate)
 	if err != nil {
 		return "", fmt.Errorf("invalid prompt template: %w", err)
-	}
-
-	// Create template data from vars
-	data := make(map[string]any)
-	if env.Vars != nil {
-		for k, v := range env.Vars {
-			data[k] = v
-		}
-	}
-	// Also add input if present
-	if env.Input != nil {
-		data["input"] = env.Input
 	}
 
 	var buf bytes.Buffer
@@ -330,6 +321,79 @@ func (n *LLMNode) executeTemplate(env *core.Envelope) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+func llmTemplateContext(env *core.Envelope) (map[string]any, template.FuncMap) {
+	varsView := map[string]any{}
+	if env != nil && env.Vars != nil {
+		varsView = maps.Clone(env.Vars)
+	}
+	tasksView := llmTemplateTasksView(varsView)
+	inputView := llmTemplateInputView(env, varsView)
+
+	data := maps.Clone(varsView)
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["input"] = inputView
+	data["vars"] = varsView
+	data["tasks"] = tasksView
+	if env != nil {
+		data["trace"] = env.Trace
+	}
+
+	funcs := template.FuncMap{
+		"input": func() any {
+			return inputView
+		},
+		"vars": func() map[string]any {
+			return varsView
+		},
+		"tasks": func() map[string]map[string]any {
+			return tasksView
+		},
+	}
+
+	return data, funcs
+}
+
+func llmTemplateInputView(env *core.Envelope, vars map[string]any) any {
+	if env != nil {
+		if inputMap, ok := env.Input.(map[string]any); ok {
+			return inputMap
+		}
+		if env.Input != nil {
+			return env.Input
+		}
+	}
+	return vars
+}
+
+func llmTemplateTasksView(vars map[string]any) map[string]map[string]any {
+	tasks := make(map[string]map[string]any)
+	for key, value := range vars {
+		if !strings.HasSuffix(key, "_output") {
+			continue
+		}
+
+		base := strings.TrimSuffix(key, "_output")
+		parts := strings.SplitN(base, "__", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		taskID := strings.TrimSpace(parts[0])
+		if taskID == "" {
+			continue
+		}
+
+		entry, ok := tasks[taskID]
+		if !ok {
+			entry = map[string]any{}
+			tasks[taskID] = entry
+		}
+		entry["output"] = value
+	}
+	return tasks
 }
 
 // checkBudget verifies the response is within budget limits.

@@ -82,8 +82,7 @@ export const useUIStore = create<UIState & UIActions>()((set) => ({
     try {
       const nodeTypes = await nodeTypesApi.list()
       set({ nodeTypes, nodeTypesLoading: false })
-    } catch (err) {
-      console.error('Failed to fetch node types:', err)
+    } catch {
       set({ nodeTypesLoading: false })
     }
   },

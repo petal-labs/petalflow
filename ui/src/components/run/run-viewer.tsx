@@ -12,13 +12,17 @@ interface RunViewerProps {
 const eventTypeColors: Record<string, string> = {
   'run.started': 'var(--teal)',
   'node.started': 'var(--blue)',
-  'node.completed': 'var(--green)',
+  'node.finished': 'var(--green)',
   'node.failed': 'var(--red)',
+  'node.output': 'var(--purple)',
+  'node.output.delta': 'var(--purple)',
+  'node.output.final': 'var(--green)',
+  'node.output.preview': 'var(--teal)',
   'run.finished': 'var(--green)',
   'run.failed': 'var(--red)',
+  'run.error': 'var(--red)',
   'run.canceled': 'var(--orange)',
-  'output': 'var(--purple)',
-  'tool.called': 'var(--orange)',
+  'tool.call': 'var(--orange)',
   'tool.result': 'var(--teal)',
 }
 
@@ -52,10 +56,11 @@ export function RunViewer({ runId }: RunViewerProps) {
 
   // Subscribe to events when run is active
   useEffect(() => {
-    if (run && run.status === 'running') {
+    if (run) {
       subscribeToEvents(runId)
       return () => unsubscribeFromEvents()
     }
+    return undefined
   }, [run, runId, subscribeToEvents, unsubscribeFromEvents])
 
   // Get selected event details
@@ -70,19 +75,33 @@ export function RunViewer({ runId }: RunViewerProps) {
     if (run.status === 'running') {
       return Date.now() - new Date(run.started_at).getTime()
     }
-    if (run.finished_at) {
-      return new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()
+    const completedAt = run.finished_at || run.completed_at
+    if (completedAt) {
+      return new Date(completedAt).getTime() - new Date(run.started_at).getTime()
+    }
+    if (typeof run.duration_ms === 'number') {
+      return run.duration_ms
     }
     return null
   }, [run])
 
   // Extract data envelope from events
   const dataEnvelope = useMemo(() => {
-    const variables: Record<string, unknown> = {}
+    const runOutput = run?.output
+    const baseOutput = runOutput && typeof runOutput === 'object' ? runOutput : {}
+    const outputVarsCandidate =
+      baseOutput &&
+      typeof baseOutput === 'object' &&
+      'vars' in baseOutput &&
+      typeof (baseOutput as { vars?: unknown }).vars === 'object'
+        ? ((baseOutput as { vars: Record<string, unknown> }).vars || {})
+        : {}
+
+    const variables: Record<string, unknown> = { ...outputVarsCandidate }
     const artifacts: { name: string; type: string; size?: number }[] = []
 
     for (const event of events) {
-      if (event.event_type === 'output' && event.payload) {
+      if ((event.event_type === 'output' || event.event_type.startsWith('node.output')) && event.payload) {
         Object.assign(variables, event.payload)
       }
       if (event.event_type === 'artifact' && event.payload) {
@@ -95,7 +114,7 @@ export function RunViewer({ runId }: RunViewerProps) {
     }
 
     return { variables, artifacts }
-  }, [events])
+  }, [events, run?.output])
 
   if (!run) {
     return (
@@ -116,7 +135,7 @@ export function RunViewer({ runId }: RunViewerProps) {
             </span>
             <Badge
               variant={
-                run.status === 'success'
+                run.status === 'success' || run.status === 'completed'
                   ? 'success'
                   : run.status === 'running'
                     ? 'running'
@@ -197,6 +216,27 @@ export function RunViewer({ runId }: RunViewerProps) {
         <div className="flex-1 overflow-auto p-4">
           {selectedEvent ? (
             <div className="space-y-4">
+              {/* Event metadata */}
+              {(selectedEvent.trace_id || selectedEvent.span_id) && (
+                <div>
+                  <div className="text-xs font-semibold text-muted-foreground mb-2">Trace</div>
+                  <div className="p-3 rounded-lg bg-surface-1 border border-border space-y-1.5">
+                    {selectedEvent.trace_id && (
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-muted-foreground">Trace ID</span>
+                        <span className="text-foreground font-mono break-all text-right">{selectedEvent.trace_id}</span>
+                      </div>
+                    )}
+                    {selectedEvent.span_id && (
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="text-muted-foreground">Span ID</span>
+                        <span className="text-foreground font-mono break-all text-right">{selectedEvent.span_id}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Event payload */}
               {selectedEvent.payload && Object.keys(selectedEvent.payload).length > 0 && (
                 <div>
@@ -208,7 +248,7 @@ export function RunViewer({ runId }: RunViewerProps) {
               )}
 
               {/* Streaming output preview */}
-              {selectedEvent.event_type === 'output' && selectedEvent.payload && (
+              {(selectedEvent.event_type === 'output' || selectedEvent.event_type.startsWith('node.output')) && selectedEvent.payload && (
                 <div>
                   <div className="text-xs font-semibold text-muted-foreground mb-2">Output Preview</div>
                   <div className="p-3 rounded-lg bg-surface-1 border border-border">
@@ -260,6 +300,12 @@ export function RunViewer({ runId }: RunViewerProps) {
                 <div className="flex justify-between text-xs">
                   <span className="text-muted-foreground">Finished</span>
                   <span className="text-foreground">{formatTimestamp(run.finished_at)}</span>
+                </div>
+              )}
+              {!run.finished_at && run.completed_at && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Finished</span>
+                  <span className="text-foreground">{formatTimestamp(run.completed_at)}</span>
                 </div>
               )}
               {run.metrics && (

@@ -60,6 +60,7 @@ export function OnboardingWizard() {
   })
   const [loading, setLoading] = useState(false)
   const [accountError, setAccountError] = useState<string | null>(null)
+  const [setupError, setSetupError] = useState<string | null>(null)
 
   const currentStepIndex = STEPS.findIndex((s) => s.key === currentStep)
 
@@ -108,9 +109,11 @@ export function OnboardingWizard() {
         return
       }
     } else if (currentStep === 'provider') {
+      setSetupError(null)
       setCurrentStep('demo')
     } else if (currentStep === 'demo') {
       setLoading(true)
+      setSetupError(null)
       try {
         // Always create the provider (status depends on API key)
         const hasApiKey = providerConfig.apiKey.trim().length > 0
@@ -216,131 +219,74 @@ export function OnboardingWizard() {
         }
 
         if (createDemos.graphPipeline) {
-          // Graph Pipeline - Graph IR: input → template_render → llm_prompt → output
+          // Graph Pipeline - backend-aligned graph node types
           await createGraphWorkflow({
             id: crypto.randomUUID(),
             version: '1.0.0',
             metadata: { name: 'Graph Pipeline' },
             nodes: [
               {
-                id: 'input',
-                type: 'input',
+                id: 'start',
+                type: 'noop',
+                config: {},
+              },
+              {
+                id: 'draft',
+                type: 'noop',
                 config: {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      topic: { type: 'string', description: 'The topic to explore' },
-                    },
-                    required: ['topic'],
-                  },
+                  note: 'Replace this noop node with llm_prompt to call a model',
                 },
               },
               {
-                id: 'template',
-                type: 'template_render',
-                config: {
-                  template: 'Write a concise explanation of: {{topic}}',
-                },
-              },
-              {
-                id: 'llm',
-                type: 'llm_prompt',
-                config: {
-                  provider: providerConfig.type,
-                  model: providerConfig.model,
-                  system: 'You are a helpful assistant that provides clear, educational explanations.',
-                },
-              },
-              {
-                id: 'output',
-                type: 'output',
+                id: 'finish',
+                type: 'noop',
                 config: {},
               },
             ],
             edges: [
-              { source: 'input', source_handle: 'topic', target: 'template', target_handle: 'topic' },
-              { source: 'template', source_handle: 'rendered', target: 'llm', target_handle: 'prompt' },
-              { source: 'llm', source_handle: 'response', target: 'output', target_handle: 'result' },
+              { source: 'start', source_handle: 'output', target: 'draft', target_handle: 'input' },
+              { source: 'draft', source_handle: 'output', target: 'finish', target_handle: 'input' },
             ],
-            entry: 'input',
+            entry: 'start',
           })
         }
 
         if (createDemos.dataTransform) {
-          // Data Transform - Graph IR: input → router → merge → output (demonstrates branching)
+          // Data Transform - backend-aligned graph node types
           await createGraphWorkflow({
             id: crypto.randomUUID(),
             version: '1.0.0',
             metadata: { name: 'Data Transform' },
             nodes: [
               {
-                id: 'input',
-                type: 'input',
-                config: {
-                  schema: {
-                    type: 'object',
-                    properties: {
-                      text: { type: 'string', description: 'Text to analyze' },
-                      mode: { type: 'string', description: 'Processing mode: summarize or expand' },
-                    },
-                    required: ['text', 'mode'],
-                  },
-                },
-              },
-              {
-                id: 'router',
-                type: 'router',
-                config: {
-                  routes: [
-                    { condition: 'mode == "summarize"', target: 'summarize' },
-                    { condition: 'mode == "expand"', target: 'expand' },
-                  ],
-                  default: 'summarize',
-                },
-              },
-              {
-                id: 'summarize',
-                type: 'llm_prompt',
-                config: {
-                  provider: providerConfig.type,
-                  model: providerConfig.model,
-                  system: 'Summarize the following text concisely.',
-                },
-              },
-              {
-                id: 'expand',
-                type: 'llm_prompt',
-                config: {
-                  provider: providerConfig.type,
-                  model: providerConfig.model,
-                  system: 'Expand on the following text with more details and examples.',
-                },
-              },
-              {
-                id: 'merge',
-                type: 'merge',
+                id: 'ingest',
+                type: 'noop',
                 config: {},
               },
               {
-                id: 'output',
-                type: 'output',
+                id: 'normalize',
+                type: 'noop',
+                config: {
+                  note: 'Replace with transform/rule_router nodes for custom logic',
+                },
+              },
+              {
+                id: 'publish',
+                type: 'noop',
                 config: {},
               },
             ],
             edges: [
-              { source: 'input', source_handle: 'text', target: 'router', target_handle: 'input' },
-              { source: 'input', source_handle: 'mode', target: 'router', target_handle: 'mode' },
-              { source: 'router', source_handle: 'summarize', target: 'summarize', target_handle: 'prompt' },
-              { source: 'router', source_handle: 'expand', target: 'expand', target_handle: 'prompt' },
-              { source: 'summarize', source_handle: 'response', target: 'merge', target_handle: 'a' },
-              { source: 'expand', source_handle: 'response', target: 'merge', target_handle: 'b' },
-              { source: 'merge', source_handle: 'output', target: 'output', target_handle: 'result' },
+              { source: 'ingest', source_handle: 'output', target: 'normalize', target_handle: 'input' },
+              { source: 'normalize', source_handle: 'output', target: 'publish', target_handle: 'input' },
             ],
-            entry: 'input',
+            entry: 'ingest',
           })
         }
-      } catch {
-        // Continue even if creation fails - user can set up manually
+      } catch (err) {
+        setSetupError((err as Error).message || 'Setup failed. Please retry and check your inputs.')
+        setLoading(false)
+        return
       }
       setLoading(false)
       setCurrentStep('complete')
@@ -606,6 +552,12 @@ export function OnboardingWizard() {
                 These examples help you learn PetalFlow quickly. Each includes sample inputs and can be run immediately.
               </p>
 
+              {setupError && (
+                <div className="p-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-sm">
+                  {setupError}
+                </div>
+              )}
+
               <div className="space-y-3">
                 <DemoOption
                   title="Hello PetalFlow"
@@ -624,14 +576,14 @@ export function OnboardingWizard() {
                 <DemoOption
                   title="Graph Pipeline"
                   badge="Graph IR"
-                  description="Raw graph mode: input → template → LLM → output. Shows the low-level execution model."
+                  description="Backend-compatible starter graph. Replace noop nodes with llm_prompt, transform, or tool nodes."
                   checked={createDemos.graphPipeline}
                   onChange={(v) => setCreateDemos({ ...createDemos, graphPipeline: v })}
                 />
                 <DemoOption
                   title="Data Transform"
                   badge="Graph IR"
-                  description="Branching graph: router → conditional paths → merge. Demonstrates routing and parallel execution."
+                  description="Linear starter graph for data flow edits. Extend it with rule_router, conditional, and merge nodes."
                   checked={createDemos.dataTransform}
                   onChange={(v) => setCreateDemos({ ...createDemos, dataTransform: v })}
                 />

@@ -1,7 +1,10 @@
+import { useEffect } from 'react'
 import { createFileRoute, Outlet } from '@tanstack/react-router'
 import { Sidebar } from '@/components/layout/sidebar'
 import { TopBar } from '@/components/layout/top-bar'
 import { OnboardingWizard } from '@/components/onboarding'
+import { RunModal } from '@/components/run'
+import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 
 export const Route = createFileRoute('/_app')({
@@ -10,6 +13,11 @@ export const Route = createFileRoute('/_app')({
 
 function AppLayout() {
   const onboardingCompleted = useSettingsStore((s) => s.onboarding.completed)
+  const checkAuth = useAuthStore((s) => s.checkAuth)
+
+  useEffect(() => {
+    void checkAuth()
+  }, [checkAuth])
 
   if (!onboardingCompleted) {
     return <OnboardingWizard />
@@ -24,6 +32,7 @@ function AppLayout() {
           <Outlet />
         </main>
       </div>
+      <RunModal />
     </div>
   )
 }

@@ -110,9 +110,12 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		env = core.NewEnvelope()
 	}
 
-	// Generate run ID
-	runID := generateRunID()
-	env.Trace.RunID = runID
+	// Use caller-provided run ID when present; otherwise generate one.
+	runID := env.Trace.RunID
+	if runID == "" {
+		runID = generateRunID()
+		env.Trace.RunID = runID
+	}
 	env.Trace.Started = opts.Now()
 
 	// Create event emitter

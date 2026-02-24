@@ -1,11 +1,95 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUIStore } from '@/stores/ui'
-import { useProviderStore } from '@/stores/provider'
+import { useProviderStore, DEFAULT_MODELS, PROVIDER_NAMES } from '@/stores/provider'
 import { Icon } from '@/components/ui/icon'
 import { FormInput, SliderInput } from './form-input'
 import { cn } from '@/lib/utils'
-import type { Agent, Task, ExecutionConfig, AgentWorkflow } from '@/lib/api-types'
+import type {
+  Agent,
+  Task,
+  ExecutionConfig,
+  AgentWorkflow,
+  Provider,
+  ProviderType,
+} from '@/lib/api-types'
+
+function buildProviderTypeOptions(providers: Provider[]): { value: string; label: string }[] {
+  const configuredByType = new Map<string, Provider[]>()
+  for (const provider of providers) {
+    if (!provider.type) {
+      continue
+    }
+    const existing = configuredByType.get(provider.type) || []
+    existing.push(provider)
+    configuredByType.set(provider.type, existing)
+  }
+
+  const knownProviderTypes = Object.keys(PROVIDER_NAMES) as ProviderType[]
+  const allTypes = new Set<string>(knownProviderTypes)
+  for (const provider of providers) {
+    if (provider.type) {
+      allTypes.add(provider.type)
+    }
+  }
+
+  const options: { value: string; label: string }[] = []
+
+  for (const providerType of allTypes) {
+    const configured = configuredByType.get(providerType) || []
+    const providerLabel =
+      PROVIDER_NAMES[providerType as ProviderType] || providerType
+    let suffix = ''
+    if (configured.length === 1 && configured[0].name) {
+      suffix = ` (${configured[0].name})`
+    } else if (configured.length > 1) {
+      suffix = ` (${configured.length} configured)`
+    }
+    options.push({
+      value: providerType,
+      label: `${providerLabel}${suffix}`,
+    })
+  }
+
+  return options
+}
+
+function buildModelOptions(
+  providerType: string,
+  providers: Provider[],
+  selectedModel = ''
+): { value: string; label: string }[] {
+  if (!providerType) {
+    if (!selectedModel) {
+      return []
+    }
+    return [{ value: selectedModel, label: selectedModel }]
+  }
+
+  const modelSet = new Set<string>()
+  const knownModels = DEFAULT_MODELS[providerType as ProviderType] || []
+
+  for (const model of knownModels) {
+    if (model) {
+      modelSet.add(model)
+    }
+  }
+
+  for (const provider of providers) {
+    if (provider.type === providerType && provider.default_model) {
+      modelSet.add(provider.default_model)
+    }
+  }
+
+  if (selectedModel) {
+    modelSet.add(selectedModel)
+  }
+
+  return Array.from(modelSet).map((model) => ({
+    value: model,
+    label: model,
+  }))
+}
 
 export function AgentDesigner() {
   const activeSource = useWorkflowStore((s) => s.activeSource)
@@ -16,6 +100,13 @@ export function AgentDesigner() {
   const selectAgent = useUIStore((s) => s.selectAgent)
   const selectedTaskId = useUIStore((s) => s.selectedTaskId)
   const selectTask = useUIStore((s) => s.selectTask)
+  const rawProviders = useProviderStore((s) => s.providers)
+  const fetchProviders = useProviderStore((s) => s.fetchProviders)
+  const providers = useMemo(() => (Array.isArray(rawProviders) ? rawProviders : []), [rawProviders])
+
+  useEffect(() => {
+    void fetchProviders()
+  }, [fetchProviders])
 
   // Parse the source into a structured workflow
   const workflowData = useMemo((): AgentWorkflow | null => {
@@ -91,6 +182,8 @@ export function AgentDesigner() {
   const addAgent = () => {
     if (!workflowData) return
     const id = `agent_${Date.now()}`
+    const initialProviderType = providers[0]?.type || ''
+    const initialModel = buildModelOptions(initialProviderType, providers)[0]?.value || ''
     const updated = {
       ...workflowData,
       agents: {
@@ -99,8 +192,8 @@ export function AgentDesigner() {
           id,
           role: 'New Agent',
           goal: '',
-          provider: '',
-          model: '',
+          provider: initialProviderType,
+          model: initialModel,
         },
       },
     }
@@ -153,6 +246,7 @@ export function AgentDesigner() {
           {designerTab === 'agents' && (
             <AgentsPanel
               agents={agents}
+              providers={providers}
               selectedId={selectedAgentId}
               onSelect={selectAgent}
               onAdd={addAgent}
@@ -197,6 +291,7 @@ export function AgentDesigner() {
 // Agents Panel
 interface AgentsPanelProps {
   agents: (Agent & { id: string })[]
+  providers: Provider[]
   selectedId: string | null
   onSelect: (id: string | null) => void
   onAdd: () => void
@@ -206,16 +301,18 @@ interface AgentsPanelProps {
 
 function AgentsPanel({
   agents,
+  providers,
   selectedId,
   onSelect,
   onAdd,
   selectedAgent,
   onUpdate,
 }: AgentsPanelProps) {
-  const providers = useProviderStore((s) => s.providers)
-
-  const providerOptions = providers.map((p) => ({ value: p.id, label: p.name }))
-  const selectedProvider = providers.find((p) => p.id === selectedAgent?.provider)
+  const providerOptions = useMemo(() => buildProviderTypeOptions(providers), [providers])
+  const modelOptions = useMemo(
+    () => buildModelOptions(selectedAgent?.provider || '', providers, selectedAgent?.model || ''),
+    [selectedAgent?.model, selectedAgent?.provider, providers]
+  )
 
   return (
     <>
@@ -283,22 +380,31 @@ function AgentsPanel({
             <FormInput
               label="Provider"
               value={selectedAgent.provider}
-              onChange={(v) => onUpdate(selectedAgent.id, { provider: v, model: '' })}
+              onChange={(providerType) => {
+                const firstModel = buildModelOptions(providerType, providers)[0]?.value || ''
+                onUpdate(selectedAgent.id, { provider: providerType, model: firstModel })
+              }}
               type="select"
               options={providerOptions}
               placeholder="Select provider"
+              hint={
+                providers.length === 0
+                  ? 'No providers configured. Add one on the Providers page.'
+                  : undefined
+              }
             />
             <FormInput
               label="Model"
               value={selectedAgent.model}
               onChange={(v) => onUpdate(selectedAgent.id, { model: v })}
               type="select"
-              options={
-                selectedProvider
-                  ? [{ value: selectedProvider.default_model || '', label: selectedProvider.default_model || 'Default' }]
-                  : []
-              }
+              options={modelOptions}
               placeholder="Select model"
+              hint={
+                selectedAgent.provider && modelOptions.length === 0
+                  ? 'No models found for this provider type.'
+                  : undefined
+              }
             />
           </div>
           <FormInput

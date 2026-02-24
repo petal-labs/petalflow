@@ -17,10 +17,11 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useWorkflowStore } from '@/stores/workflow'
 import { useUIStore } from '@/stores/ui'
+import { useProviderStore, DEFAULT_MODELS, PROVIDER_NAMES } from '@/stores/provider'
 import { Badge } from '@/components/ui/badge'
 import { FormInput } from './form-input'
 import { cn } from '@/lib/utils'
-import type { GraphDefinition } from '@/lib/api-types'
+import type { GraphDefinition, Provider, ProviderType } from '@/lib/api-types'
 
 // Node data type with index signature for React Flow compatibility
 type NodeData = {
@@ -30,14 +31,105 @@ type NodeData = {
   [key: string]: unknown
 }
 
+function buildProviderTypeOptions(providers: Provider[]): { value: string; label: string }[] {
+  const configuredByType = new Map<string, Provider[]>()
+  for (const provider of providers) {
+    if (!provider.type) {
+      continue
+    }
+    const existing = configuredByType.get(provider.type) || []
+    existing.push(provider)
+    configuredByType.set(provider.type, existing)
+  }
+
+  const knownProviderTypes = Object.keys(PROVIDER_NAMES) as ProviderType[]
+  const allTypes = new Set<string>(knownProviderTypes)
+  for (const provider of providers) {
+    if (provider.type) {
+      allTypes.add(provider.type)
+    }
+  }
+
+  const options: { value: string; label: string }[] = []
+
+  for (const providerType of allTypes) {
+    const configured = configuredByType.get(providerType) || []
+    const providerLabel =
+      PROVIDER_NAMES[providerType as ProviderType] || providerType
+    let suffix = ''
+    if (configured.length === 1 && configured[0].name) {
+      suffix = ` (${configured[0].name})`
+    } else if (configured.length > 1) {
+      suffix = ` (${configured.length} configured)`
+    }
+    options.push({
+      value: providerType,
+      label: `${providerLabel}${suffix}`,
+    })
+  }
+
+  return options
+}
+
+function buildModelOptions(
+  providerType: string,
+  providers: Provider[],
+  selectedModel = ''
+): { value: string; label: string }[] {
+  if (!providerType) {
+    if (!selectedModel) {
+      return []
+    }
+    return [{ value: selectedModel, label: selectedModel }]
+  }
+
+  const modelSet = new Set<string>()
+  const knownModels = DEFAULT_MODELS[providerType as ProviderType] || []
+
+  for (const model of knownModels) {
+    if (model) {
+      modelSet.add(model)
+    }
+  }
+
+  for (const provider of providers) {
+    if (provider.type === providerType && provider.default_model) {
+      modelSet.add(provider.default_model)
+    }
+  }
+
+  if (selectedModel) {
+    modelSet.add(selectedModel)
+  }
+
+  return Array.from(modelSet).map((model) => ({
+    value: model,
+    label: model,
+  }))
+}
+
+function nodeTypeColor(nodeType?: string): string {
+  if (!nodeType) {
+    return 'hsl(var(--primary))'
+  }
+  if (nodeType.startsWith('llm_')) {
+    return 'var(--teal)'
+  }
+  if (nodeType.includes('router') || nodeType === 'conditional' || nodeType === 'gate' || nodeType === 'human') {
+    return 'var(--orange)'
+  }
+  if (nodeType === 'transform' || nodeType === 'filter' || nodeType === 'merge' || nodeType === 'map' || nodeType === 'cache') {
+    return 'var(--green)'
+  }
+  if (nodeType.startsWith('webhook_')) {
+    return 'var(--blue)'
+  }
+  return 'hsl(var(--primary))'
+}
+
 // Custom node component for graph workflow
 function GraphNode({ data, selected }: { data: NodeData; selected: boolean }) {
-  const borderColor =
-    data.nodeType === 'input'
-      ? 'var(--teal)'
-      : data.nodeType === 'output'
-        ? 'var(--green)'
-        : 'hsl(var(--primary))'
+  const borderColor = nodeTypeColor(data.nodeType)
 
   return (
     <div
@@ -48,14 +140,11 @@ function GraphNode({ data, selected }: { data: NodeData; selected: boolean }) {
       )}
       style={{ border: `2px solid ${borderColor}` }}
     >
-      {/* Input handle */}
-      {data.nodeType !== 'input' && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          className="w-3 h-3 !bg-muted-foreground !border-2 !border-surface-1"
-        />
-      )}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="w-3 h-3 !bg-muted-foreground !border-2 !border-surface-1"
+      />
 
       <div className="text-xs font-bold" style={{ color: borderColor }}>
         {data.label}
@@ -69,15 +158,12 @@ function GraphNode({ data, selected }: { data: NodeData; selected: boolean }) {
         </div>
       )}
 
-      {/* Output handle */}
-      {data.nodeType !== 'output' && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          className="w-3 h-3 !border-2 !border-surface-1"
-          style={{ backgroundColor: borderColor }}
-        />
-      )}
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="w-3 h-3 !border-2 !border-surface-1"
+        style={{ backgroundColor: borderColor }}
+      />
     </div>
   )
 }
@@ -89,15 +175,23 @@ const nodeTypes: NodeTypes = {
 export function GraphDesigner() {
   const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
   const activeSource = useWorkflowStore((s) => s.activeSource)
+  const setActiveSource = useWorkflowStore((s) => s.setActiveSource)
   const selectedNodeId = useUIStore((s) => s.selectedNodeId)
   const selectNode = useUIStore((s) => s.selectNode)
   const nodeTypesFromApi = useUIStore((s) => s.nodeTypes)
   const fetchNodeTypes = useUIStore((s) => s.fetchNodeTypes)
+  const rawProviders = useProviderStore((s) => s.providers)
+  const fetchProviders = useProviderStore((s) => s.fetchProviders)
+  const providers = useMemo(() => (Array.isArray(rawProviders) ? rawProviders : []), [rawProviders])
 
   // Fetch node types on mount
   useEffect(() => {
     fetchNodeTypes()
   }, [fetchNodeTypes])
+
+  useEffect(() => {
+    void fetchProviders()
+  }, [fetchProviders])
 
   // Parse source into graph definition
   // Falls back to compiled field when source doesn't have nodes (common for pre-compiled workflows)
@@ -167,6 +261,65 @@ export function GraphDesigner() {
     setEdges(initialEdges)
   }, [activeSource, initialNodes, initialEdges, setNodes, setEdges])
 
+  // Keep workflow source in sync with graph structure edits.
+  useEffect(() => {
+    if (!activeWorkflow || activeWorkflow.kind !== 'graph') {
+      return
+    }
+
+    const fallbackID = graphDef?.id || activeWorkflow.id
+    const fallbackVersion = graphDef?.version || '1.0'
+    const fallbackMetadata = graphDef?.metadata
+    const nextNodes = nodes.map((node) => ({
+      id: node.id,
+      type: (node.data as NodeData).nodeType || 'noop',
+      config: ((node.data as NodeData).config || {}) as Record<string, unknown>,
+    }))
+    const nextEdges = edges.map((edge) => ({
+      source: edge.source,
+      source_handle: edge.sourceHandle || '',
+      target: edge.target,
+      target_handle: edge.targetHandle || '',
+    }))
+    const nodeIDs = new Set(nextNodes.map((node) => node.id))
+
+    let entry = graphDef?.entry || nextNodes[0]?.id || ''
+    if (entry && !nodeIDs.has(entry)) {
+      entry = nextNodes[0]?.id || ''
+    }
+
+    const nextGraph: GraphDefinition = {
+      id: fallbackID,
+      version: fallbackVersion,
+      metadata: fallbackMetadata,
+      nodes: nextNodes,
+      edges: nextEdges,
+      entry,
+    }
+
+    const currentGraph: GraphDefinition = {
+      id: graphDef?.id || fallbackID,
+      version: graphDef?.version || fallbackVersion,
+      metadata: graphDef?.metadata,
+      nodes: (graphDef?.nodes || []).map((node) => ({
+        id: node.id,
+        type: node.type,
+        config: node.config || {},
+      })),
+      edges: (graphDef?.edges || []).map((edge) => ({
+        source: edge.source,
+        source_handle: edge.source_handle || '',
+        target: edge.target,
+        target_handle: edge.target_handle || '',
+      })),
+      entry: graphDef?.entry || entry,
+    }
+
+    if (JSON.stringify(currentGraph) !== JSON.stringify(nextGraph)) {
+      setActiveSource(JSON.stringify(nextGraph, null, 2))
+    }
+  }, [activeWorkflow, edges, graphDef, nodes, setActiveSource])
+
   const onConnect = useCallback(
     (connection: Connection) => {
       setEdges((eds) =>
@@ -200,28 +353,46 @@ export function GraphDesigner() {
 
   // Node palette for drag and drop
   const nodePalette = useMemo(() => {
-    const categories: Record<string, { type: string; label: string }[]> = {
-      'Built-in': [
-        { type: 'input', label: 'Input' },
-        { type: 'output', label: 'Output' },
-        { type: 'llm_prompt', label: 'LLM Prompt' },
-        { type: 'template_render', label: 'Template' },
-      ],
-      Utility: [
-        { type: 'merge', label: 'Merge' },
-        { type: 'router', label: 'Router' },
-      ],
-    }
-
-    // Add node types from API
     if (nodeTypesFromApi.length > 0) {
-      categories['Tools'] = nodeTypesFromApi.map((nt) => ({
-        type: nt.type,
-        label: nt.display_name,
-      }))
+      const categories: Record<string, { type: string; label: string }[]> = {}
+      for (const nt of nodeTypesFromApi) {
+        const key = nt.category || 'Other'
+        if (!categories[key]) {
+          categories[key] = []
+        }
+        categories[key].push({
+          type: nt.type,
+          label: nt.display_name || nt.type,
+        })
+      }
+      return categories
     }
 
-    return categories
+    return {
+      Core: [
+        { type: 'noop', label: 'No-Op' },
+        { type: 'llm_prompt', label: 'LLM Prompt' },
+        { type: 'rule_router', label: 'Rule Router' },
+      ],
+      Data: [
+        { type: 'transform', label: 'Transform' },
+        { type: 'filter', label: 'Filter' },
+        { type: 'merge', label: 'Merge' },
+      ],
+      Control: [
+        { type: 'conditional', label: 'Conditional' },
+        { type: 'human', label: 'Human' },
+      ],
+      Triggers: [
+        { type: 'webhook_trigger', label: 'Webhook Trigger' },
+      ],
+      Outputs: [
+        { type: 'webhook_call', label: 'Webhook Call' },
+      ],
+      Tools: [
+        { type: 'tool', label: 'Tool' },
+      ],
+    } as Record<string, { type: string; label: string }[]>
   }, [nodeTypesFromApi])
 
   const addNode = useCallback(
@@ -239,6 +410,45 @@ export function GraphDesigner() {
 
   // Check if selected node is an LLM prompt type
   const isLlmPrompt = selectedNodeData?.nodeType === 'llm_prompt'
+  const selectedProviderType = (selectedNodeData?.config?.provider as string) || ''
+  const providerOptions = useMemo(() => buildProviderTypeOptions(providers), [providers])
+  const modelOptions = useMemo(
+    () =>
+      buildModelOptions(
+        selectedProviderType,
+        providers,
+        (selectedNodeData?.config?.model as string) || ''
+      ),
+    [providers, selectedNodeData?.config?.model, selectedProviderType]
+  )
+
+  const updateSelectedNodeConfig = useCallback(
+    (updates: Record<string, unknown>) => {
+      if (!selectedNodeId) {
+        return
+      }
+      setNodes((currentNodes) =>
+        currentNodes.map((node) => {
+          if (node.id !== selectedNodeId) {
+            return node
+          }
+          const currentData = node.data as NodeData
+          const currentConfig = currentData.config || {}
+          return {
+            ...node,
+            data: {
+              ...currentData,
+              config: {
+                ...currentConfig,
+                ...updates,
+              },
+            } as NodeData,
+          }
+        })
+      )
+    },
+    [selectedNodeId, setNodes]
+  )
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -294,12 +504,7 @@ export function GraphDesigner() {
           <Background gap={24} size={1} color="var(--border)" />
           <Controls className="!bg-surface-0 !border-border !shadow-lg" />
           <MiniMap
-            nodeColor={(n) => {
-              const data = n.data as NodeData
-              if (data.nodeType === 'input') return 'var(--teal)'
-              if (data.nodeType === 'output') return 'var(--green)'
-              return 'hsl(var(--primary))'
-            }}
+            nodeColor={(n) => nodeTypeColor((n.data as NodeData).nodeType)}
             className="!bg-surface-0/80 !border-border"
           />
         </ReactFlow>
@@ -339,28 +544,51 @@ export function GraphDesigner() {
                 <FormInput
                   label="Provider"
                   value={(selectedNodeData.config?.provider as string) || ''}
+                  onChange={(providerType) => {
+                    const firstModel = buildModelOptions(providerType, providers)[0]?.value || ''
+                    updateSelectedNodeConfig({
+                      provider: providerType,
+                      model: firstModel,
+                    })
+                  }}
                   type="select"
-                  options={[
-                    { value: 'anthropic', label: 'Anthropic' },
-                    { value: 'openai', label: 'OpenAI' },
-                    { value: 'ollama', label: 'Ollama' },
-                  ]}
+                  options={providerOptions}
                   placeholder="Select provider"
+                  hint={
+                    providers.length === 0
+                      ? 'No providers configured. Add one on the Providers page.'
+                      : undefined
+                  }
                 />
                 <FormInput
                   label="Model"
                   value={(selectedNodeData.config?.model as string) || ''}
-                  type="text"
+                  onChange={(model) => updateSelectedNodeConfig({ model })}
+                  type="select"
+                  options={modelOptions}
+                  placeholder="Select model"
+                  hint={
+                    selectedProviderType && modelOptions.length === 0
+                      ? 'No models found for this provider type.'
+                      : undefined
+                  }
                 />
                 <FormInput
                   label="System Prompt"
                   value={(selectedNodeData.config?.system_prompt as string) || ''}
                   type="textarea"
+                  onChange={(systemPrompt) => updateSelectedNodeConfig({ system_prompt: systemPrompt })}
                 />
                 <FormInput
                   label="Temperature"
                   value={String(selectedNodeData.config?.temperature || 0.7)}
                   type="number"
+                  onChange={(value) => {
+                    const parsed = Number.parseFloat(value)
+                    updateSelectedNodeConfig({
+                      temperature: Number.isFinite(parsed) ? parsed : 0.7,
+                    })
+                  }}
                 />
               </>
             )}
@@ -370,16 +598,12 @@ export function GraphDesigner() {
                 Ports
               </div>
               <div className="flex gap-2 flex-wrap">
-                {selectedNodeData.nodeType !== 'input' && (
-                  <span className="px-2 py-1 rounded text-[11px] bg-muted text-muted-foreground">
-                    ← input
-                  </span>
-                )}
-                {selectedNodeData.nodeType !== 'output' && (
-                  <span className="px-2 py-1 rounded text-[11px] bg-accent-soft text-primary">
-                    output →
-                  </span>
-                )}
+                <span className="px-2 py-1 rounded text-[11px] bg-muted text-muted-foreground">
+                  ← input
+                </span>
+                <span className="px-2 py-1 rounded text-[11px] bg-accent-soft text-primary">
+                  output →
+                </span>
               </div>
             </div>
           </div>

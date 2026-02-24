@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS providers (
 	default_model TEXT,
 	status TEXT NOT NULL DEFAULT 'disconnected',
 	api_key_hash TEXT,
+	api_key_enc TEXT,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -31,7 +32,8 @@ CREATE INDEX IF NOT EXISTS idx_providers_status ON providers(status);
 
 // ProviderSQLiteStore persists provider records in SQLite.
 type ProviderSQLiteStore struct {
-	db *sql.DB
+	db      *sql.DB
+	secrets *providerSecretCodec
 }
 
 // NewProviderSQLiteStore creates a new SQLite-backed provider store using an existing database connection.
@@ -44,7 +46,20 @@ func NewProviderSQLiteStore(db *sql.DB) (*ProviderSQLiteStore, error) {
 		return nil, fmt.Errorf("provider sqlite store create schema: %w", err)
 	}
 
-	return &ProviderSQLiteStore{db: db}, nil
+	if err := migrateLegacyProviderSQLiteSchema(db); err != nil {
+		return nil, err
+	}
+
+	scope, err := providerSQLiteScope(db)
+	if err != nil {
+		return nil, err
+	}
+	secrets, err := newProviderSecretCodec(scope)
+	if err != nil {
+		return nil, fmt.Errorf("provider sqlite store init secrets codec: %w", err)
+	}
+
+	return &ProviderSQLiteStore{db: db, secrets: secrets}, nil
 }
 
 // List returns all provider records ordered by creation time.
@@ -173,35 +188,54 @@ func (s *ProviderSQLiteStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-// GetAPIKey retrieves the stored API key hash for a provider.
-// Note: We store a hash, not the actual key. For real use, integrate with a secrets manager.
+// GetAPIKey retrieves the stored API key for a provider.
 func (s *ProviderSQLiteStore) GetAPIKey(ctx context.Context, id string) (string, error) {
-	var apiKeyHash sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT api_key_hash FROM providers WHERE id = ?`, id).Scan(&apiKeyHash)
+	var encrypted sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT api_key_enc FROM providers WHERE id = ?`, id).Scan(&encrypted)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrProviderNotFound
 		}
 		return "", fmt.Errorf("provider sqlite store get api key: %w", err)
 	}
-	return apiKeyHash.String, nil
+
+	if strings.TrimSpace(encrypted.String) == "" {
+		// Legacy rows may only contain api_key_hash; plaintext cannot be recovered.
+		return "", nil
+	}
+
+	apiKey, err := s.secrets.Decrypt(encrypted.String)
+	if err != nil {
+		return "", fmt.Errorf("provider sqlite store decrypt api key: %w", err)
+	}
+	return apiKey, nil
 }
 
-// SetAPIKey stores an API key hash for a provider.
-// Note: We store a hash for verification. For real use, integrate with a secrets manager.
+// SetAPIKey stores an API key (encrypted) and hash for connectivity checks.
 func (s *ProviderSQLiteStore) SetAPIKey(ctx context.Context, id string, apiKey string) error {
 	hash := ""
-	if apiKey != "" {
+	if strings.TrimSpace(apiKey) != "" {
 		h := sha256.Sum256([]byte(apiKey))
 		hash = hex.EncodeToString(h[:])
 	}
 
+	encrypted, err := s.secrets.Encrypt(apiKey)
+	if err != nil {
+		return fmt.Errorf("provider sqlite store encrypt api key: %w", err)
+	}
+
+	status := ProviderStatusDisconnected
+	if strings.TrimSpace(apiKey) != "" {
+		status = ProviderStatusConnected
+	}
+
 	res, err := s.db.ExecContext(ctx, `
 UPDATE providers
-SET api_key_hash = ?, status = ?, updated_at = ?
+SET api_key_hash = ?, api_key_enc = ?, status = ?, updated_at = ?
 WHERE id = ?`,
 		nullIfEmpty(hash),
-		string(ProviderStatusConnected),
+		nullIfEmpty(encrypted),
+		string(status),
 		time.Now().UTC().Format(time.RFC3339Nano),
 		id,
 	)
@@ -268,6 +302,37 @@ func isProviderSQLiteUniqueViolation(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "UNIQUE constraint failed: providers.id")
+}
+
+func migrateLegacyProviderSQLiteSchema(db *sql.DB) error {
+	columns, err := sqliteTableColumns(db, "providers")
+	if err != nil {
+		return err
+	}
+
+	if !columns["api_key_enc"] {
+		if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN api_key_enc TEXT`); err != nil {
+			return fmt.Errorf("provider sqlite store add providers.api_key_enc: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func providerSQLiteScope(db *sql.DB) (string, error) {
+	var (
+		seq  int
+		name string
+		path string
+	)
+	if err := db.QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
+		return "", fmt.Errorf("provider sqlite store resolve scope: %w", err)
+	}
+	scope := strings.TrimSpace(path)
+	if scope == "" {
+		scope = "providers"
+	}
+	return scope, nil
 }
 
 var _ ProviderStore = (*ProviderSQLiteStore)(nil)

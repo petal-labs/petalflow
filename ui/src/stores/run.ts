@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import type { Run, RunEvent } from '@/lib/api-types'
-import { runsApi, workflowsApi } from '@/lib/api-client'
+import type { Run, RunEvent, RunExport } from '@/lib/api-types'
+import { runsApi, workflowsApi, type RunStartOptions } from '@/lib/api-client'
 
 export interface RunState {
   runs: Run[]
@@ -16,13 +16,13 @@ export interface RunActions {
   fetchRuns: (params?: { workflow_id?: string; status?: string }) => Promise<void>
   getRun: (runId: string) => Promise<Run>
   setActiveRun: (run: Run | null) => void
-  startRun: (workflowId: string, input: Record<string, unknown>) => Promise<Run>
+  startRun: (workflowId: string, input: Record<string, unknown>, options?: RunStartOptions) => Promise<Run>
   subscribeToEvents: (runId: string) => void
   unsubscribeFromEvents: () => void
   addEvent: (event: RunEvent) => void
   selectEvent: (eventId: number | null) => void
   clearEvents: () => void
-  exportRun: (runId: string) => void
+  exportRun: (runId: string) => Promise<RunExport>
   clearError: () => void
 }
 
@@ -36,6 +36,27 @@ const initialState: RunState = {
   eventSubscription: null,
 }
 
+function hasRecordValues(value: Record<string, unknown> | undefined): boolean {
+  return Boolean(value) && Object.keys(value as Record<string, unknown>).length > 0
+}
+
+function mergeRunWithExisting(run: Run, existing?: Run): Run {
+  if (!existing) {
+    return run
+  }
+
+  return {
+    ...run,
+    input: hasRecordValues(run.input) ? run.input : existing.input,
+    output: hasRecordValues(run.output) ? run.output : existing.output,
+    metrics: run.metrics || existing.metrics,
+    trace_id: run.trace_id || existing.trace_id,
+    finished_at: run.finished_at || existing.finished_at,
+    completed_at: run.completed_at || existing.completed_at,
+    duration_ms: typeof run.duration_ms === 'number' ? run.duration_ms : existing.duration_ms,
+  }
+}
+
 export const useRunStore = create<RunState & RunActions>()((set, get) => ({
   ...initialState,
 
@@ -43,9 +64,25 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
     set({ loading: true, error: null })
     try {
       const response = await runsApi.list(params)
-      // Defensive: ensure runs is always an array
-      const runs = Array.isArray(response) ? response : []
-      set({ runs, loading: false })
+      const fetchedRuns = Array.isArray(response) ? response : []
+      set((state) => {
+        const existingByRunID = new Map(state.runs.map((run) => [run.run_id, run] as const))
+        const mergedFetchedRuns = fetchedRuns.map((run) => mergeRunWithExisting(run, existingByRunID.get(run.run_id)))
+        const runningLocal = state.runs.filter((run) => run.status === 'running')
+        const merged = [...mergedFetchedRuns]
+        for (const run of runningLocal) {
+          if (params?.workflow_id && run.workflow_id !== params.workflow_id) {
+            continue
+          }
+          if (params?.status && run.status !== params.status) {
+            continue
+          }
+          if (!merged.some((candidate) => candidate.run_id === run.run_id)) {
+            merged.push(run)
+          }
+        }
+        return { runs: merged, loading: false }
+      })
     } catch (err) {
       set({ error: (err as Error).message, loading: false, runs: [] })
     }
@@ -55,8 +92,14 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
     set({ loading: true, error: null })
     try {
       const run = await runsApi.get(runId)
-      set({ loading: false })
-      return run
+      set((state) => ({
+        runs: [
+          mergeRunWithExisting(run, state.runs.find((existing) => existing.run_id === run.run_id)),
+          ...state.runs.filter((existing) => existing.run_id !== run.run_id),
+        ],
+        loading: false,
+      }))
+      return mergeRunWithExisting(run, get().runs.find((existing) => existing.run_id === run.run_id))
     } catch (err) {
       set({ error: (err as Error).message, loading: false })
       throw err
@@ -64,17 +107,26 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
   },
 
   setActiveRun: (run) => {
+    const currentRun = get().activeRun
+    const isSameRun = Boolean(currentRun && run && currentRun.run_id === run.run_id)
+    if (isSameRun) {
+      set({
+        activeRun: mergeRunWithExisting(run as Run, currentRun || undefined),
+      })
+      return
+    }
+
     const { unsubscribeFromEvents } = get()
     unsubscribeFromEvents()
-    set({ activeRun: run, events: [] })
+    set({ activeRun: run, events: [], selectedEventId: null })
   },
 
-  startRun: async (workflowId, input) => {
+  startRun: async (workflowId, input, options) => {
     set({ loading: true, error: null })
     try {
-      const run = await workflowsApi.run(workflowId, input)
+      const run = await workflowsApi.run(workflowId, input, options)
       set((state) => ({
-        runs: [run, ...state.runs],
+        runs: [run, ...state.runs.filter((existing) => existing.run_id !== run.run_id)],
         activeRun: run,
         events: [],
         loading: false,
@@ -109,21 +161,52 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
 
   addEvent: (event) => {
     set((state) => {
+      const duplicate = state.events.some(
+        (existing) =>
+          existing.id === event.id &&
+          existing.event_type === event.event_type &&
+          existing.timestamp === event.timestamp
+      )
+      if (duplicate) {
+        return state
+      }
+
       const events = [...state.events, event]
 
       // Update active run status based on terminal events
       let activeRun = state.activeRun
       if (activeRun && event.run_id === activeRun.run_id) {
         if (event.event_type === 'run.finished') {
-          activeRun = { ...activeRun, status: 'success' }
-        } else if (event.event_type === 'run.failed') {
-          activeRun = { ...activeRun, status: 'failed' }
+          const payloadStatus = typeof event.payload.status === 'string' ? event.payload.status.toLowerCase() : ''
+          const nextStatus = payloadStatus === 'failed' ? 'failed' : payloadStatus === 'canceled' ? 'canceled' : 'completed'
+          activeRun = {
+            ...activeRun,
+            status: nextStatus,
+            finished_at: event.timestamp,
+            completed_at: event.timestamp,
+          }
+        } else if (event.event_type === 'run.failed' || event.event_type === 'run.error') {
+          activeRun = {
+            ...activeRun,
+            status: 'failed',
+            finished_at: event.timestamp,
+            completed_at: event.timestamp,
+          }
         } else if (event.event_type === 'run.canceled') {
-          activeRun = { ...activeRun, status: 'canceled' }
+          activeRun = {
+            ...activeRun,
+            status: 'canceled',
+            finished_at: event.timestamp,
+            completed_at: event.timestamp,
+          }
         }
       }
 
-      return { events, activeRun }
+      const runs = activeRun
+        ? state.runs.map((run) => (run.run_id === activeRun!.run_id ? activeRun! : run))
+        : state.runs
+
+      return { events, activeRun, runs }
     })
   },
 
@@ -131,7 +214,14 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
 
   clearEvents: () => set({ events: [], selectedEventId: null }),
 
-  exportRun: (runId) => runsApi.export(runId),
+  exportRun: async (runId) => {
+    try {
+      return await runsApi.export(runId)
+    } catch (err) {
+      set({ error: (err as Error).message })
+      throw err
+    }
+  },
 
   clearError: () => set({ error: null }),
 }))

@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
 
 export interface User {
   id: string
@@ -36,141 +35,123 @@ const initialState: AuthState = {
 const API_BASE = ''
 
 export const useAuthStore = create<AuthState & AuthActions>()(
-  persist(
-    (set, get) => ({
-      ...initialState,
+  (set) => ({
+    ...initialState,
 
-      login: async (email: string, password: string) => {
-        set({ loading: true, error: null })
-        try {
-          const response = await fetch(`${API_BASE}/api/auth/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password }),
-          })
+    login: async (email: string, password: string) => {
+      set({ loading: true, error: null })
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        })
 
-          if (!response.ok) {
-            const data = await response.json().catch(() => ({}))
-            throw new Error(data.error?.message || 'Login failed')
-          }
-
-          const data = await response.json()
-          set({
-            user: data.user,
-            token: data.token,
-            isAuthenticated: true,
-            loading: false,
-          })
-        } catch (err) {
-          set({
-            error: (err as Error).message,
-            loading: false,
-            isAuthenticated: false,
-          })
-          throw err
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}))
+          throw new Error(data.error?.message || 'Login failed')
         }
-      },
 
-      register: async (email: string, password: string, name?: string) => {
-        set({ loading: true, error: null })
-        try {
-          const response = await fetch(`${API_BASE}/api/auth/register`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password, name }),
-          })
-
-          if (!response.ok) {
-            const data = await response.json().catch(() => ({}))
-            throw new Error(data.error?.message || 'Registration failed')
-          }
-
-          const data = await response.json()
-          set({
-            user: data.user,
-            token: data.token,
-            isAuthenticated: true,
-            loading: false,
-          })
-        } catch (err) {
-          set({
-            error: (err as Error).message,
-            loading: false,
-            isAuthenticated: false,
-          })
-          throw err
-        }
-      },
-
-      logout: () => {
+        const data = await response.json()
         set({
+          user: data.user,
+          token: data.token ?? null,
+          isAuthenticated: true,
+          loading: false,
+        })
+      } catch (err) {
+        set({
+          error: (err as Error).message,
+          loading: false,
+          isAuthenticated: false,
           user: null,
           token: null,
-          isAuthenticated: false,
-          error: null,
         })
-        // Optionally notify the server
-        const token = get().token
-        if (token) {
-          fetch(`${API_BASE}/api/auth/logout`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${token}` },
-          }).catch(() => {
-            // Ignore errors during logout
-          })
+        throw err
+      }
+    },
+
+    register: async (email: string, password: string, name?: string) => {
+      set({ loading: true, error: null })
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password, name }),
+        })
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}))
+          throw new Error(data.error?.message || 'Registration failed')
         }
-      },
 
-      checkAuth: async () => {
-        const token = get().token
-        if (!token) {
-          set({ isAuthenticated: false })
-          return
-        }
+        const data = await response.json()
+        set({
+          user: data.user,
+          token: data.token ?? null,
+          isAuthenticated: true,
+          loading: false,
+        })
+      } catch (err) {
+        set({
+          error: (err as Error).message,
+          loading: false,
+          isAuthenticated: false,
+          user: null,
+          token: null,
+        })
+        throw err
+      }
+    },
 
-        set({ loading: true })
-        try {
-          const response = await fetch(`${API_BASE}/api/auth/me`, {
-            headers: { Authorization: `Bearer ${token}` },
-          })
+    logout: () => {
+      set({
+        user: null,
+        token: null,
+        isAuthenticated: false,
+        error: null,
+      })
 
-          if (!response.ok) {
-            set({
-              user: null,
-              token: null,
-              isAuthenticated: false,
-              loading: false,
-            })
-            return
-          }
+      fetch(`${API_BASE}/api/auth/logout`, {
+        method: 'POST',
+      }).catch(() => {
+        // Best effort; local state has already been reset.
+      })
+    },
 
-          const user = await response.json()
-          set({
-            user,
-            isAuthenticated: true,
-            loading: false,
-          })
-        } catch {
+    checkAuth: async () => {
+      set({ loading: true, error: null })
+      try {
+        const response = await fetch(`${API_BASE}/api/auth/me`)
+
+        if (!response.ok) {
           set({
             user: null,
             token: null,
             isAuthenticated: false,
             loading: false,
           })
+          return
         }
-      },
 
-      clearError: () => set({ error: null }),
-    }),
-    {
-      name: 'petalflow-auth',
-      partialize: (state) => ({
-        user: state.user,
-        token: state.token,
-        isAuthenticated: state.isAuthenticated,
-      }),
-    }
-  )
+        const user = await response.json()
+        set({
+          user,
+          isAuthenticated: true,
+          loading: false,
+        })
+      } catch {
+        set({
+          user: null,
+          token: null,
+          isAuthenticated: false,
+          loading: false,
+        })
+      }
+    },
+
+    clearError: () => set({ error: null }),
+  })
 )
 
 // Helper hook to get authorization header

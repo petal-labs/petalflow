@@ -169,9 +169,15 @@ function CreateWorkflowModal() {
     const workflow = await createGraphWorkflow({
       id: `graph-${Date.now()}`,
       version: '1.0',
-      nodes: [],
+      nodes: [
+        {
+          id: 'start',
+          type: 'noop',
+          config: {},
+        },
+      ],
       edges: [],
-      entry: '',
+      entry: 'start',
     })
     closeModal()
     setActiveWorkflow(workflow)

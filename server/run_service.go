@@ -88,11 +88,16 @@ func (s *Server) planWorkflowRunWithDefinition(
 		return nil, &runAPIError{Status: http.StatusInternalServerError, Code: "TOOL_REGISTRY_ERROR", Message: err.Error()}
 	}
 
-	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory,
+	providers, err := s.resolveRunProviders(ctx)
+	if err != nil {
+		return nil, &runAPIError{Status: http.StatusInternalServerError, Code: "PROVIDER_STORE_ERROR", Message: err.Error()}
+	}
+
+	factory := hydrate.NewLiveNodeFactory(providers, s.clientFactory,
 		hydrate.WithToolRegistry(toolRegistry),
 		hydrate.WithHumanHandler(humanHandler),
 	)
-	execGraph, err := hydrate.HydrateGraph(compiled, s.providers, factory)
+	execGraph, err := hydrate.HydrateGraph(compiled, providers, factory)
 	if err != nil {
 		return nil, &runAPIError{Status: http.StatusUnprocessableEntity, Code: "HYDRATE_ERROR", Message: err.Error()}
 	}
@@ -198,6 +203,20 @@ func scheduleRunMetadataDecorator(meta scheduledRunMetadata) runtime.EventEmitte
 				e.Payload["schedule_id"] = meta.ScheduleID
 				e.Payload["workflow_id"] = meta.WorkflowID
 				e.Payload["scheduled_at"] = meta.ScheduledAt.UTC().Format(time.RFC3339Nano)
+			}
+			next(e)
+		}
+	}
+}
+
+func workflowRunMetadataDecorator(workflowID string) runtime.EventEmitterDecorator {
+	return func(next runtime.EventEmitter) runtime.EventEmitter {
+		return func(e runtime.Event) {
+			if e.Kind == runtime.EventRunStarted || e.Kind == runtime.EventRunFinished {
+				if e.Payload == nil {
+					e.Payload = map[string]any{}
+				}
+				e.Payload["workflow_id"] = workflowID
 			}
 			next(e)
 		}

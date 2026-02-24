@@ -73,9 +73,10 @@ export interface ExecutionConfig {
 }
 
 // Run types
-export type RunStatus = 'running' | 'success' | 'failed' | 'canceled'
+export type RunStatus = 'running' | 'completed' | 'success' | 'failed' | 'canceled'
 
 export interface Run {
+  id?: string
   run_id: string
   workflow_id: string
   status: RunStatus
@@ -85,6 +86,8 @@ export interface Run {
   trace_id?: string
   started_at: string
   finished_at?: string
+  completed_at?: string
+  duration_ms?: number
 }
 
 export interface RunMetrics {
@@ -100,17 +103,24 @@ export interface RunEvent {
   node_id?: string
   payload: Record<string, unknown>
   timestamp: string
+  trace_id?: string
+  span_id?: string
+}
+
+export interface RunExport {
+  run: Run
+  events: RunEvent[]
 }
 
 // Tool types
 export type ToolOrigin = 'native' | 'mcp' | 'http' | 'stdio'
-export type ToolStatus = 'ready' | 'unhealthy' | 'disabled'
+export type ToolStatus = 'ready' | 'unhealthy' | 'disabled' | 'unverified'
 
 export interface Tool {
   name: string
   origin: ToolOrigin
   manifest: ToolManifest
-  config?: Record<string, unknown>
+  config?: Record<string, string>
   status: ToolStatus
   overlay?: Record<string, unknown>
   registered_at: string
@@ -122,12 +132,20 @@ export interface ToolManifest {
   description?: string
   version?: string
   actions: ToolAction[]
+  transport?: {
+    type?: string
+    endpoint?: string
+    command?: string
+    mode?: string
+  }
 }
 
 export interface ToolAction {
   name: string
   description?: string
   parameters?: Record<string, unknown>
+  inputs?: Record<string, unknown>
+  outputs?: Record<string, unknown>
 }
 
 // Provider types
@@ -146,13 +164,18 @@ export interface Provider {
 // Node type (for graph designer palette)
 export interface NodeType {
   type: string
-  kind: string
   category: string
   display_name: string
   description?: string
   config_schema?: Record<string, unknown>
+  ports?: {
+    inputs?: PortDef[]
+    outputs?: PortDef[]
+  }
   inputs?: PortDef[]
   outputs?: PortDef[]
+  is_tool?: boolean
+  tool_mode?: string
 }
 
 export interface PortDef {

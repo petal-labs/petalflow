@@ -15,9 +15,7 @@ export function RunModal() {
 
   const [input, setInput] = useState('{\n  "topic": "AI agents in 2025"\n}')
   const [options, setOptions] = useState({
-    streaming: true,
-    tracing: true,
-    concurrency: 1,
+    humanMode: 'strict' as 'strict' | 'auto_approve' | 'auto_reject',
     timeout: 300,
   })
   const [isRunning, setIsRunning] = useState(false)
@@ -31,7 +29,11 @@ export function RunModal() {
 
     try {
       const parsedInput = JSON.parse(input)
-      const run = await startRun(activeWorkflow.id, parsedInput)
+      const run = await startRun(activeWorkflow.id, parsedInput, {
+        stream: true,
+        timeoutSeconds: options.timeout,
+        humanMode: options.humanMode,
+      })
       closeModal()
       navigate({ to: '/runs', search: { viewRun: run.run_id } })
     } catch (err) {
@@ -93,85 +95,51 @@ export function RunModal() {
             Options
           </label>
 
-          <label className="flex items-center gap-3 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={options.streaming}
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+              Human Node Handling
+            </label>
+            <select
+              value={options.humanMode}
               onChange={(e) =>
-                setOptions((o) => ({ ...o, streaming: e.target.checked }))
+                setOptions((o) => ({
+                  ...o,
+                  humanMode: e.target.value as 'strict' | 'auto_approve' | 'auto_reject',
+                }))
               }
-              className="accent-primary"
-            />
-            <div>
-              <div className="text-sm font-medium text-foreground">Streaming</div>
-              <div className="text-[11px] text-muted-foreground">
-                Show incremental output as it arrives
-              </div>
-            </div>
-          </label>
+              className={cn(
+                'w-full px-2.5 py-2 rounded-lg border border-border bg-surface-1',
+                'text-foreground text-sm',
+                'focus:outline-none focus:ring-1 focus:ring-primary'
+              )}
+            >
+              <option value="strict">strict (fail on human input requests)</option>
+              <option value="auto_approve">auto_approve</option>
+              <option value="auto_reject">auto_reject</option>
+            </select>
+          </div>
 
-          <label className="flex items-center gap-3 cursor-pointer">
+          <div>
+            <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+              Timeout (s)
+            </label>
             <input
-              type="checkbox"
-              checked={options.tracing}
+              type="number"
+              value={options.timeout}
               onChange={(e) =>
-                setOptions((o) => ({ ...o, tracing: e.target.checked }))
+                setOptions((o) => ({
+                  ...o,
+                  timeout: parseInt(e.target.value, 10) || 300,
+                }))
               }
-              className="accent-primary"
+              min={10}
+              max={3600}
+              className={cn(
+                'w-full px-2.5 py-2 rounded-lg border border-border bg-surface-1',
+                'text-foreground text-sm',
+                'focus:outline-none focus:ring-1 focus:ring-primary'
+              )}
             />
-            <div>
-              <div className="text-sm font-medium text-foreground">Tracing</div>
-              <div className="text-[11px] text-muted-foreground">
-                Enable OpenTelemetry trace collection
-              </div>
-            </div>
-          </label>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
-                Concurrency
-              </label>
-              <input
-                type="number"
-                value={options.concurrency}
-                onChange={(e) =>
-                  setOptions((o) => ({
-                    ...o,
-                    concurrency: parseInt(e.target.value) || 1,
-                  }))
-                }
-                min={1}
-                max={10}
-                className={cn(
-                  'w-full px-2.5 py-2 rounded-lg border border-border bg-surface-1',
-                  'text-foreground text-sm',
-                  'focus:outline-none focus:ring-1 focus:ring-primary'
-                )}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
-                Timeout (s)
-              </label>
-              <input
-                type="number"
-                value={options.timeout}
-                onChange={(e) =>
-                  setOptions((o) => ({
-                    ...o,
-                    timeout: parseInt(e.target.value) || 300,
-                  }))
-                }
-                min={10}
-                max={3600}
-                className={cn(
-                  'w-full px-2.5 py-2 rounded-lg border border-border bg-surface-1',
-                  'text-foreground text-sm',
-                  'focus:outline-none focus:ring-1 focus:ring-primary'
-                )}
-              />
-            </div>
           </div>
         </div>
 

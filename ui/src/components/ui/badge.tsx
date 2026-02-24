@@ -10,6 +10,7 @@ export type BadgeVariant =
   | 'running'
   | 'ready'
   | 'unhealthy'
+  | 'unverified'
   | 'disabled'
   | 'native'
   | 'mcp'
@@ -35,6 +36,7 @@ const variantStyles: Record<BadgeVariant, string> = {
   running: 'bg-accent-soft text-primary',
   ready: 'bg-green-soft text-green',
   unhealthy: 'bg-red-soft text-red',
+  unverified: 'bg-amber-soft text-amber',
   disabled: 'bg-muted text-muted-foreground',
   native: 'bg-accent-soft text-primary',
   mcp: 'bg-teal-soft text-teal',
@@ -69,8 +71,9 @@ export function WorkflowKindBadge({ kind }: { kind: 'agent_workflow' | 'graph' }
 }
 
 // Convenience badge for run status
-export function RunStatusBadge({ status }: { status: 'running' | 'success' | 'failed' | 'canceled' }) {
-  return <Badge variant={status}>{status}</Badge>
+export function RunStatusBadge({ status }: { status: 'running' | 'completed' | 'success' | 'failed' | 'canceled' }) {
+  const variant = status === 'completed' ? 'success' : status
+  return <Badge variant={variant}>{status}</Badge>
 }
 
 // Convenience badge for tool origin
@@ -79,6 +82,6 @@ export function ToolOriginBadge({ origin }: { origin: 'native' | 'mcp' | 'http' 
 }
 
 // Convenience badge for tool/provider status
-export function StatusBadge({ status }: { status: 'ready' | 'unhealthy' | 'disabled' | 'connected' | 'disconnected' }) {
+export function StatusBadge({ status }: { status: 'ready' | 'unhealthy' | 'unverified' | 'disabled' | 'connected' | 'disconnected' }) {
   return <Badge variant={status}>{status}</Badge>
 }

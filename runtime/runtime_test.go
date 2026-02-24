@@ -356,6 +356,36 @@ func TestRuntime_Run_RunIDGenerated(t *testing.T) {
 	}
 }
 
+func TestRuntime_Run_UsesPresetRunID(t *testing.T) {
+	g := graph.NewGraph("runid-preset-test")
+	g.AddNode(core.NewNoopNode("start"))
+	g.SetEntry("start")
+
+	rt := runtime.NewRuntime()
+	env := core.NewEnvelope()
+	env.Trace.RunID = "run-preset-123"
+
+	var started runtime.Event
+	opts := runtime.DefaultRunOptions()
+	opts.EventHandler = func(e runtime.Event) {
+		if e.Kind == runtime.EventRunStarted {
+			started = e
+		}
+	}
+
+	result, err := rt.Run(context.Background(), g, env, opts)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Trace.RunID != "run-preset-123" {
+		t.Fatalf("result.Trace.RunID = %q, want %q", result.Trace.RunID, "run-preset-123")
+	}
+	if started.RunID != "run-preset-123" {
+		t.Fatalf("run.started RunID = %q, want %q", started.RunID, "run-preset-123")
+	}
+}
+
 func TestRuntime_Run_CustomNow(t *testing.T) {
 	fixedTime := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 

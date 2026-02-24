@@ -147,6 +147,56 @@ func TestLLMNode_Run_WithTemplate(t *testing.T) {
 	}
 }
 
+func TestLLMNode_Run_WithLegacyTasksTemplateReference(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: "Answer"},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:          "gpt-4",
+		PromptTemplate: "Critique this: {{tasks.research.output}}",
+	})
+
+	env := core.NewEnvelope().
+		WithVar("research__researcher_output", "Finding A")
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(client.requests))
+	}
+	if got := client.requests[0].InputText; got != "Critique this: Finding A" {
+		t.Fatalf("request prompt = %q, want %q", got, "Critique this: Finding A")
+	}
+}
+
+func TestLLMNode_Run_WithLegacyInputTemplateReference(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: "Answer"},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:          "gpt-4",
+		PromptTemplate: "Topic: {{input.topic}}",
+	})
+
+	env := core.NewEnvelope().
+		WithVar("topic", "PetalFlow")
+	_, err := node.Run(context.Background(), env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(client.requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(client.requests))
+	}
+	if got := client.requests[0].InputText; got != "Topic: PetalFlow" {
+		t.Fatalf("request prompt = %q, want %q", got, "Topic: PetalFlow")
+	}
+}
+
 func TestLLMNode_Run_WithJSONSchema(t *testing.T) {
 	client := &mockLLMClient{
 		response: core.LLMResponse{
