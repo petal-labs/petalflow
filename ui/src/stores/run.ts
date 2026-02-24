@@ -124,12 +124,33 @@ export const useRunStore = create<RunState & RunActions>()((set, get) => ({
   startRun: async (workflowId, input, options) => {
     set({ loading: true, error: null })
     try {
-      const run = await workflowsApi.run(workflowId, input, options)
+      const run = await workflowsApi.run(workflowId, input, {
+        ...options,
+        onEvent: (event) => {
+          get().addEvent(event)
+        },
+        onRunUpdate: (updatedRun) => {
+          set((state) => {
+            const existing = state.runs.find((candidate) => candidate.run_id === updatedRun.run_id)
+            const merged = mergeRunWithExisting(updatedRun, existing)
+            const runs = [merged, ...state.runs.filter((candidate) => candidate.run_id !== merged.run_id)]
+            const activeRun =
+              state.activeRun?.run_id === merged.run_id
+                ? mergeRunWithExisting(merged, state.activeRun)
+                : state.activeRun
+            return { runs, activeRun }
+          })
+        },
+        onBackgroundError: (error) => {
+          set({ error: error.message })
+        },
+      })
       set((state) => ({
         runs: [run, ...state.runs.filter((existing) => existing.run_id !== run.run_id)],
         activeRun: run,
-        events: [],
+        events: state.events.filter((event) => event.run_id === run.run_id),
         loading: false,
+        selectedEventId: null,
       }))
       return run
     } catch (err) {

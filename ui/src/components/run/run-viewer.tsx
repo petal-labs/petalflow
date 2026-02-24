@@ -1,6 +1,8 @@
-import { useMemo, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useRunStore } from '@/stores/run'
 import { Icon } from '@/components/ui/icon'
+import { OrbitIcon } from '@/components/ui/orbit-icon'
+import { Markdown } from '@/components/ui/markdown'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
 
@@ -8,22 +10,24 @@ interface RunViewerProps {
   runId: string
 }
 
-// Event type colors for timeline
-const eventTypeColors: Record<string, string> = {
-  'run.started': 'var(--teal)',
-  'node.started': 'var(--blue)',
-  'node.finished': 'var(--green)',
-  'node.failed': 'var(--red)',
-  'node.output': 'var(--purple)',
-  'node.output.delta': 'var(--purple)',
-  'node.output.final': 'var(--green)',
-  'node.output.preview': 'var(--teal)',
-  'run.finished': 'var(--green)',
-  'run.failed': 'var(--red)',
-  'run.error': 'var(--red)',
-  'run.canceled': 'var(--orange)',
-  'tool.call': 'var(--orange)',
-  'tool.result': 'var(--teal)',
+type ActivityStatus = 'running' | 'completed' | 'failed'
+
+interface ActivityItem {
+  nodeId: string
+  taskId: string
+  agentId: string
+  displayName: string
+  status: ActivityStatus
+  startedAt: string
+  finishedAt?: string
+  outputFinal?: unknown
+  outputTimestamp?: string
+}
+
+interface ArtifactItem {
+  name: string
+  type: string
+  size?: number
 }
 
 function formatTimestamp(ts: string): string {
@@ -42,78 +46,196 @@ function formatDuration(ms: number): string {
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
 }
 
+function parseNodeIdentity(nodeId: string): { taskId: string; agentId: string; displayName: string } {
+  const [taskPart, agentPart] = nodeId.split('__')
+  const taskId = taskPart || nodeId
+  const agentId = agentPart || ''
+  const displayName = agentId ? `${taskId} (${agentId})` : taskId
+  return { taskId, agentId, displayName }
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return {}
+}
+
+function extractFinalOutputValue(payload: Record<string, unknown>): unknown {
+  if (typeof payload.text === 'string') return payload.text
+  if (typeof payload.output === 'string') return payload.output
+  if (payload.output !== undefined) return payload.output
+  return payload
+}
+
+function toMarkdownContent(value: unknown): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``
+      } catch {
+        // Fall through to plain text rendering.
+      }
+    }
+    return value
+  }
+
+  if (value && typeof value === 'object') {
+    return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``
+  }
+
+  return String(value ?? '')
+}
+
+function statusBadgeVariant(status: string) {
+  if (status === 'success' || status === 'completed') return 'success'
+  if (status === 'running') return 'running'
+  if (status === 'failed') return 'failed'
+  return 'default'
+}
+
 export function RunViewer({ runId }: RunViewerProps) {
   const runs = useRunStore((s) => s.runs)
   const activeRun = useRunStore((s) => s.activeRun)
   const events = useRunStore((s) => s.events)
-  const selectedEventId = useRunStore((s) => s.selectedEventId)
-  const selectEvent = useRunStore((s) => s.selectEvent)
   const subscribeToEvents = useRunStore((s) => s.subscribeToEvents)
   const unsubscribeFromEvents = useRunStore((s) => s.unsubscribeFromEvents)
+  const [tick, setTick] = useState(() => Date.now())
 
-  // Use activeRun if it matches, otherwise find in runs list
-  const run = activeRun?.run_id === runId ? activeRun : runs.find((r) => r.run_id === runId)
+  const run = activeRun?.run_id === runId ? activeRun : runs.find((candidate) => candidate.run_id === runId)
 
-  // Subscribe to events when run is active
   useEffect(() => {
-    if (run) {
-      subscribeToEvents(runId)
-      return () => unsubscribeFromEvents()
-    }
-    return undefined
+    if (!run) return undefined
+    subscribeToEvents(runId)
+    return () => unsubscribeFromEvents()
   }, [run, runId, subscribeToEvents, unsubscribeFromEvents])
 
-  // Get selected event details
-  const selectedEvent = useMemo(() => {
-    if (!selectedEventId) return events[events.length - 1]
-    return events.find((e) => e.id === selectedEventId)
-  }, [events, selectedEventId])
-
-  // Calculate run duration
-  const duration = useMemo(() => {
-    if (!run) return null
-    if (run.status === 'running') {
-      return Date.now() - new Date(run.started_at).getTime()
-    }
-    const completedAt = run.finished_at || run.completed_at
-    if (completedAt) {
-      return new Date(completedAt).getTime() - new Date(run.started_at).getTime()
-    }
-    if (typeof run.duration_ms === 'number') {
-      return run.duration_ms
-    }
-    return null
-  }, [run])
-
-  // Extract data envelope from events
-  const dataEnvelope = useMemo(() => {
-    const runOutput = run?.output
-    const baseOutput = runOutput && typeof runOutput === 'object' ? runOutput : {}
-    const outputVarsCandidate =
-      baseOutput &&
-      typeof baseOutput === 'object' &&
-      'vars' in baseOutput &&
-      typeof (baseOutput as { vars?: unknown }).vars === 'object'
-        ? ((baseOutput as { vars: Record<string, unknown> }).vars || {})
-        : {}
-
-    const variables: Record<string, unknown> = { ...outputVarsCandidate }
-    const artifacts: { name: string; type: string; size?: number }[] = []
+  const activity = useMemo(() => {
+    const indexByNode = new Map<string, number>()
+    const items: ActivityItem[] = []
 
     for (const event of events) {
-      if ((event.event_type === 'output' || event.event_type.startsWith('node.output')) && event.payload) {
-        Object.assign(variables, event.payload)
-      }
-      if (event.event_type === 'artifact' && event.payload) {
-        artifacts.push({
-          name: event.payload.name as string,
-          type: event.payload.type as string,
-          size: event.payload.size as number | undefined,
+      if (!event.node_id) continue
+      const nodeId = event.node_id
+      let idx = indexByNode.get(nodeId)
+      if (idx === undefined) {
+        const identity = parseNodeIdentity(nodeId)
+        idx = items.length
+        indexByNode.set(nodeId, idx)
+        items.push({
+          nodeId,
+          taskId: identity.taskId,
+          agentId: identity.agentId,
+          displayName: identity.displayName,
+          status: 'running',
+          startedAt: event.timestamp,
         })
+      }
+
+      const current = items[idx]
+      if (event.event_type === 'node.started') {
+        current.startedAt = event.timestamp
+        current.status = 'running'
+      } else if (event.event_type === 'node.finished') {
+        current.finishedAt = event.timestamp
+        if (current.status !== 'failed') {
+          current.status = 'completed'
+        }
+      } else if (event.event_type === 'node.failed') {
+        current.finishedAt = event.timestamp
+        current.status = 'failed'
+      } else if (event.event_type === 'node.output.final') {
+        current.outputFinal = extractFinalOutputValue(asObject(event.payload))
+        current.outputTimestamp = event.timestamp
       }
     }
 
-    return { variables, artifacts }
+    if (run && run.status !== 'running') {
+      const terminalAt = run.finished_at || run.completed_at
+      for (const item of items) {
+        if (item.status === 'running') {
+          item.status = run.status === 'failed' ? 'failed' : 'completed'
+          item.finishedAt = terminalAt || item.finishedAt
+        }
+      }
+    }
+
+    return items
+  }, [events, run])
+
+  const currentActivity = useMemo(() => {
+    const running = activity.filter((item) => item.status === 'running')
+    return running[running.length - 1]
+  }, [activity])
+
+  useEffect(() => {
+    if (!run) return undefined
+    if (run.status !== 'running' && !currentActivity) return undefined
+    const intervalId = window.setInterval(() => setTick(Date.now()), 1000)
+    return () => window.clearInterval(intervalId)
+  }, [run, currentActivity])
+
+  const runElapsedMs = useMemo(() => {
+    if (!run) return 0
+    const startMs = new Date(run.started_at).getTime()
+    const endRaw = run.finished_at || run.completed_at
+    const endMs = endRaw ? new Date(endRaw).getTime() : tick
+    return Math.max(0, endMs - startMs)
+  }, [run, tick])
+
+  const currentActivityElapsedMs = useMemo(() => {
+    if (!currentActivity) return 0
+    const startMs = new Date(currentActivity.startedAt).getTime()
+    const endMs =
+      currentActivity.status === 'running'
+        ? tick
+        : new Date(currentActivity.finishedAt || currentActivity.startedAt).getTime()
+    return Math.max(0, endMs - startMs)
+  }, [currentActivity, tick])
+
+  const finalOutputs = useMemo(
+    () =>
+      activity
+        .filter((item) => item.outputFinal !== undefined)
+        .map((item) => ({
+          nodeId: item.nodeId,
+          title: item.displayName,
+          timestamp: item.outputTimestamp || item.finishedAt || item.startedAt,
+          value: item.outputFinal as unknown,
+        })),
+    [activity]
+  )
+
+  const artifacts = useMemo(() => {
+    const list: ArtifactItem[] = []
+
+    for (const event of events) {
+      if (event.event_type !== 'artifact') continue
+      const payload = asObject(event.payload)
+      list.push({
+        name: typeof payload.name === 'string' && payload.name !== '' ? payload.name : 'artifact',
+        type: typeof payload.type === 'string' ? payload.type : 'artifact',
+        size: typeof payload.size === 'number' ? payload.size : undefined,
+      })
+    }
+
+    const runOutput = asObject(run?.output)
+    const runArtifacts = Array.isArray(runOutput.artifacts) ? runOutput.artifacts : []
+    for (const candidate of runArtifacts) {
+      const payload = asObject(candidate)
+      list.push({
+        name: typeof payload.name === 'string' && payload.name !== '' ? payload.name : 'artifact',
+        type: typeof payload.type === 'string' ? payload.type : 'artifact',
+        size: typeof payload.size === 'number' ? payload.size : undefined,
+      })
+    }
+
+    return list
   }, [events, run?.output])
 
   if (!run) {
@@ -126,249 +248,165 @@ export function RunViewer({ runId }: RunViewerProps) {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Left: Event Timeline */}
-      <div className="w-64 border-r border-border bg-surface-0 flex flex-col">
-        <div className="p-3 border-b border-border">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Timeline
-            </span>
-            <Badge
-              variant={
-                run.status === 'success' || run.status === 'completed'
-                  ? 'success'
-                  : run.status === 'running'
-                    ? 'running'
-                    : run.status === 'failed'
-                      ? 'failed'
-                      : 'default'
-              }
-            >
-              {run.status}
-            </Badge>
-          </div>
-          {duration !== null && (
-            <div className="text-[11px] text-muted-foreground mt-1">
-              Duration: {formatDuration(duration)}
-            </div>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-auto">
-          {events.length === 0 ? (
-            <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
-              {run.status === 'running' ? 'Waiting for events...' : 'No events recorded'}
-            </div>
-          ) : (
-            <div className="p-2 space-y-1">
-              {events.map((event) => (
-                <button
-                  key={event.id}
-                  onClick={() => selectEvent(event.id)}
-                  className={cn(
-                    'w-full text-left p-2 rounded-lg transition-colors',
-                    'hover:bg-surface-1',
-                    selectedEvent?.id === event.id && 'bg-accent-soft border border-primary'
-                  )}
-                >
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="w-2 h-2 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: eventTypeColors[event.event_type] || 'var(--muted-foreground)' }}
-                    />
-                    <span className="text-xs font-medium text-foreground truncate">
-                      {event.event_type.replace(/\./g, ' ')}
-                    </span>
-                  </div>
-                  <div className="text-[10px] text-muted-foreground mt-0.5 pl-4">
-                    {formatTimestamp(event.timestamp)}
-                    {event.node_id && ` · ${event.node_id}`}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Center: Active Node / Event Details */}
       <div className="flex-1 flex flex-col bg-canvas overflow-hidden">
-        <div className="p-4 border-b border-border bg-surface-0">
-          <div className="flex items-center justify-between">
+        <div className="p-4 border-b border-border bg-surface-0 space-y-2">
+          <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-bold text-foreground">
-                {selectedEvent ? selectedEvent.event_type.replace(/\./g, ' ') : 'No event selected'}
-              </h3>
-              {selectedEvent?.node_id && (
+              <h3 className="text-sm font-bold text-foreground">Run Activity</h3>
+              {currentActivity ? (
                 <p className="text-xs text-muted-foreground mt-0.5">
-                  Node: {selectedEvent.node_id}
+                  Running now: <span className="text-foreground">{currentActivity.displayName}</span> ·{' '}
+                  {formatDuration(currentActivityElapsedMs)}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {run.status === 'running' ? 'Waiting for task events...' : 'No active task'}
                 </p>
               )}
             </div>
-            {selectedEvent && (
-              <span className="text-xs text-muted-foreground">
-                {formatTimestamp(selectedEvent.timestamp)}
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              <div className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                <OrbitIcon
+                  size={14}
+                  className={cn(
+                    run.status === 'running' && 'animate-orbit-loop-2ms text-blue',
+                    run.status === 'failed' && 'text-red',
+                    (run.status === 'completed' || run.status === 'success') && 'text-green',
+                    run.status === 'canceled' && 'text-amber'
+                  )}
+                />
+                <span>Current Status</span>
+              </div>
+              <Badge variant={statusBadgeVariant(run.status)}>{run.status}</Badge>
+            </div>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            Elapsed: {formatDuration(runElapsedMs)}
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto p-4">
-          {selectedEvent ? (
-            <div className="space-y-4">
-              {/* Event metadata */}
-              {(selectedEvent.trace_id || selectedEvent.span_id) && (
-                <div>
-                  <div className="text-xs font-semibold text-muted-foreground mb-2">Trace</div>
-                  <div className="p-3 rounded-lg bg-surface-1 border border-border space-y-1.5">
-                    {selectedEvent.trace_id && (
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="text-muted-foreground">Trace ID</span>
-                        <span className="text-foreground font-mono break-all text-right">{selectedEvent.trace_id}</span>
-                      </div>
-                    )}
-                    {selectedEvent.span_id && (
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="text-muted-foreground">Span ID</span>
-                        <span className="text-foreground font-mono break-all text-right">{selectedEvent.span_id}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
+        <div className="flex-1 overflow-auto p-4 space-y-4">
+          <section className="rounded-xl border border-border bg-surface-0">
+            <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Task Activity
+            </div>
+            <div className="p-3 space-y-2">
+              {activity.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No node activity recorded yet.</div>
+              ) : (
+                activity.map((item) => {
+                  const statusIcon =
+                    item.status === 'failed' ? (
+                      <Icon name="x" size={14} className="text-red" />
+                    ) : item.status === 'completed' ? (
+                      <Icon name="check" size={14} className="text-green" />
+                    ) : (
+                      <Icon name="clock" size={14} className="text-blue animate-pulse" />
+                    )
+                  const durationMs = Math.max(
+                    0,
+                    (item.status === 'running' ? tick : new Date(item.finishedAt || item.startedAt).getTime()) -
+                      new Date(item.startedAt).getTime()
+                  )
 
-              {/* Event payload */}
-              {selectedEvent.payload && Object.keys(selectedEvent.payload).length > 0 && (
-                <div>
-                  <div className="text-xs font-semibold text-muted-foreground mb-2">Payload</div>
-                  <pre className="p-3 rounded-lg bg-surface-1 border border-border text-xs text-foreground font-mono overflow-auto max-h-96">
-                    {JSON.stringify(selectedEvent.payload, null, 2)}
-                  </pre>
-                </div>
-              )}
-
-              {/* Streaming output preview */}
-              {(selectedEvent.event_type === 'output' || selectedEvent.event_type.startsWith('node.output')) && selectedEvent.payload && (
-                <div>
-                  <div className="text-xs font-semibold text-muted-foreground mb-2">Output Preview</div>
-                  <div className="p-3 rounded-lg bg-surface-1 border border-border">
-                    <pre className="text-sm text-foreground whitespace-pre-wrap">
-                      {typeof selectedEvent.payload === 'string'
-                        ? selectedEvent.payload
-                        : JSON.stringify(selectedEvent.payload, null, 2)}
-                    </pre>
-                  </div>
-                </div>
+                  return (
+                    <div
+                      key={item.nodeId}
+                      className={cn(
+                        'rounded-lg border px-3 py-2 flex items-center justify-between gap-3',
+                        item.status === 'running' ? 'border-primary bg-accent-soft' : 'border-border bg-surface-1'
+                      )}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {statusIcon}
+                        <div className="min-w-0">
+                          <div className="text-sm text-foreground truncate">{item.displayName}</div>
+                          <div className="text-[11px] text-muted-foreground">
+                            {item.status}
+                            {' · '}
+                            {formatTimestamp(item.startedAt)}
+                            {item.finishedAt && ` → ${formatTimestamp(item.finishedAt)}`}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-xs text-muted-foreground">{formatDuration(durationMs)}</div>
+                    </div>
+                  )
+                })
               )}
             </div>
-          ) : (
-            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-              Select an event from the timeline
+          </section>
+
+          <section className="rounded-xl border border-border bg-surface-0">
+            <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Node Output Final
             </div>
-          )}
+            <div className="p-3 space-y-3">
+              {finalOutputs.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No final node output captured yet.</div>
+              ) : (
+                finalOutputs.map((output) => (
+                  <div key={`${output.nodeId}-${output.timestamp}`} className="rounded-lg border border-border bg-surface-1">
+                    <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-3">
+                      <div className="text-xs font-semibold text-foreground truncate">{output.title}</div>
+                      <div className="text-[11px] text-muted-foreground shrink-0">
+                        {formatTimestamp(output.timestamp)}
+                      </div>
+                    </div>
+                    <div className="px-3 py-3">
+                      <Markdown content={toMarkdownContent(output.value)} />
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
         </div>
       </div>
 
-      {/* Right: Data Envelope */}
-      <div className="w-72 border-l border-border bg-surface-0 flex flex-col">
+      <aside className="w-80 border-l border-border bg-surface-0 flex flex-col">
         <div className="p-3 border-b border-border">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            Data Envelope
-          </span>
+          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Run Details</span>
         </div>
 
         <div className="flex-1 overflow-auto p-3 space-y-4">
-          {/* Run Info */}
-          <div>
-            <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-2">
-              Run Info
-            </div>
-            <div className="space-y-2">
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Run ID</span>
-                <span className="text-foreground font-mono">{run.run_id.slice(0, 8)}...</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-muted-foreground">Workflow</span>
-                <span className="text-foreground">{run.workflow_id}</span>
-              </div>
-              <div className="flex justify-between text-xs">
+          <section className="space-y-2">
+            <div className="text-[11px] font-semibold text-muted-foreground uppercase">Timing</div>
+            <div className="rounded-lg border border-border bg-surface-1 p-2.5 space-y-2">
+              <div className="flex justify-between text-xs gap-3">
                 <span className="text-muted-foreground">Started</span>
                 <span className="text-foreground">{formatTimestamp(run.started_at)}</span>
               </div>
-              {run.finished_at && (
-                <div className="flex justify-between text-xs">
+              {(run.finished_at || run.completed_at) && (
+                <div className="flex justify-between text-xs gap-3">
                   <span className="text-muted-foreground">Finished</span>
-                  <span className="text-foreground">{formatTimestamp(run.finished_at)}</span>
+                  <span className="text-foreground">
+                    {formatTimestamp(run.finished_at || run.completed_at || run.started_at)}
+                  </span>
                 </div>
               )}
-              {!run.finished_at && run.completed_at && (
-                <div className="flex justify-between text-xs">
-                  <span className="text-muted-foreground">Finished</span>
-                  <span className="text-foreground">{formatTimestamp(run.completed_at)}</span>
-                </div>
-              )}
-              {run.metrics && (
-                <>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Tokens</span>
-                    <span className="text-foreground">{run.metrics.total_tokens.toLocaleString()}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-muted-foreground">Tool Calls</span>
-                    <span className="text-foreground">{run.metrics.tool_calls}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Variables */}
-          <div>
-            <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-2 flex items-center gap-1">
-              <Icon name="code" size={12} />
-              Variables
-            </div>
-            {Object.keys(dataEnvelope.variables).length > 0 ? (
-              <div className="space-y-1.5">
-                {Object.entries(dataEnvelope.variables).map(([key, value]) => (
-                  <div
-                    key={key}
-                    className="p-2 rounded-lg bg-surface-1 border border-border"
-                  >
-                    <div className="text-xs font-medium text-foreground">{key}</div>
-                    <div className="text-[11px] text-muted-foreground truncate">
-                      {typeof value === 'string' ? value : JSON.stringify(value)}
-                    </div>
-                  </div>
-                ))}
+              <div className="flex justify-between text-xs gap-3">
+                <span className="text-muted-foreground">Elapsed</span>
+                <span className="text-foreground">{formatDuration(runElapsedMs)}</span>
               </div>
-            ) : (
-              <div className="text-xs text-muted-foreground italic">No variables yet</div>
-            )}
-          </div>
+            </div>
+          </section>
 
-          {/* Artifacts */}
-          <div>
+          <section>
             <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-2 flex items-center gap-1">
               <Icon name="file" size={12} />
               Artifacts
             </div>
-            {dataEnvelope.artifacts.length > 0 ? (
+            {artifacts.length > 0 ? (
               <div className="space-y-1.5">
-                {dataEnvelope.artifacts.map((artifact, idx) => (
-                  <div
-                    key={idx}
-                    className="p-2 rounded-lg bg-surface-1 border border-border flex items-center gap-2"
-                  >
+                {artifacts.map((artifact, idx) => (
+                  <div key={`${artifact.name}-${idx}`} className="p-2 rounded-lg bg-surface-1 border border-border flex items-center gap-2">
                     <Icon name="file" size={14} className="text-muted-foreground" />
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs font-medium text-foreground truncate">
-                        {artifact.name}
-                      </div>
+                      <div className="text-xs font-medium text-foreground truncate">{artifact.name}</div>
                       <div className="text-[10px] text-muted-foreground">
                         {artifact.type}
-                        {artifact.size && ` · ${(artifact.size / 1024).toFixed(1)}KB`}
+                        {typeof artifact.size === 'number' && ` · ${(artifact.size / 1024).toFixed(1)}KB`}
                       </div>
                     </div>
                   </div>
@@ -377,33 +415,9 @@ export function RunViewer({ runId }: RunViewerProps) {
             ) : (
               <div className="text-xs text-muted-foreground italic">No artifacts yet</div>
             )}
-          </div>
-
-          {/* Input */}
-          {run.input && Object.keys(run.input).length > 0 && (
-            <div>
-              <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-2">
-                Input
-              </div>
-              <pre className="p-2 rounded-lg bg-surface-1 border border-border text-[11px] text-foreground font-mono overflow-auto max-h-32">
-                {JSON.stringify(run.input, null, 2)}
-              </pre>
-            </div>
-          )}
-
-          {/* Output */}
-          {run.output && Object.keys(run.output).length > 0 && (
-            <div>
-              <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-2">
-                Final Output
-              </div>
-              <pre className="p-2 rounded-lg bg-surface-1 border border-border text-[11px] text-foreground font-mono overflow-auto max-h-32">
-                {JSON.stringify(run.output, null, 2)}
-              </pre>
-            </div>
-          )}
+          </section>
         </div>
-      </div>
+      </aside>
     </div>
   )
 }

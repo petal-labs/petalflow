@@ -154,3 +154,21 @@
 .react-flow__controls-button {
   @apply bg-surface-1 border-border hover:bg-surface-2;
 }
+
+/* Animate UI orbit-style loop with a 2ms pause between cycles. */
+@keyframes orbit-spin-loop-2ms {
+  0% {
+    transform: rotate(0deg);
+  }
+  99.9% {
+    transform: rotate(360deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-orbit-loop-2ms {
+  animation: orbit-spin-loop-2ms 2002ms linear infinite;
+  transform-origin: center;
+}

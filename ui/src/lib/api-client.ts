@@ -206,6 +206,16 @@ function asNumber(value: unknown): number | undefined {
   return undefined
 }
 
+function asError(value: unknown, fallbackMessage = 'Unexpected error'): Error {
+  if (value instanceof Error) {
+    return value
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    return new Error(value)
+  }
+  return new Error(fallbackMessage)
+}
+
 function normalizeRunStatus(raw: unknown): RunStatus {
   const status = asString(raw).toLowerCase()
   if (status === 'completed') return 'completed'
@@ -377,6 +387,9 @@ export interface RunStartOptions {
   stream?: boolean
   timeoutSeconds?: number
   humanMode?: 'strict' | 'auto_approve' | 'auto_reject'
+  onEvent?: (event: RunEvent) => void
+  onRunUpdate?: (run: Run) => void
+  onBackgroundError?: (error: Error) => void
 }
 
 // Workflows API
@@ -483,64 +496,138 @@ export const workflowsApi = {
       const decoder = new TextDecoder()
       let buffer = ''
       let runID = ''
+      let startedAt = new Date().toISOString()
       let runtimeError = ''
-
+      let streamDone = false
       let streamReadError: unknown = null
+
+      const handleFrames = (frames: SSEFrame[]) => {
+        for (const frame of frames) {
+          const payload = parseJSONOrString(frame.data)
+          const data = asObject(payload)
+          if (!runID) {
+            const candidateRunID = asString(data.run_id || data.RunID)
+            if (candidateRunID) {
+              runID = candidateRunID
+            }
+          }
+
+          const event = normalizeRunEvent(payload, frame.event)
+          if (!event.run_id && runID) {
+            event.run_id = runID
+          }
+          options?.onEvent?.(event)
+
+          if (frame.event === 'run.started') {
+            startedAt = event.timestamp || startedAt
+          }
+          if (frame.event === 'run.error' || frame.event === 'run.failed') {
+            runtimeError = asString(data.error || data.message) || asString(payload)
+          }
+        }
+      }
+
       try {
-        while (true) {
+        // Read until run_id is observed so caller can transition UI immediately.
+        for (;;) {
+          if (runID || runtimeError) {
+            break
+          }
           const { value, done } = await reader.read()
           if (done) {
+            streamDone = true
             break
           }
 
           buffer += decoder.decode(value, { stream: true })
           const parsed = parseSSEFrames(buffer)
           buffer = parsed.rest
-          for (const frame of parsed.frames) {
-            const payload = parseJSONOrString(frame.data)
-            const data = asObject(payload)
-            if (!runID) {
-              const candidateRunID = asString(data.run_id || data.RunID)
-              if (candidateRunID) {
-                runID = candidateRunID
-              }
-            }
-
-            if (frame.event === 'run.error' || frame.event === 'run.failed') {
-              runtimeError = asString(data.error || data.message) || asString(payload)
-            }
-          }
+          handleFrames(parsed.frames)
         }
       } catch (err) {
         streamReadError = err
-
-        if (runID) {
-          return waitForRunCompletion(runID, id, timeoutSeconds)
-        }
-      } finally {
-        reader.releaseLock()
       }
 
       if (runtimeError) {
+        try {
+          reader.releaseLock()
+        } catch {
+          // No-op.
+        }
         throw new ApiError(500, runtimeError)
       }
-      if (streamReadError) {
-        const fallbackOptions = { ...runOptions, stream: false }
-        const fallbackBody: Record<string, unknown> = { input }
-        if (Object.keys(fallbackOptions).length > 0) {
-          fallbackBody.options = fallbackOptions
-        }
-        const rawFallbackRun = await request<Record<string, unknown>>(`/workflows/${id}/run`, {
-          method: 'POST',
-          body: JSON.stringify(fallbackBody),
-        })
-        return normalizeRun(rawFallbackRun, id)
-      }
       if (!runID) {
+        try {
+          reader.releaseLock()
+        } catch {
+          // No-op.
+        }
+        if (streamReadError) {
+          throw new ApiError(0, 'Run stream disconnected before run_id was received')
+        }
         throw new ApiError(500, 'Run stream completed without run_id')
       }
 
-      return waitForRunCompletion(runID, id, timeoutSeconds)
+      const initialRun: Run = {
+        run_id: runID,
+        workflow_id: id,
+        status: 'running',
+        input,
+        started_at: startedAt,
+      }
+      options?.onRunUpdate?.(initialRun)
+
+      void (async () => {
+        while (true) {
+          if (streamDone) {
+            break
+          }
+          try {
+            const { value, done } = await reader.read()
+            if (done) {
+              streamDone = true
+              break
+            }
+
+            buffer += decoder.decode(value, { stream: true })
+            const parsed = parseSSEFrames(buffer)
+            buffer = parsed.rest
+            handleFrames(parsed.frames)
+          } catch (err) {
+            streamReadError = err
+            break
+          }
+        }
+
+        try {
+          reader.releaseLock()
+        } catch {
+          // No-op.
+        }
+
+        let completionSucceeded = false
+        try {
+          const finalRun = await waitForRunCompletion(runID, id, timeoutSeconds)
+          options?.onRunUpdate?.(finalRun)
+          completionSucceeded = true
+        } catch (err) {
+          options?.onBackgroundError?.(asError(err, `Timed out waiting for run ${runID}`))
+        }
+
+        // If we successfully resolved the final run state, do not surface stream-level
+        // disconnections as UI errors.
+        if (completionSucceeded) {
+          return
+        }
+
+        if (runtimeError) {
+          options?.onBackgroundError?.(new ApiError(500, runtimeError))
+        } else if (streamReadError) {
+          options?.onBackgroundError?.(asError(streamReadError, 'Run stream connection failed'))
+        }
+      })()
+
+      return initialRun
     }
 
     const rawRun = await request<Record<string, unknown>>(`/workflows/${id}/run`, {
