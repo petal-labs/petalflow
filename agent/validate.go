@@ -7,6 +7,7 @@ import (
 
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/schemafmt"
 	"github.com/petal-labs/petalflow/tool"
 )
 
@@ -46,6 +47,7 @@ func Validate(wf *AgentWorkflow) []graph.Diagnostic {
 
 	diags := make([]graph.Diagnostic, 0)
 
+	diags = append(diags, validateSchemaHeader(wf)...)
 	diags = append(diags, validateIDFormats(wf)...)
 	diags = append(diags, validateAgents(wf, registry.Global())...)
 	diags = append(diags, validateTasks(wf)...)
@@ -63,6 +65,33 @@ func Validate(wf *AgentWorkflow) []graph.Diagnostic {
 
 	// AT-009: Every defined task must appear in the execution block
 	diags = append(diags, validateOrphanTasks(wf)...)
+
+	return diags
+}
+
+func validateSchemaHeader(wf *AgentWorkflow) []graph.Diagnostic {
+	diags := make([]graph.Diagnostic, 0)
+
+	if wf.Kind != "" {
+		normalized, _, err := schemafmt.NormalizeKind(wf.Kind)
+		if err != nil {
+			diags = append(diags, errDiag("AT-014", "INVALID_SCHEMA_HEADER",
+				fmt.Sprintf("Invalid workflow kind: %v", err),
+				"kind"))
+		} else if normalized != schemafmt.KindAgent {
+			diags = append(diags, errDiag("AT-014", "INVALID_SCHEMA_HEADER",
+				fmt.Sprintf("Workflow kind %q is not valid for agent schema (expected %q)", wf.Kind, schemafmt.KindAgent),
+				"kind"))
+		}
+	}
+
+	if wf.SchemaVersion != "" {
+		if err := schemafmt.ValidateSchemaVersion(wf.SchemaVersion, schemafmt.SupportedAgentSchemaMajor); err != nil {
+			diags = append(diags, errDiag("AT-014", "INVALID_SCHEMA_HEADER",
+				fmt.Sprintf("Invalid schema_version: %v", err),
+				"schema_version"))
+		}
+	}
 
 	return diags
 }

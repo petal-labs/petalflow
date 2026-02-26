@@ -51,6 +51,69 @@ func TestValidate_NilWorkflow(t *testing.T) {
 	}
 }
 
+// --- AT-014: INVALID_SCHEMA_HEADER ---
+
+func TestValidate_AT014_InvalidKind(t *testing.T) {
+	wf := validWorkflow()
+	wf.Kind = "workflow"
+
+	diags := Validate(wf)
+	found := findDiagCode(diags, "AT-014")
+	if found == nil {
+		t.Fatal("expected AT-014 for invalid kind")
+	}
+	if found.Path != "kind" {
+		t.Errorf("path = %q, want %q", found.Path, "kind")
+	}
+}
+
+func TestValidate_AT014_LegacyKindAliasAccepted(t *testing.T) {
+	wf := validWorkflow()
+	wf.Kind = "agent-workflow"
+
+	diags := Validate(wf)
+	found := findDiagCode(diags, "AT-014")
+	if found != nil {
+		t.Fatalf("legacy kind alias should be accepted, got AT-014: %s", found.Message)
+	}
+}
+
+func TestValidate_AT014_InvalidSchemaVersion(t *testing.T) {
+	wf := validWorkflow()
+	wf.SchemaVersion = "1.0"
+
+	diags := Validate(wf)
+	found := findDiagCode(diags, "AT-014")
+	if found == nil {
+		t.Fatal("expected AT-014 for invalid schema_version")
+	}
+	if found.Path != "schema_version" {
+		t.Errorf("path = %q, want %q", found.Path, "schema_version")
+	}
+}
+
+func TestValidate_AT014_UnsupportedSchemaMajor(t *testing.T) {
+	wf := validWorkflow()
+	wf.SchemaVersion = "2.0.0"
+
+	diags := Validate(wf)
+	found := findDiagCode(diags, "AT-014")
+	if found == nil {
+		t.Fatal("expected AT-014 for unsupported schema_version major")
+	}
+}
+
+func TestValidate_AT014_MissingSchemaVersionLegacyAccepted(t *testing.T) {
+	wf := validWorkflow()
+	wf.SchemaVersion = ""
+
+	diags := Validate(wf)
+	found := findDiagCode(diags, "AT-014")
+	if found != nil {
+		t.Fatalf("legacy workflow without schema_version should be accepted, got: %s", found.Message)
+	}
+}
+
 // --- AT-001: UNDEFINED_AGENT ---
 
 func TestValidate_AT001_UndefinedAgent(t *testing.T) {

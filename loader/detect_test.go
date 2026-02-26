@@ -96,6 +96,63 @@ func TestDetectSchema_InvalidYAML(t *testing.T) {
 	}
 }
 
+func TestDetectSchema_AgentJSON_LegacyKindAlias(t *testing.T) {
+	data := []byte(`{"kind": "agent-workflow", "agents": {}, "tasks": {}}`)
+	kind, err := DetectSchema(data, "workflow.json")
+	if err != nil {
+		t.Fatalf("DetectSchema() error = %v", err)
+	}
+	if kind != SchemaKindAgent {
+		t.Errorf("kind = %q, want %q", kind, SchemaKindAgent)
+	}
+}
+
+func TestDetectSchema_InvalidKind(t *testing.T) {
+	data := []byte(`{"kind": "workflow", "agents": {}, "tasks": {}}`)
+	_, err := DetectSchema(data, "workflow.json")
+	if err == nil {
+		t.Fatal("expected error for invalid kind")
+	}
+}
+
+func TestDetectSchema_InvalidSchemaVersion(t *testing.T) {
+	data := []byte(`{"kind": "agent_workflow", "schema_version": "1.0", "agents": {}, "tasks": {}}`)
+	_, err := DetectSchema(data, "workflow.json")
+	if err == nil {
+		t.Fatal("expected error for invalid schema_version")
+	}
+}
+
+func TestDetectSchema_UnsupportedSchemaMajor(t *testing.T) {
+	data := []byte(`{"kind": "graph", "schema_version": "2.0.0", "nodes": [], "edges": []}`)
+	_, err := DetectSchema(data, "workflow.json")
+	if err == nil {
+		t.Fatal("expected error for unsupported schema_version major")
+	}
+}
+
+func TestDetectSchema_ValidSchemaVersion_JSON(t *testing.T) {
+	data := []byte(`{"kind":"agent_workflow","schema_version":"1.2.3","agents":{},"tasks":{}}`)
+	kind, err := DetectSchema(data, "workflow.json")
+	if err != nil {
+		t.Fatalf("DetectSchema() error = %v", err)
+	}
+	if kind != SchemaKindAgent {
+		t.Errorf("kind = %q, want %q", kind, SchemaKindAgent)
+	}
+}
+
+func TestDetectSchema_ValidSchemaVersion_YAML(t *testing.T) {
+	data := []byte("kind: graph\nschema_version: 1.0.0\nnodes: []\nedges: []\n")
+	kind, err := DetectSchema(data, "workflow.yaml")
+	if err != nil {
+		t.Fatalf("DetectSchema() error = %v", err)
+	}
+	if kind != SchemaKindGraph {
+		t.Errorf("kind = %q, want %q", kind, SchemaKindGraph)
+	}
+}
+
 func TestIsYAML(t *testing.T) {
 	tests := []struct {
 		path string

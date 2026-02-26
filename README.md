@@ -164,6 +164,7 @@ Think of Agent/Task as a project plan for AI work:
 
 ```yaml
 version: "1.0"
+schema_version: "1.0.0"
 kind: agent_workflow
 id: research_workflow
 name: Research Assistant
@@ -198,6 +199,10 @@ execution:
     - research
     - write_report
 ```
+
+`schema_version` uses semantic versioning (`MAJOR.MINOR.PATCH`). Current supported major is `1`.
+Legacy workflows without `schema_version` continue to load during the transition window for schema major `1`; they are planned to be rejected when schema major `2` is introduced.
+Versioned JSON schema artifacts for editor/plugin tooling live in `schemas/agent-workflow/v1.json` and `schemas/graph-workflow/v1.json`.
 
 ## Daemon API
 

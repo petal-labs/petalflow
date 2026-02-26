@@ -92,8 +92,10 @@ func TestGraphDefinition_JSONOmitsEmpty(t *testing.T) {
 
 func TestValidate_ValidGraph(t *testing.T) {
 	gd := GraphDefinition{
-		ID:      "valid",
-		Version: "1.0",
+		ID:            "valid",
+		Version:       "1.0",
+		Kind:          "graph",
+		SchemaVersion: "1.0.0",
 		Nodes: []NodeDef{
 			{ID: "a", Type: "llm_prompt"},
 			{ID: "b", Type: "transform"},
@@ -107,6 +109,82 @@ func TestValidate_ValidGraph(t *testing.T) {
 	diags := gd.Validate()
 	if HasErrors(diags) {
 		t.Errorf("expected no errors, got: %v", diags)
+	}
+}
+
+func TestValidate_GR010_InvalidKind(t *testing.T) {
+	gd := GraphDefinition{
+		ID:      "bad_kind",
+		Version: "1.0",
+		Kind:    "agent_workflow",
+		Nodes:   []NodeDef{{ID: "a", Type: "noop"}},
+		Edges:   []EdgeDef{},
+		Entry:   "a",
+	}
+
+	diags := gd.Validate()
+	found := findDiag(diags, "GR-010")
+	if found == nil {
+		t.Fatal("expected GR-010 for invalid graph kind")
+	}
+	if found.Path != "kind" {
+		t.Errorf("path = %q, want %q", found.Path, "kind")
+	}
+}
+
+func TestValidate_GR010_InvalidSchemaVersion(t *testing.T) {
+	gd := GraphDefinition{
+		ID:            "bad_schema_version",
+		Version:       "1.0",
+		Kind:          "graph",
+		SchemaVersion: "1.0",
+		Nodes:         []NodeDef{{ID: "a", Type: "noop"}},
+		Edges:         []EdgeDef{},
+		Entry:         "a",
+	}
+
+	diags := gd.Validate()
+	found := findDiag(diags, "GR-010")
+	if found == nil {
+		t.Fatal("expected GR-010 for invalid schema_version")
+	}
+	if found.Path != "schema_version" {
+		t.Errorf("path = %q, want %q", found.Path, "schema_version")
+	}
+}
+
+func TestValidate_GR010_UnsupportedSchemaMajor(t *testing.T) {
+	gd := GraphDefinition{
+		ID:            "unsupported_major",
+		Version:       "1.0",
+		Kind:          "graph",
+		SchemaVersion: "2.0.0",
+		Nodes:         []NodeDef{{ID: "a", Type: "noop"}},
+		Edges:         []EdgeDef{},
+		Entry:         "a",
+	}
+
+	diags := gd.Validate()
+	found := findDiag(diags, "GR-010")
+	if found == nil {
+		t.Fatal("expected GR-010 for unsupported schema major")
+	}
+}
+
+func TestValidate_GR010_MissingSchemaVersionLegacyAccepted(t *testing.T) {
+	gd := GraphDefinition{
+		ID:      "legacy_ok",
+		Version: "1.0",
+		Kind:    "graph",
+		Nodes:   []NodeDef{{ID: "a", Type: "noop"}},
+		Edges:   []EdgeDef{},
+		Entry:   "a",
+	}
+
+	diags := gd.Validate()
+	found := findDiag(diags, "GR-010")
+	if found != nil {
+		t.Fatalf("legacy graph without schema_version should be accepted, got: %s", found.Message)
 	}
 }
 

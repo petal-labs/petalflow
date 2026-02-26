@@ -2,6 +2,7 @@ package loader
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -81,6 +82,32 @@ func TestLoadWorkflow_FileNotFound(t *testing.T) {
 	_, _, err := LoadWorkflow("nonexistent.json")
 	if err == nil {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestLoadWorkflow_InvalidSchemaVersion_Agent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-invalid-schema-version.json")
+	data := `{"kind":"agent_workflow","schema_version":"1.0","agents":{"a":{"role":"R","goal":"G","provider":"openai","model":"m"}},"tasks":{"t":{"description":"d","agent":"a","expected_output":"x"}},"execution":{"strategy":"sequential","task_order":["t"]}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	_, _, err := LoadWorkflow(path)
+	if err == nil {
+		t.Fatal("expected error for invalid schema_version")
+	}
+}
+
+func TestLoadWorkflow_InvalidSchemaVersion_Graph(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "graph-invalid-schema-version.json")
+	data := `{"kind":"graph","schema_version":"2.0.0","id":"g","nodes":[{"id":"a","type":"noop"}],"edges":[],"entry":"a"}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	_, _, err := LoadWorkflow(path)
+	if err == nil {
+		t.Fatal("expected error for unsupported schema_version major")
 	}
 }
 
