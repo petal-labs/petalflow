@@ -18,6 +18,7 @@ import (
 	"github.com/petal-labs/petalflow/loader"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/server"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 // Exit codes per FRD §3.2
@@ -58,6 +59,16 @@ func NewRunCmd() *cobra.Command {
 func runRun(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
+	store, err := resolveToolStore(cmd)
+	if err != nil {
+		return exitError(exitRuntime, "loading tool store: %v", err)
+	}
+	defer closeToolStore(store)
+
+	if err := syncRunToolNodeTypes(cmd.Context(), store); err != nil {
+		return exitError(exitRuntime, "syncing tool node types: %v", err)
+	}
+
 	gd, err := loadWorkflowForRun(cmd, filePath)
 	if err != nil {
 		return err
@@ -81,7 +92,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	toolRegistry, err := buildRunToolRegistry(cmd)
+	toolRegistry, err := buildRunToolRegistry(cmd, store)
 	if err != nil {
 		return err
 	}
@@ -145,11 +156,7 @@ func resolveRunProviders(cmd *cobra.Command) (hydrate.ProviderMap, error) {
 	return providers, nil
 }
 
-func buildRunToolRegistry(cmd *cobra.Command) (*core.ToolRegistry, error) {
-	store, err := resolveToolStore(cmd)
-	if err != nil {
-		return nil, exitError(exitRuntime, "loading tool store: %v", err)
-	}
+func buildRunToolRegistry(cmd *cobra.Command, store tool.Store) (*core.ToolRegistry, error) {
 	toolRegistry, err := hydrate.BuildActionToolRegistry(cmd.Context(), store)
 	if err != nil {
 		return nil, exitError(exitRuntime, "building tool registry: %v", err)
@@ -184,6 +191,12 @@ func applyRunEnvVars(cmd *cobra.Command) {
 		if len(parts) == 2 {
 			_ = os.Setenv(parts[0], parts[1])
 		}
+	}
+}
+
+func closeToolStore(store tool.Store) {
+	if closer, ok := store.(interface{ Close() error }); ok {
+		_ = closer.Close()
 	}
 }
 

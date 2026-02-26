@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/runtime"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 func TestBuildRunOptions_NonStreaming(t *testing.T) {
@@ -113,5 +117,79 @@ func TestRunRuntimeError(t *testing.T) {
 	}
 	if exitRuntimeErr.Code != exitRuntime {
 		t.Fatalf("runtime exit code = %d, want %d", exitRuntimeErr.Code, exitRuntime)
+	}
+}
+
+func TestRunDryRunIncludesStoredToolActionsForAgentValidation(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "petalflow.db")
+	store, err := tool.NewSQLiteStore(tool.SQLiteStoreConfig{
+		DSN:   storePath,
+		Scope: storePath,
+	})
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	const (
+		toolName   = "run_custom_tool"
+		actionName = "execute"
+	)
+
+	manifest := tool.NewManifest(toolName)
+	manifest.Transport = tool.NewNativeTransport()
+	manifest.Actions[actionName] = tool.ActionSpec{
+		Description: "Run custom action",
+	}
+
+	if err := store.Upsert(context.Background(), tool.ToolRegistration{
+		Name:     toolName,
+		Manifest: manifest,
+		Origin:   tool.OriginNative,
+		Status:   tool.StatusReady,
+		Enabled:  true,
+	}); err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+
+	t.Cleanup(func() {
+		registry.Global().Delete(toolName + "." + actionName)
+	})
+
+	workflowPath := writeTestFile(t, "custom-tool-workflow.json", fmt.Sprintf(`{
+  "version": "1.0",
+  "kind": "agent_workflow",
+  "id": "custom_tool_run_validation",
+  "agents": {
+    "researcher": {
+      "role": "Researcher",
+      "goal": "Use custom tool",
+      "provider": "openai",
+      "model": "gpt-4",
+      "tools": ["%s.%s"]
+    }
+  },
+  "tasks": {
+    "research": {
+      "description": "Run custom tool",
+      "agent": "researcher",
+      "expected_output": "Done"
+    }
+  },
+  "execution": {
+    "strategy": "sequential",
+    "task_order": ["research"]
+  }
+}`, toolName, actionName))
+
+	root := newTestRoot()
+	stdout, stderr, err := executeCommand(root, "run", workflowPath, "--dry-run", "--store-path", storePath)
+	if err != nil {
+		t.Fatalf("run --dry-run error = %v\nstdout=%q\nstderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Validation and compilation successful.") {
+		t.Fatalf("stdout = %q, want validation success", stdout)
 	}
 }
