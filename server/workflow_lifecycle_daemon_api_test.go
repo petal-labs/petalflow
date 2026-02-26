@@ -214,6 +214,33 @@ func TestWorkflowLifecycle_DaemonAPI_EventsIncludeTraceMetadataWhenTracingEnable
 	}
 }
 
+func TestWorkflowLifecycle_DaemonAPI_CreateAgentWorkflow_InvalidSchemaVersion(t *testing.T) {
+	handler := newDaemonWorkflowLifecycleHandler(t)
+
+	wf := daemonSimpleAgentWorkflow("daemon_invalid_schema_version")
+	wf.SchemaVersion = "1.0"
+
+	body := mustJSON(t, wf)
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/agent", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusUnprocessableEntity, w.Body.String())
+	}
+
+	var apiErr apiError
+	if err := json.Unmarshal(w.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+	if apiErr.Error.Code != "VALIDATION_ERROR" {
+		t.Fatalf("error.code = %q, want %q", apiErr.Error.Code, "VALIDATION_ERROR")
+	}
+	if !strings.Contains(strings.Join(apiErr.Error.Details, " "), "schema_version") {
+		t.Fatalf("expected schema_version in details, got: %v", apiErr.Error.Details)
+	}
+}
+
 func newDaemonWorkflowLifecycleHandler(t *testing.T) http.Handler {
 	t.Helper()
 
