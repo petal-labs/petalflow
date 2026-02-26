@@ -469,6 +469,100 @@ func TestWorkflowLifecycle_EventsIncludeTraceMetadataWhenTracingEnabled(t *testi
 	}
 }
 
+func TestWorkflowLifecycle_CreateAgentWorkflow_InvalidSchemaVersion(t *testing.T) {
+	srv := newWorkflowLifecycleServer(t)
+	handler := srv.Handler()
+
+	wf := daemonSimpleAgentWorkflow("invalid_schema_agent")
+	wf.SchemaVersion = "1.0"
+
+	body := mustJSON(t, wf)
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/agent", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusUnprocessableEntity, w.Body.String())
+	}
+
+	var apiErr apiError
+	if err := json.Unmarshal(w.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+	if apiErr.Error.Code != "VALIDATION_ERROR" {
+		t.Fatalf("error.code = %q, want %q", apiErr.Error.Code, "VALIDATION_ERROR")
+	}
+	if !strings.Contains(strings.Join(apiErr.Error.Details, " "), "schema_version") {
+		t.Fatalf("expected schema_version in details, got: %v", apiErr.Error.Details)
+	}
+}
+
+func TestWorkflowLifecycle_CreateGraphWorkflow_UnsupportedSchemaVersion(t *testing.T) {
+	srv := newWorkflowLifecycleServer(t)
+	handler := srv.Handler()
+
+	payload := map[string]any{
+		"id":             "invalid_schema_graph",
+		"version":        "1.0",
+		"schema_version": "2.0.0",
+		"kind":           "graph",
+		"nodes": []map[string]any{
+			{"id": "start", "type": "noop"},
+		},
+		"edges": []map[string]any{},
+		"entry": "start",
+	}
+
+	body := mustJSON(t, payload)
+	r := httptest.NewRequest(http.MethodPost, "/api/workflows/graph", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusUnprocessableEntity, w.Body.String())
+	}
+
+	var apiErr apiError
+	if err := json.Unmarshal(w.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+	if apiErr.Error.Code != "VALIDATION_ERROR" {
+		t.Fatalf("error.code = %q, want %q", apiErr.Error.Code, "VALIDATION_ERROR")
+	}
+	if !strings.Contains(strings.Join(apiErr.Error.Details, " "), "schema_version") {
+		t.Fatalf("expected schema_version in details, got: %v", apiErr.Error.Details)
+	}
+}
+
+func TestWorkflowLifecycle_UpdateWorkflow_InvalidSchemaVersion(t *testing.T) {
+	srv := newWorkflowLifecycleServer(t)
+	handler := srv.Handler()
+
+	wf := daemonSimpleAgentWorkflow("update_invalid_schema_agent")
+	postAgentWorkflow(t, handler, wf)
+
+	wf.SchemaVersion = "1.0"
+	body := mustJSON(t, wf)
+	r := httptest.NewRequest(http.MethodPut, "/api/workflows/"+wf.ID, bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusUnprocessableEntity, w.Body.String())
+	}
+
+	var apiErr apiError
+	if err := json.Unmarshal(w.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("unmarshal error response: %v", err)
+	}
+	if apiErr.Error.Code != "VALIDATION_ERROR" {
+		t.Fatalf("error.code = %q, want %q", apiErr.Error.Code, "VALIDATION_ERROR")
+	}
+	if !strings.Contains(strings.Join(apiErr.Error.Details, " "), "schema_version") {
+		t.Fatalf("expected schema_version in details, got: %v", apiErr.Error.Details)
+	}
+}
+
 func postAgentWorkflow(t *testing.T, handler http.Handler, wf agent.AgentWorkflow) WorkflowRecord {
 	t.Helper()
 	body := mustJSON(t, wf)

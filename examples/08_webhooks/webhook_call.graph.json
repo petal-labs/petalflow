@@ -1,6 +1,8 @@
 {
   "id": "webhook_call_demo",
   "version": "1.0",
+  "schema_version": "1.0.0",
+  "kind": "graph",
   "nodes": [
     {
       "id": "prepare_message",

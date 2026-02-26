@@ -53,17 +53,40 @@ func TestCompile_Metadata(t *testing.T) {
 		t.Fatalf("Compile() error = %v", err)
 	}
 
+	if gd.Kind != "graph" {
+		t.Errorf("kind = %q, want %q", gd.Kind, "graph")
+	}
+	if gd.SchemaVersion != "1.0.0" {
+		t.Errorf("schema_version = %q, want %q", gd.SchemaVersion, "1.0.0")
+	}
 	if gd.Metadata["source_kind"] != "agent_workflow" {
 		t.Errorf("source_kind = %q, want %q", gd.Metadata["source_kind"], "agent_workflow")
 	}
 	if gd.Metadata["source_version"] != "1.0" {
 		t.Errorf("source_version = %q, want %q", gd.Metadata["source_version"], "1.0")
 	}
+	if gd.Metadata["source_schema_version"] != "legacy" {
+		t.Errorf("source_schema_version = %q, want %q", gd.Metadata["source_schema_version"], "legacy")
+	}
 	if gd.Metadata["compiler_version"] != compilerVersion {
 		t.Errorf("compiler_version = %q, want %q", gd.Metadata["compiler_version"], compilerVersion)
 	}
 	if gd.Metadata["compiled_at"] == "" {
 		t.Error("compiled_at should not be empty")
+	}
+}
+
+func TestCompile_MetadataSourceSchemaVersion(t *testing.T) {
+	wf := minimalWorkflow()
+	wf.SchemaVersion = "1.2.3"
+
+	gd, err := Compile(wf)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	if gd.Metadata["source_schema_version"] != "1.2.3" {
+		t.Errorf("source_schema_version = %q, want %q", gd.Metadata["source_schema_version"], "1.2.3")
 	}
 }
 

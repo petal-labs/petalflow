@@ -5,6 +5,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/schemafmt"
 )
 
 // Diagnostic represents a validation error or warning produced by schema
@@ -58,12 +59,14 @@ func Warnings(diags []Diagnostic) []Diagnostic {
 // Both the Agent/Task compiler and direct JSON/YAML loading produce this type.
 // The Runtime consumes it to build an executable Graph.
 type GraphDefinition struct {
-	ID       string            `json:"id"`
-	Version  string            `json:"version"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-	Nodes    []NodeDef         `json:"nodes"`
-	Edges    []EdgeDef         `json:"edges"`
-	Entry    string            `json:"entry,omitempty"`
+	ID            string            `json:"id"`
+	Version       string            `json:"version"`
+	SchemaVersion string            `json:"schema_version,omitempty"`
+	Kind          string            `json:"kind,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
+	Nodes         []NodeDef         `json:"nodes"`
+	Edges         []EdgeDef         `json:"edges"`
+	Entry         string            `json:"entry,omitempty"`
 }
 
 // NodeDef is a serializable node within a GraphDefinition.
@@ -83,6 +86,7 @@ type EdgeDef struct {
 
 // Validate checks structural integrity of the GraphDefinition.
 // It checks rules that can be verified without a node registry:
+//   - GR-010: schema header (kind/schema_version) validation
 //   - GR-001: edge source/target reference existing nodes
 //   - GR-002: orphan nodes (warning)
 //   - GR-004: topological sort (cycle detection)
@@ -93,6 +97,8 @@ type EdgeDef struct {
 // and are checked via ValidateWithRegistry.
 func (gd *GraphDefinition) Validate() []Diagnostic {
 	var diags []Diagnostic
+
+	diags = append(diags, gd.validateSchemaHeader()...)
 
 	nodeIDs := make(map[string]bool, len(gd.Nodes))
 
@@ -173,6 +179,42 @@ func (gd *GraphDefinition) Validate() []Diagnostic {
 
 	// CN-*: conditional node validation
 	diags = append(diags, gd.validateConditionalNodes(nodeIDs)...)
+
+	return diags
+}
+
+func (gd *GraphDefinition) validateSchemaHeader() []Diagnostic {
+	var diags []Diagnostic
+
+	if gd.Kind != "" {
+		normalized, _, err := schemafmt.NormalizeKind(gd.Kind)
+		if err != nil {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-010",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Invalid graph kind: %v", err),
+				Path:     "kind",
+			})
+		} else if normalized != schemafmt.KindGraph {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-010",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Graph kind %q is invalid (expected %q)", gd.Kind, schemafmt.KindGraph),
+				Path:     "kind",
+			})
+		}
+	}
+
+	if gd.SchemaVersion != "" {
+		if err := schemafmt.ValidateSchemaVersion(gd.SchemaVersion, schemafmt.SupportedGraphSchemaMajor); err != nil {
+			diags = append(diags, Diagnostic{
+				Code:     "GR-010",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Invalid schema_version: %v", err),
+				Path:     "schema_version",
+			})
+		}
+	}
 
 	return diags
 }

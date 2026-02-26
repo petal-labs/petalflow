@@ -9,6 +9,7 @@ import (
 
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/schemafmt"
 )
 
 const compilerVersion = "0.1.0"
@@ -46,14 +47,22 @@ func Compile(wf *AgentWorkflow) (*graph.GraphDefinition, error) {
 }
 
 func newCompiledGraphDefinition(wf *AgentWorkflow) *graph.GraphDefinition {
+	sourceSchemaVersion := strings.TrimSpace(wf.SchemaVersion)
+	if sourceSchemaVersion == "" {
+		sourceSchemaVersion = schemafmt.LegacySchemaVersion
+	}
+
 	return &graph.GraphDefinition{
-		ID:      wf.ID,
-		Version: wf.Version,
+		ID:            wf.ID,
+		Version:       wf.Version,
+		Kind:          string(schemafmt.KindGraph),
+		SchemaVersion: schemafmt.CurrentGraphSchemaVersion,
 		Metadata: map[string]string{
-			"source_kind":      "agent_workflow",
-			"source_version":   wf.Version,
-			"compiled_at":      time.Now().UTC().Format(time.RFC3339),
-			"compiler_version": compilerVersion,
+			"source_kind":           string(schemafmt.KindAgent),
+			"source_version":        wf.Version,
+			"source_schema_version": sourceSchemaVersion,
+			"compiled_at":           time.Now().UTC().Format(time.RFC3339),
+			"compiler_version":      compilerVersion,
 		},
 	}
 }

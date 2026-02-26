@@ -104,6 +104,33 @@ const invalidAgentJSON = `{
   }
 }`
 
+const invalidSchemaVersionAgentJSON = `{
+  "version": "1.0",
+  "schema_version": "1.0",
+  "kind": "agent_workflow",
+  "id": "bad_schema_version",
+  "name": "Bad Schema Version",
+  "agents": {
+    "researcher": {
+      "role": "Researcher",
+      "goal": "Find information",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-20250514"
+    }
+  },
+  "tasks": {
+    "research": {
+      "description": "Research the topic",
+      "agent": "researcher",
+      "expected_output": "Summary of findings"
+    }
+  },
+  "execution": {
+    "strategy": "sequential",
+    "task_order": ["research"]
+  }
+}`
+
 // --- Validate command tests ---
 
 func TestValidate_ValidAgentJSON(t *testing.T) {
@@ -193,6 +220,18 @@ func TestValidate_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestValidate_InvalidSchemaVersion(t *testing.T) {
+	path := writeTestFile(t, "bad_schema_version.json", invalidSchemaVersionAgentJSON)
+	root := newTestRoot()
+	_, _, err := executeCommand(root, "validate", path)
+	if err == nil {
+		t.Fatal("expected error for invalid schema_version")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error should mention schema_version, got: %q", err.Error())
+	}
+}
+
 // --- Compile command tests ---
 
 func TestCompile_AgentWorkflow(t *testing.T) {
@@ -269,6 +308,18 @@ func TestCompile_OutputToFile(t *testing.T) {
 	}
 }
 
+func TestCompile_InvalidSchemaVersion(t *testing.T) {
+	path := writeTestFile(t, "bad_schema_version.json", invalidSchemaVersionAgentJSON)
+	root := newTestRoot()
+	_, _, err := executeCommand(root, "compile", path)
+	if err == nil {
+		t.Fatal("expected error for invalid schema_version")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error should mention schema_version, got: %q", err.Error())
+	}
+}
+
 // --- Run command tests ---
 
 func TestRun_DryRun(t *testing.T) {
@@ -319,6 +370,18 @@ func TestRun_ValidationError(t *testing.T) {
 	_, _, err := executeCommand(root, "run", path)
 	if err == nil {
 		t.Fatal("expected error for invalid workflow")
+	}
+}
+
+func TestRun_InvalidSchemaVersion(t *testing.T) {
+	path := writeTestFile(t, "bad_schema_version.json", invalidSchemaVersionAgentJSON)
+	root := newTestRoot()
+	_, _, err := executeCommand(root, "run", path)
+	if err == nil {
+		t.Fatal("expected error for invalid schema_version")
+	}
+	if !strings.Contains(err.Error(), "schema_version") {
+		t.Errorf("error should mention schema_version, got: %q", err.Error())
 	}
 }
 

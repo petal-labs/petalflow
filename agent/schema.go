@@ -9,13 +9,14 @@ import (
 // AgentWorkflow is the top-level Agent/Task schema. It defines agents, tasks,
 // and execution configuration for AI agent workflows in a friendly JSON format.
 type AgentWorkflow struct {
-	Version   string           `json:"version"`
-	Kind      string           `json:"kind"`
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	Agents    map[string]Agent `json:"agents"`
-	Tasks     map[string]Task  `json:"tasks"`
-	Execution ExecutionConfig  `json:"execution"`
+	Version       string           `json:"version"`
+	SchemaVersion string           `json:"schema_version,omitempty"`
+	Kind          string           `json:"kind"`
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	Agents        map[string]Agent `json:"agents"`
+	Tasks         map[string]Task  `json:"tasks"`
+	Execution     ExecutionConfig  `json:"execution"`
 }
 
 // Agent describes an AI agent with its role, provider, model, and optional tools.
