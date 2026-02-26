@@ -35,6 +35,9 @@ go.work.sum
 .spec/
 .claude/
 
+# playwright
+.playwright-mcp.
+
 # misc
 .DS_STORE
 
