@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/petal-labs/petalflow/schemafmt"
 	"gopkg.in/yaml.v3"
+
+	"github.com/petal-labs/petalflow/schemafmt"
 )
 
 // SchemaKind identifies the type of workflow schema.
