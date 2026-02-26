@@ -17,6 +17,7 @@ export interface WorkflowActions {
   getWorkflow: (id: string) => Promise<Workflow>
   setActiveWorkflow: (workflow: Workflow | null) => void
   setActiveSource: (source: string) => void
+  persistActiveWorkflow: () => Promise<boolean>
   markDirty: (dirty: boolean) => void
   createAgentWorkflow: (workflow: AgentWorkflow) => Promise<Workflow>
   createGraphWorkflow: (workflow: GraphDefinition) => Promise<Workflow>
@@ -37,7 +38,122 @@ const initialState: WorkflowState = {
   validationResult: null,
 }
 
-export const useWorkflowStore = create<WorkflowState & WorkflowActions>()((set) => ({
+function serializeSource(source: string | Record<string, unknown> | null): string | null {
+  if (!source) {
+    return null
+  }
+  return typeof source === 'string' ? source : JSON.stringify(source)
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>
+  }
+  return {}
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+function asFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function normalizeAgentWorkflowSource(sourceStr: string): string {
+  try {
+    const parsed = asRecord(JSON.parse(sourceStr))
+    if (parsed.kind !== 'agent_workflow') {
+      return sourceStr
+    }
+
+    const tasks = asRecord(parsed.tasks)
+    const taskIDs = Object.keys(tasks)
+
+    const agents = asRecord(parsed.agents)
+    const normalizedAgents: Record<string, unknown> = {}
+    for (const [agentID, rawAgent] of Object.entries(agents)) {
+      const agent = asRecord(rawAgent)
+      const normalizedAgent: Record<string, unknown> = { ...agent }
+      const config = asRecord(agent.config)
+
+      const temperature = asFiniteNumber(agent.temperature)
+      if (temperature !== null && asFiniteNumber(config.temperature) === null) {
+        config.temperature = temperature
+      }
+
+      const maxTokens = asFiniteNumber(agent.max_tokens)
+      if (maxTokens !== null && asFiniteNumber(config.max_tokens) === null) {
+        config.max_tokens = maxTokens
+      }
+
+      if (Object.keys(config).length > 0) {
+        normalizedAgent.config = config
+      }
+      normalizedAgents[agentID] = normalizedAgent
+    }
+
+    const execution = asRecord(parsed.execution)
+    const strategy = typeof execution.strategy === 'string' ? execution.strategy : ''
+    const normalizedExecution: Record<string, unknown> = { ...execution }
+
+    if (strategy === 'sequential') {
+      const existingOrder = asStringArray(execution.task_order)
+      const seen = new Set<string>()
+      const ordered = existingOrder.filter((taskID) => {
+        if (!taskIDs.includes(taskID) || seen.has(taskID)) {
+          return false
+        }
+        seen.add(taskID)
+        return true
+      })
+      const missing = taskIDs.filter((taskID) => !seen.has(taskID))
+      normalizedExecution.task_order = [...ordered, ...missing]
+    }
+
+    if (strategy === 'custom') {
+      const executionTasks = asRecord(execution.tasks)
+      const normalizedExecutionTasks: Record<string, unknown> = {}
+      for (const taskID of taskIDs) {
+        const rawExecutionTask = asRecord(executionTasks[taskID])
+        const dependsOn = asStringArray(rawExecutionTask.depends_on).filter(
+          (depID) => taskIDs.includes(depID) && depID !== taskID
+        )
+        normalizedExecutionTasks[taskID] =
+          typeof rawExecutionTask.condition === 'string' && rawExecutionTask.condition.trim() !== ''
+            ? { depends_on: dependsOn, condition: rawExecutionTask.condition }
+            : { depends_on: dependsOn }
+      }
+      normalizedExecution.tasks = normalizedExecutionTasks
+    }
+
+    return JSON.stringify({
+      ...parsed,
+      agents: normalizedAgents,
+      execution: normalizedExecution,
+    })
+  } catch {
+    return sourceStr
+  }
+}
+
+function normalizeSourceForComparison(source: string | Record<string, unknown> | null): string | null {
+  const serialized = serializeSource(source)
+  if (!serialized) {
+    return null
+  }
+
+  try {
+    return JSON.stringify(JSON.parse(serialized))
+  } catch {
+    return serialized
+  }
+}
+
+export const useWorkflowStore = create<WorkflowState & WorkflowActions>()((set, get) => ({
   ...initialState,
 
   fetchWorkflows: async () => {
@@ -74,7 +190,38 @@ export const useWorkflowStore = create<WorkflowState & WorkflowActions>()((set) 
   },
 
   setActiveSource: (source) => {
-    set({ activeSource: source, isDirty: true })
+    set((state) => {
+      const activeWorkflowSource = normalizeSourceForComparison(
+        state.activeWorkflow?.source as string | Record<string, unknown> | null
+      )
+      const nextSource = normalizeSourceForComparison(source)
+      return {
+        activeSource: source,
+        isDirty: activeWorkflowSource !== nextSource,
+      }
+    })
+  },
+
+  persistActiveWorkflow: async () => {
+    const state = get()
+    if (!state.activeWorkflow || !state.activeSource || !state.isDirty) {
+      return true
+    }
+
+    const sourceStr = serializeSource(state.activeSource)
+    if (!sourceStr) {
+      return true
+    }
+
+    const normalizedSourceStr = normalizeAgentWorkflowSource(sourceStr)
+
+    const validation = await get().validateWorkflow(normalizedSourceStr)
+    if (!validation.valid) {
+      return false
+    }
+
+    await get().updateWorkflow(state.activeWorkflow.id, normalizedSourceStr)
+    return true
   },
 
   markDirty: (dirty) => {

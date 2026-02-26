@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useNavigate } from '@tanstack/react-router'
 import { useSettingsStore } from '@/stores/settings'
 import { useWorkflowStore } from '@/stores/workflow'
@@ -53,10 +53,14 @@ export function TopBar() {
   const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
   const isDirty = useWorkflowStore((s) => s.isDirty)
   const activeSource = useWorkflowStore((s) => s.activeSource)
-  const updateWorkflow = useWorkflowStore((s) => s.updateWorkflow)
   const validateWorkflow = useWorkflowStore((s) => s.validateWorkflow)
+  const persistActiveWorkflow = useWorkflowStore((s) => s.persistActiveWorkflow)
   const validationResult = useWorkflowStore((s) => s.validationResult)
   const [saving, setSaving] = useState(false)
+  const [actionNotice, setActionNotice] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const lastAutoSaveAttemptKeyRef = useRef<string | null>(null)
+  const savePromiseRef = useRef<Promise<boolean> | null>(null)
 
   const openRunModal = useUIStore((s) => s.openRunModal)
 
@@ -161,36 +165,99 @@ export function TopBar() {
       const sourceStr = typeof activeSource === 'string'
         ? activeSource
         : JSON.stringify(activeSource)
-      await validateWorkflow(sourceStr)
+      setActionError(null)
+      const result = await validateWorkflow(sourceStr)
+      if (result.valid) {
+        setActionNotice('Validation passed.')
+      } else {
+        setActionNotice(null)
+        setActionError('Validation failed. Fix errors before saving or running.')
+      }
     }
   }
 
-  const handleRun = () => {
-    if (activeWorkflow) {
-      openRunModal()
+  const persistWithLock = useCallback((): Promise<boolean> => {
+    if (savePromiseRef.current) {
+      return savePromiseRef.current
     }
+
+    setSaving(true)
+    const savePromise = persistActiveWorkflow()
+      .finally(() => {
+        savePromiseRef.current = null
+        setSaving(false)
+      })
+    savePromiseRef.current = savePromise
+    return savePromise
+  }, [persistActiveWorkflow])
+
+  const handleRun = () => {
+    if (!activeWorkflow) {
+      return
+    }
+
+    setActionError(null)
+    setActionNotice(null)
+
+    if (isDirty || savePromiseRef.current) {
+      void persistWithLock()
+        .then((saved) => {
+          if (!saved) {
+            setActionError('Cannot run: fix workflow validation errors and try again.')
+            return
+          }
+          openRunModal()
+        })
+        .catch((err) => {
+          setActionError((err as Error).message || 'Failed to save workflow before running.')
+        })
+      return
+    }
+
+    openRunModal()
   }
 
   const handleSave = async () => {
-    if (!activeWorkflow || !activeSource || saving) {
+    setActionError(null)
+    setActionNotice(null)
+    try {
+      const saved = await persistWithLock()
+      if (!saved) {
+        setActionError('Cannot save: fix workflow validation errors and try again.')
+      } else {
+        setActionNotice('Saved.')
+      }
+    } catch (err) {
+      setActionError((err as Error).message || 'Failed to save workflow.')
+    }
+  }
+
+  // Autosave dirty workflows after a short idle period.
+  useEffect(() => {
+    if (!activeWorkflow || !activeSource || !isDirty || saving) {
       return
     }
 
     const sourceStr = typeof activeSource === 'string'
       ? activeSource
       : JSON.stringify(activeSource)
-
-    setSaving(true)
-    try {
-      const validation = await validateWorkflow(sourceStr)
-      if (!validation.valid) {
-        return
-      }
-      await updateWorkflow(activeWorkflow.id, sourceStr)
-    } finally {
-      setSaving(false)
+    const attemptKey = `${activeWorkflow.id}:${sourceStr}`
+    if (lastAutoSaveAttemptKeyRef.current === attemptKey) {
+      return
     }
-  }
+
+    const timerID = window.setTimeout(() => {
+      lastAutoSaveAttemptKeyRef.current = attemptKey
+      void persistWithLock()
+        .catch(() => {
+          setActionError('Autosave failed. Use Save to retry.')
+        })
+    }, 800)
+
+    return () => {
+      window.clearTimeout(timerID)
+    }
+  }, [activeWorkflow, activeSource, isDirty, persistWithLock, saving])
 
   return (
     <header className="h-[52px] min-h-[52px] flex items-center gap-3 px-5 border-b border-border bg-surface-0">
@@ -271,6 +338,16 @@ export function TopBar() {
         >
           Run
         </Button>
+        {actionNotice && !actionError && (
+          <span className="text-xs text-muted-foreground max-w-[180px] truncate" title={actionNotice}>
+            {actionNotice}
+          </span>
+        )}
+        {actionError && (
+          <span className="text-xs text-red max-w-[280px] truncate" title={actionError}>
+            {actionError}
+          </span>
+        )}
 
         <div className="w-px h-6 bg-border mx-1" />
 

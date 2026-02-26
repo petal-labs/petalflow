@@ -53,12 +53,50 @@ async function readErrorResponseText(response: Response): Promise<string> {
   }
 }
 
+function parseAPIErrorMessage(text: string, fallback: string): string {
+  if (!text) {
+    return fallback
+  }
+
+  try {
+    const parsed = JSON.parse(text) as {
+      error?: {
+        message?: unknown
+        details?: unknown
+      }
+      message?: unknown
+    }
+    const baseMessage =
+      typeof parsed.error?.message === 'string'
+        ? parsed.error.message
+        : typeof parsed.message === 'string'
+          ? parsed.message
+          : ''
+
+    const details = Array.isArray(parsed.error?.details)
+      ? parsed.error.details.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
+      : []
+
+    if (baseMessage && details.length > 0) {
+      return `${baseMessage}: ${details[0]}`
+    }
+    if (baseMessage) {
+      return baseMessage
+    }
+  } catch {
+    // Use raw response text below.
+  }
+
+  return text
+}
+
 async function throwApiResponseError(response: Response, path: string): Promise<never> {
   const text = await readErrorResponseText(response)
   if (text.startsWith('<!DOCTYPE') || text.startsWith('<html')) {
     throw new ApiError(response.status, `API endpoint not available: ${path}`)
   }
-  throw new ApiError(response.status, text || `Request failed: ${response.statusText}`)
+  const fallback = `Request failed: ${response.statusText}`
+  throw new ApiError(response.status, parseAPIErrorMessage(text, fallback))
 }
 
 async function request<T>(

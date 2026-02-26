@@ -179,6 +179,36 @@ func TestComplete_ToolCalls(t *testing.T) {
 	}
 }
 
+func TestComplete_ForwardsRequestTools(t *testing.T) {
+	mock := &mockProvider{
+		id:           "test",
+		chatResponse: &iriscore.ChatResponse{Output: "ok"},
+	}
+	adapter := &irisAdapter{provider: mock}
+
+	_, err := adapter.Complete(context.Background(), core.LLMRequest{
+		Model:     "m",
+		InputText: "use tool",
+		Tools:     []string{"context7.resolve", "web_search.search"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mock.capturedReq == nil {
+		t.Fatal("expected request to be captured")
+	}
+	if len(mock.capturedReq.Tools) != 2 {
+		t.Fatalf("captured tools len = %d, want 2", len(mock.capturedReq.Tools))
+	}
+	if mock.capturedReq.Tools[0].Name() != "context7.resolve" {
+		t.Fatalf("captured tools[0] = %q, want context7.resolve", mock.capturedReq.Tools[0].Name())
+	}
+	if mock.capturedReq.Tools[1].Name() != "web_search.search" {
+		t.Fatalf("captured tools[1] = %q, want web_search.search", mock.capturedReq.Tools[1].Name())
+	}
+}
+
 func TestComplete_ErrorPropagation(t *testing.T) {
 	mock := &mockProvider{
 		id:        "test",

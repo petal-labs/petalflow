@@ -918,6 +918,43 @@ func TestCompile_ToolActionReferencesAndToolConfig(t *testing.T) {
 	}
 }
 
+func TestCompile_ToolNameExpandsToFunctionCallActions(t *testing.T) {
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     "context7.resolve",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "function_call",
+		Ports: registry.PortSchema{
+			Outputs: []registry.PortDef{{Name: "output", Type: "string"}},
+		},
+	})
+
+	wf := minimalWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "Researcher",
+		Goal:     "Research",
+		Provider: "anthropic",
+		Model:    "claude-sonnet-4-20250514",
+		Tools:    []string{"context7"},
+	}
+
+	gd, err := Compile(wf)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(gd.Nodes) != 1 {
+		t.Fatalf("Nodes count = %d, want 1", len(gd.Nodes))
+	}
+
+	tools, ok := gd.Nodes[0].Config["tools"].([]string)
+	if !ok {
+		t.Fatalf("LLM tools config type = %T, want []string", gd.Nodes[0].Config["tools"])
+	}
+	if len(tools) != 1 || tools[0] != "context7.resolve" {
+		t.Fatalf("LLM tools = %#v, want [context7.resolve]", tools)
+	}
+}
+
 func TestCompile_StandaloneToolDefaultArgsTemplate(t *testing.T) {
 	registry.Global().Register(registry.NodeTypeDef{
 		Type:     "http_fetch.fetch",

@@ -591,3 +591,134 @@ func (m *slowMockLLMClient) Complete(ctx context.Context, req core.LLMRequest) (
 		return core.LLMResponse{Text: "OK"}, nil
 	}
 }
+
+type sequenceMockLLMClient struct {
+	responses []core.LLMResponse
+	requests  []core.LLMRequest
+}
+
+func (m *sequenceMockLLMClient) Complete(_ context.Context, req core.LLMRequest) (core.LLMResponse, error) {
+	m.requests = append(m.requests, req)
+	if len(m.responses) == 0 {
+		return core.LLMResponse{}, errors.New("no mock response configured")
+	}
+	resp := m.responses[0]
+	m.responses = m.responses[1:]
+	return resp, nil
+}
+
+func TestLLMNode_Run_FunctionCallsToolsAndEmitsEvents(t *testing.T) {
+	client := &sequenceMockLLMClient{
+		responses: []core.LLMResponse{
+			{
+				ToolCalls: []core.LLMToolCall{
+					{
+						ID:   "call-1",
+						Name: "context7.resolve",
+						Arguments: map[string]any{
+							"query": "petalflow",
+						},
+					},
+				},
+			},
+			{
+				Text: "Resolved docs and generated answer.",
+				Usage: core.LLMTokenUsage{
+					InputTokens:  42,
+					OutputTokens: 18,
+					TotalTokens:  60,
+				},
+			},
+		},
+	}
+
+	registry := core.NewToolRegistry()
+	registry.Register(core.NewFuncTool(
+		"context7.resolve",
+		"Resolve library docs",
+		func(_ context.Context, args map[string]any) (map[string]any, error) {
+			if args["query"] != "petalflow" {
+				t.Fatalf("tool args.query = %v, want petalflow", args["query"])
+			}
+			return map[string]any{
+				"snippets": []string{"example"},
+			}, nil
+		},
+	))
+
+	node := NewLLMNode("test-llm", client, LLMNodeConfig{
+		Model:        "gpt-4",
+		InputVars:    []string{"question"},
+		OutputKey:    "answer",
+		Tools:        []string{"context7.resolve"},
+		ToolRegistry: registry,
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	env := core.NewEnvelope().WithVar("question", "How does this work?")
+	env.Trace.RunID = "run-tools-1"
+
+	result, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	answer, ok := result.GetVar("answer")
+	if !ok {
+		t.Fatal("expected answer to be stored in envelope")
+	}
+	if answer != "Resolved docs and generated answer." {
+		t.Fatalf("answer = %v, want final LLM response", answer)
+	}
+
+	usage, ok := result.GetVar("answer_usage")
+	if !ok {
+		t.Fatal("expected answer_usage to be stored in envelope")
+	}
+	tokenUsage := usage.(core.TokenUsage)
+	if tokenUsage.TotalTokens != 60 {
+		t.Fatalf("usage.total_tokens = %d, want 60", tokenUsage.TotalTokens)
+	}
+
+	if len(client.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(client.requests))
+	}
+	if len(client.requests[0].Tools) != 1 || client.requests[0].Tools[0] != "context7.resolve" {
+		t.Fatalf("first request tools = %#v, want [context7.resolve]", client.requests[0].Tools)
+	}
+	if got := len(client.requests[0].Messages); got != 1 || client.requests[0].Messages[0].Role != "user" {
+		t.Fatalf("first request messages = %#v, want one user message", client.requests[0].Messages)
+	}
+	if got := len(client.requests[1].Messages); got != 3 {
+		t.Fatalf("second request message count = %d, want 3", got)
+	}
+	if client.requests[1].Messages[1].Role != "assistant" {
+		t.Fatalf("second request assistant message role = %q, want assistant", client.requests[1].Messages[1].Role)
+	}
+	if got := len(client.requests[1].Messages[2].ToolResults); got != 1 {
+		t.Fatalf("second request tool result count = %d, want 1", got)
+	}
+
+	var callEvents int
+	var resultEvents int
+	for _, event := range events {
+		switch event.Kind {
+		case runtime.EventToolCall:
+			callEvents++
+		case runtime.EventToolResult:
+			resultEvents++
+		}
+	}
+
+	if callEvents != 1 {
+		t.Fatalf("tool.call events = %d, want 1", callEvents)
+	}
+	if resultEvents != 1 {
+		t.Fatalf("tool.result events = %d, want 1", resultEvents)
+	}
+}

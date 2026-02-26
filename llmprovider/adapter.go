@@ -19,6 +19,18 @@ type irisAdapter struct {
 	provider iriscore.Provider
 }
 
+type requestTool struct {
+	name string
+}
+
+func (t requestTool) Name() string {
+	return t.name
+}
+
+func (t requestTool) Description() string {
+	return "PetalFlow tool: " + t.name
+}
+
 // Complete sends a synchronous completion request via the iris provider.
 func (a *irisAdapter) Complete(ctx context.Context, req core.LLMRequest) (core.LLMResponse, error) {
 	chatReq := a.toRequest(req)
@@ -85,6 +97,7 @@ func (a *irisAdapter) toRequest(req core.LLMRequest) *iriscore.ChatRequest {
 		Model:        iriscore.ModelID(req.Model),
 		Messages:     messages,
 		Instructions: req.Instructions,
+		Tools:        toRequestTools(req.Tools),
 	}
 
 	if req.Temperature != nil {
@@ -96,6 +109,25 @@ func (a *irisAdapter) toRequest(req core.LLMRequest) *iriscore.ChatRequest {
 	}
 
 	return chatReq
+}
+
+func toRequestTools(toolNames []string) []iriscore.Tool {
+	if len(toolNames) == 0 {
+		return nil
+	}
+
+	tools := make([]iriscore.Tool, 0, len(toolNames))
+	for _, name := range toolNames {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			continue
+		}
+		tools = append(tools, requestTool{name: trimmed})
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+	return tools
 }
 
 // fromResponse converts an iris ChatResponse to a core.LLMResponse.

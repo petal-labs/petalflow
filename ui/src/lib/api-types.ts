@@ -53,6 +53,8 @@ export interface Agent {
   provider: string
   model: string
   tools?: string[]
+  tool_config?: Record<string, Record<string, unknown>>
+  config?: Record<string, unknown>
   temperature?: number
   max_tokens?: number
 }
@@ -70,6 +72,7 @@ export interface Task {
 export interface ExecutionConfig {
   strategy: 'sequential' | 'parallel' | 'hierarchical' | 'custom'
   task_order?: string[]
+  tasks?: Record<string, { depends_on: string[]; condition?: string }>
 }
 
 // Run types

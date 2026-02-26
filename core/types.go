@@ -187,6 +187,7 @@ type LLMRequest struct {
 	Instructions string         // system instructions (Responses API style)
 	Messages     []LLMMessage   // conversation messages
 	InputText    string         // optional: simple prompt mode (converted to user message)
+	Tools        []string       // optional: function-call tool names available to the model
 	JSONSchema   map[string]any // optional: structured output constraints
 	Temperature  *float64       // optional: sampling temperature
 	MaxTokens    *int           // optional: maximum output tokens

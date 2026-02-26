@@ -10,6 +10,8 @@ export function RunModal() {
   const isOpen = useUIStore((s) => s.runModalOpen)
   const closeModal = useUIStore((s) => s.closeRunModal)
   const activeWorkflow = useWorkflowStore((s) => s.activeWorkflow)
+  const isDirty = useWorkflowStore((s) => s.isDirty)
+  const persistActiveWorkflow = useWorkflowStore((s) => s.persistActiveWorkflow)
   const startRun = useRunStore((s) => s.startRun)
   const navigate = useNavigate()
 
@@ -29,6 +31,14 @@ export function RunModal() {
     setError(null)
 
     try {
+      if (isDirty) {
+        const saved = await persistActiveWorkflow()
+        if (!saved) {
+          setError('Please resolve workflow validation errors before running.')
+          return
+        }
+      }
+
       const parsedInput = JSON.parse(input) as Record<string, unknown>
       const normalizedInputText = inputText.trim()
       const runInput: Record<string, unknown> = { ...parsedInput }

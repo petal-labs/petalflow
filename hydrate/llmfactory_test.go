@@ -83,6 +83,63 @@ func TestNewLiveNodeFactory_LLMPrompt(t *testing.T) {
 	}
 }
 
+func TestNewLiveNodeFactory_LLMPromptWithFunctionCallTools(t *testing.T) {
+	providers := ProviderMap{
+		"anthropic": {APIKey: "sk-test"},
+	}
+	factory, _ := newMockClientFactory()
+	toolRegistry := core.NewToolRegistry()
+	toolRegistry.Register(core.NewFuncTool(
+		"context7.resolve",
+		"Resolve docs",
+		func(context.Context, map[string]any) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		},
+	))
+
+	nodeFactory := NewLiveNodeFactory(
+		providers,
+		factory,
+		WithToolRegistry(toolRegistry),
+	)
+
+	nd := graph.NodeDef{
+		ID:   "researcher",
+		Type: "llm_prompt",
+		Config: map[string]any{
+			"provider": "anthropic",
+			"model":    "claude-sonnet",
+			"tools":    []any{"context7.resolve"},
+			"tool_config": map[string]any{
+				"context7": map[string]any{
+					"workspace": "petalflow",
+				},
+			},
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	llmNode, ok := node.(*nodes.LLMNode)
+	if !ok {
+		t.Fatalf("expected *nodes.LLMNode, got %T", node)
+	}
+
+	cfg := llmNode.Config()
+	if len(cfg.Tools) != 1 || cfg.Tools[0] != "context7.resolve" {
+		t.Fatalf("cfg.Tools = %#v, want [context7.resolve]", cfg.Tools)
+	}
+	if cfg.ToolRegistry == nil {
+		t.Fatal("cfg.ToolRegistry should be set when WithToolRegistry is provided")
+	}
+	if cfg.ToolConfig["context7"]["workspace"] != "petalflow" {
+		t.Fatalf("cfg.ToolConfig context7 workspace = %v, want petalflow", cfg.ToolConfig["context7"]["workspace"])
+	}
+}
+
 func TestNewLiveNodeFactory_LLMRouter(t *testing.T) {
 	providers := ProviderMap{
 		"openai": {APIKey: "sk-test"},

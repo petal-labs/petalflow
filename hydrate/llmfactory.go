@@ -91,7 +91,7 @@ func newLiveFactoryClientGetter(providers ProviderMap, clientFactory ClientFacto
 func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 	switch nd.Type {
 	case "llm_prompt":
-		return buildLLMNode(nd, r.getClient)
+		return buildLLMNode(nd, r.getClient, r.options.toolRegistry)
 	case "llm_router":
 		return buildLLMRouter(nd, r.getClient)
 	case "rule_router":
@@ -280,7 +280,7 @@ func buildConfiguredToolNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node,
 }
 
 // buildLLMNode extracts config from a NodeDef and returns an LLMNode.
-func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, error)) (core.Node, error) {
+func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, error), toolRegistry *core.ToolRegistry) (core.Node, error) {
 	providerName, _ := nd.Config["provider"].(string)
 	if providerName == "" {
 		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
@@ -296,6 +296,9 @@ func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, erro
 		System:         configString(nd.Config, "system_prompt"),
 		PromptTemplate: configString(nd.Config, "prompt_template"),
 		OutputKey:      configString(nd.Config, "output_key"),
+		Tools:          configFlexibleStringSlice(nd.Config, "tools"),
+		ToolConfig:     cloneToolConfig(configMapAnyMapMap(nd.Config, "tool_config")),
+		ToolRegistry:   toolRegistry,
 	}
 
 	if v, ok := configFloat64(nd.Config, "temperature"); ok {
@@ -485,6 +488,28 @@ func configStringSlice(m map[string]any, key string) ([]string, bool) {
 	return out, true
 }
 
+func configFlexibleStringSlice(m map[string]any, key string) []string {
+	if values, ok := configStringSlice(m, key); ok {
+		return values
+	}
+	raw, ok := m[key].([]string)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func configMapStringSlice(m map[string]any, key string) ([]string, bool) {
 	return configStringSlice(m, key)
 }
@@ -508,6 +533,33 @@ func configMapInt(m map[string]any, key string) (int, bool) {
 func configMapAnyMap(m map[string]any, key string) map[string]any {
 	v, _ := m[key].(map[string]any)
 	return v
+}
+
+func configMapAnyMapMap(m map[string]any, key string) map[string]map[string]any {
+	raw, ok := m[key]
+	if !ok || raw == nil {
+		return nil
+	}
+
+	switch typed := raw.(type) {
+	case map[string]map[string]any:
+		return typed
+	case map[string]any:
+		out := make(map[string]map[string]any, len(typed))
+		for outerKey, outerValue := range typed {
+			inner, ok := outerValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			out[outerKey] = inner
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func configStringMap(m map[string]any, key string) map[string]string {
@@ -552,6 +604,23 @@ func cloneAnyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
 		out[k] = v
+	}
+	return out
+}
+
+func cloneToolConfig(in map[string]map[string]any) map[string]map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(in))
+	for toolName, values := range in {
+		if len(values) == 0 {
+			continue
+		}
+		out[toolName] = cloneAnyMap(values)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

@@ -128,37 +128,47 @@ func compileTaskTools(
 
 	for _, toolID := range ag.Tools {
 		toolRef := strings.TrimSpace(toolID)
-		mode := reg.ToolMode(toolRef)
-		if mode == "" {
-			if def, ok := reg.Get(toolRef); ok && def.IsTool {
-				mode = inferredToolMode(def)
+		resolvedRefs := []string{toolRef}
+		toolName, _, hasAction, _ := parseToolReference(toolRef)
+		if !hasAction {
+			if actionRefs := toolActionReferencesForTool(reg, toolName); len(actionRefs) > 0 {
+				resolvedRefs = actionRefs
 			}
 		}
 
-		switch mode {
-		case "function_call":
-			fcTools = append(fcTools, toolRef)
-		case "standalone":
-			toolNodeID := taskID + "__" + toolRef
-			gd.Nodes = append(gd.Nodes, graph.NodeDef{
-				ID:     toolNodeID,
-				Type:   toolRef,
-				Config: buildStandaloneToolNodeConfig(reg, toolRef, ag),
-			})
+		for _, resolvedRef := range resolvedRefs {
+			mode := reg.ToolMode(resolvedRef)
+			if mode == "" {
+				if def, ok := reg.Get(resolvedRef); ok && def.IsTool {
+					mode = inferredToolMode(def)
+				}
+			}
 
-			if firstStandaloneNodeID == "" {
-				firstStandaloneNodeID = toolNodeID
-			}
-			if prevStandaloneNodeID != "" {
-				gd.Edges = append(gd.Edges, graph.EdgeDef{
-					Source:       prevStandaloneNodeID,
-					SourceHandle: "output",
-					Target:       toolNodeID,
-					TargetHandle: "input",
+			switch mode {
+			case "function_call":
+				fcTools = append(fcTools, resolvedRef)
+			case "standalone":
+				toolNodeID := taskID + "__" + resolvedRef
+				gd.Nodes = append(gd.Nodes, graph.NodeDef{
+					ID:     toolNodeID,
+					Type:   resolvedRef,
+					Config: buildStandaloneToolNodeConfig(reg, resolvedRef, ag),
 				})
+
+				if firstStandaloneNodeID == "" {
+					firstStandaloneNodeID = toolNodeID
+				}
+				if prevStandaloneNodeID != "" {
+					gd.Edges = append(gd.Edges, graph.EdgeDef{
+						Source:       prevStandaloneNodeID,
+						SourceHandle: "output",
+						Target:       toolNodeID,
+						TargetHandle: "input",
+					})
+				}
+				prevStandaloneNodeID = toolNodeID
+				taskStartNodeIDs[taskID] = firstStandaloneNodeID
 			}
-			prevStandaloneNodeID = toolNodeID
-			taskStartNodeIDs[taskID] = firstStandaloneNodeID
 		}
 	}
 

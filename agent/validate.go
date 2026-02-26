@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/petal-labs/petalflow/graph"
@@ -173,13 +174,23 @@ func validateAgentTools(
 			continue
 		}
 
+		if reg.HasTool(toolRef) {
+			toolRefsByName[toolRef] = append(toolRefsByName[toolRef], toolRef)
+			continue
+		}
+
+		actionRefs := toolActionReferencesForTool(reg, toolRef)
+		if len(actionRefs) > 0 {
+			toolRefsByName[toolRef] = append(toolRefsByName[toolRef], actionRefs...)
+			continue
+		}
+
 		if !reg.HasTool(toolRef) {
 			diags = append(diags, errDiag("AT-004", "UNKNOWN_TOOL",
 				fmt.Sprintf("Agent %q references unknown tool %q", agentID, toolID),
 				fmt.Sprintf("%s.tools[%d]", path, i)))
 			continue
 		}
-		toolRefsByName[toolRef] = append(toolRefsByName[toolRef], toolRef)
 	}
 
 	return toolRefsByName, diags
@@ -548,16 +559,26 @@ func parseToolReference(ref string) (toolName string, actionName string, hasActi
 }
 
 func hasAnyActionForTool(reg *registry.Registry, toolName string) bool {
+	return len(toolActionReferencesForTool(reg, toolName)) > 0
+}
+
+func toolActionReferencesForTool(reg *registry.Registry, toolName string) []string {
 	prefix := strings.TrimSpace(toolName) + "."
+	if prefix == "." {
+		return nil
+	}
+
+	refs := make([]string, 0)
 	for _, def := range reg.All() {
 		if !def.IsTool {
 			continue
 		}
 		if strings.HasPrefix(def.Type, prefix) {
-			return true
+			refs = append(refs, def.Type)
 		}
 	}
-	return false
+	sort.Strings(refs)
+	return refs
 }
 
 func extractToolConfigFieldNames(schema any) map[string]struct{} {

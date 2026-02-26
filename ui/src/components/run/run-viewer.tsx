@@ -30,6 +30,19 @@ interface ArtifactItem {
   size?: number
 }
 
+interface ToolCallItem {
+  key: string
+  callId?: string
+  nodeId?: string
+  toolName: string
+  status: ActivityStatus
+  startedAt: string
+  finishedAt?: string
+  arguments?: unknown
+  result?: unknown
+  error?: string
+}
+
 function formatTimestamp(ts: string): string {
   const date = new Date(ts)
   return date.toLocaleTimeString('en-US', {
@@ -276,6 +289,97 @@ export function RunViewer({ runId }: RunViewerProps) {
     return list
   }, [runEvents, run?.output])
 
+  const toolCalls = useMemo(() => {
+    if (!run) {
+      return []
+    }
+
+    const items: ToolCallItem[] = []
+    const byKey = new Map<string, number>()
+    const byNodeTool = new Map<string, number[]>()
+
+    for (const event of runEvents) {
+      if (event.event_type !== 'tool.call' && event.event_type !== 'tool.result') {
+        continue
+      }
+
+      const payload = asObject(event.payload)
+      const nodeId = event.node_id || ''
+      const toolName = typeof payload.tool_name === 'string' && payload.tool_name.trim() !== ''
+        ? payload.tool_name
+        : 'tool'
+      const callId = typeof payload.call_id === 'string' && payload.call_id.trim() !== ''
+        ? payload.call_id
+        : undefined
+      const nodeToolKey = `${nodeId}:${toolName}`
+
+      if (event.event_type === 'tool.call') {
+        const stableCallId = callId || `event-${event.id}`
+        const key = `${nodeId}:${stableCallId}`
+        const idx = items.length
+        items.push({
+          key,
+          callId: stableCallId,
+          nodeId: event.node_id,
+          toolName,
+          status: 'running',
+          startedAt: event.timestamp,
+          arguments: payload.arguments,
+        })
+        byKey.set(key, idx)
+        const existing = byNodeTool.get(nodeToolKey) || []
+        byNodeTool.set(nodeToolKey, [...existing, idx])
+        continue
+      }
+
+      let idx: number | undefined
+      if (callId) {
+        idx = byKey.get(`${nodeId}:${callId}`)
+      } else {
+        const candidates = byNodeTool.get(nodeToolKey) || []
+        idx = [...candidates].reverse().find((candidateIdx) => items[candidateIdx]?.status === 'running')
+      }
+
+      if (idx === undefined) {
+        idx = items.length
+        const generatedCallID = callId || `event-${event.id}`
+        items.push({
+          key: `${nodeId}:${generatedCallID}`,
+          callId: generatedCallID,
+          nodeId: event.node_id,
+          toolName,
+          status: 'running',
+          startedAt: event.timestamp,
+        })
+      }
+
+      const item = items[idx]
+      item.finishedAt = event.timestamp
+      const isError = payload.is_error === true
+      item.status = isError ? 'failed' : 'completed'
+      if (typeof payload.error === 'string' && payload.error.trim() !== '') {
+        item.error = payload.error
+      }
+      if (payload.output !== undefined) {
+        item.result = payload.output
+      } else if (payload.result !== undefined) {
+        item.result = payload.result
+      }
+    }
+
+    if (run.status !== 'running') {
+      const terminalAt = run.finished_at || run.completed_at
+      for (const item of items) {
+        if (item.status === 'running') {
+          item.status = run.status === 'failed' ? 'failed' : 'completed'
+          item.finishedAt = terminalAt || item.finishedAt
+        }
+      }
+    }
+
+    return items
+  }, [run, runEvents])
+
   if (!run) {
     return (
       <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
@@ -399,6 +503,60 @@ export function RunViewer({ runId }: RunViewerProps) {
                     <div className="px-3 py-3">
                       <Markdown content={toMarkdownContent(output.value)} />
                     </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-border bg-surface-0">
+            <div className="px-3 py-2 border-b border-border text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Tool Calls
+            </div>
+            <div className="p-3 space-y-3">
+              {toolCalls.length === 0 ? (
+                <div className="text-sm text-muted-foreground">No tool calls recorded for this run.</div>
+              ) : (
+                toolCalls.map((call) => (
+                  <div key={call.key} className="rounded-lg border border-border bg-surface-1">
+                    <div className="px-3 py-2 border-b border-border flex items-center justify-between gap-3">
+                      <div className="text-xs font-semibold text-foreground truncate">
+                        {call.toolName}
+                      </div>
+                      <div
+                        className={cn(
+                          'text-[11px] uppercase tracking-wide font-semibold',
+                          call.status === 'completed' && 'text-green',
+                          call.status === 'failed' && 'text-red',
+                          call.status === 'running' && 'text-blue'
+                        )}
+                      >
+                        {call.status}
+                      </div>
+                    </div>
+                    <div className="px-3 py-2 text-[11px] text-muted-foreground">
+                      {formatTimestamp(call.startedAt)}
+                      {call.finishedAt && ` → ${formatTimestamp(call.finishedAt)}`}
+                    </div>
+                    {call.arguments !== undefined && (
+                      <div className="px-3 pb-2">
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-1">Arguments</div>
+                        <div className="text-xs">
+                          <Markdown content={toMarkdownContent(call.arguments)} />
+                        </div>
+                      </div>
+                    )}
+                    {call.error && (
+                      <div className="px-3 pb-2 text-xs text-red">{call.error}</div>
+                    )}
+                    {call.result !== undefined && (
+                      <div className="px-3 pb-3">
+                        <div className="text-[11px] font-semibold text-muted-foreground uppercase mb-1">Result</div>
+                        <div className="text-xs">
+                          <Markdown content={toMarkdownContent(call.result)} />
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ))
               )}

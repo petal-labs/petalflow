@@ -56,6 +56,14 @@ function formatDuration(run: Run): string {
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`
 }
 
+function getTotalTokens(run: Run): number | null {
+  const totalTokens = run.metrics?.total_tokens
+  if (typeof totalTokens === 'number' && Number.isFinite(totalTokens)) {
+    return totalTokens
+  }
+  return null
+}
+
 function RunsPage() {
   const search = useSearch({ from: '/_app/runs/' })
   const navigate = useNavigate()
@@ -94,6 +102,7 @@ function RunsPage() {
     }
     return true
   })
+  const showTokensColumn = filteredRuns.some((run) => getTotalTokens(run) !== null)
 
   // Get workflow name for a run
   const getWorkflowName = (workflowId: string) => {
@@ -338,9 +347,11 @@ function RunsPage() {
                 <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                   Duration
                 </th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-                  Tokens
-                </th>
+                {showTokensColumn && (
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Tokens
+                  </th>
+                )}
                 <th className="w-10"></th>
               </tr>
             </thead>
@@ -394,11 +405,13 @@ function RunsPage() {
                       {formatDuration(run)}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <span className="text-sm text-muted-foreground">
-                      {run.metrics?.total_tokens?.toLocaleString() || '-'}
-                    </span>
-                  </td>
+                  {showTokensColumn && (
+                    <td className="px-4 py-3">
+                      <span className="text-sm text-muted-foreground">
+                        {getTotalTokens(run)?.toLocaleString() || '-'}
+                      </span>
+                    </td>
+                  )}
                   <td className="px-4 py-3">
                     <Icon
                       name="chevron-right"

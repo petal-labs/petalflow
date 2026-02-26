@@ -42,6 +42,15 @@ type LLMNodeConfig struct {
 	// MaxTokens limits the output length.
 	MaxTokens *int
 
+	// Tools lists function-call tool names available to the model.
+	Tools []string
+
+	// ToolConfig stores optional per-tool overrides keyed by base tool name.
+	ToolConfig map[string]map[string]any
+
+	// ToolRegistry resolves function-call tools at runtime.
+	ToolRegistry *core.ToolRegistry
+
 	// RetryPolicy configures retry behavior for transient failures.
 	RetryPolicy core.RetryPolicy
 
@@ -99,6 +108,10 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 		return nil, fmt.Errorf("failed to build prompt: %w", err)
 	}
 
+	if len(n.config.Tools) > 0 {
+		return n.runWithTools(ctx, env, emit, prompt)
+	}
+
 	// If the client supports streaming, use the streaming path
 	if streamClient, ok := n.client.(core.StreamingLLMClient); ok {
 		return n.runStreaming(ctx, env, streamClient, emit, prompt)
@@ -108,48 +121,10 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 
 // runSync executes a synchronous (non-streaming) LLM call.
 func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
-	// Build the LLM request
-	req := core.LLMRequest{
-		Model:      n.config.Model,
-		System:     n.config.System,
-		InputText:  prompt,
-		JSONSchema: n.config.JSONSchema,
-	}
-
-	if n.config.Temperature != nil {
-		req.Temperature = n.config.Temperature
-	}
-	if n.config.MaxTokens != nil {
-		req.MaxTokens = n.config.MaxTokens
-	}
-
-	// Execute with retries
-	var resp core.LLMResponse
-	var lastErr error
-
-	for attempt := 1; attempt <= n.config.RetryPolicy.MaxAttempts; attempt++ {
-		resp, lastErr = n.client.Complete(ctx, req)
-		if lastErr == nil {
-			break
-		}
-
-		// Check if context is done
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		// Wait before retry (except on last attempt)
-		if attempt < n.config.RetryPolicy.MaxAttempts {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(n.config.RetryPolicy.Backoff * time.Duration(attempt)):
-			}
-		}
-	}
-
-	if lastErr != nil {
-		return nil, fmt.Errorf("LLM call failed after %d attempts: %w", n.config.RetryPolicy.MaxAttempts, lastErr)
+	req := n.buildRequest(nil, prompt)
+	resp, err := n.completeWithRetries(ctx, req)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check budget if configured
@@ -164,58 +139,92 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("text", resp.Text))
 
-	// Store output in envelope
-	if n.config.JSONSchema != nil && resp.JSON != nil {
-		env.SetVar(n.config.OutputKey, resp.JSON)
-	} else {
-		env.SetVar(n.config.OutputKey, resp.Text)
+	n.storeResponse(env, prompt, resp)
+	return env, nil
+}
+
+func (n *LLMNode) runWithTools(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
+	if n.config.ToolRegistry == nil {
+		return nil, fmt.Errorf("LLM node %q has tools configured but no tool registry", n.ID())
 	}
 
-	// Record token usage
-	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		TotalTokens:  resp.Usage.TotalTokens,
-		CostUSD:      resp.Usage.CostUSD,
-	})
-
-	// Record messages if configured
-	if n.config.RecordMessages {
-		env.AppendMessage(core.Message{
+	conversation := make([]core.LLMMessage, 0, 4)
+	if strings.TrimSpace(prompt) != "" {
+		conversation = append(conversation, core.LLMMessage{
 			Role:    "user",
 			Content: prompt,
-			Name:    n.ID(),
-		})
-		env.AppendMessage(core.Message{
-			Role:    "assistant",
-			Content: resp.Text,
-			Name:    n.ID(),
-			Meta: map[string]any{
-				"model":    resp.Model,
-				"provider": resp.Provider,
-			},
 		})
 	}
 
+	const maxToolTurns = 8
+	var finalResp core.LLMResponse
+	finalized := false
+
+	for turn := 0; turn < maxToolTurns; turn++ {
+		req := n.buildRequest(conversation, "")
+		req.Tools = append(req.Tools, n.config.Tools...)
+
+		resp, err := n.completeWithRetries(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(resp.ToolCalls) == 0 {
+			finalResp = resp
+			finalized = true
+			break
+		}
+
+		normalizedCalls := make([]core.LLMToolCall, len(resp.ToolCalls))
+		copy(normalizedCalls, resp.ToolCalls)
+		for i := range normalizedCalls {
+			if strings.TrimSpace(normalizedCalls[i].ID) == "" {
+				normalizedCalls[i].ID = fmt.Sprintf("call-%d-%d", turn+1, i+1)
+			}
+		}
+
+		conversation = append(conversation, core.LLMMessage{
+			Role:      "assistant",
+			Content:   resp.Text,
+			ToolCalls: normalizedCalls,
+		})
+
+		toolResults := make([]core.LLMToolResult, 0, len(normalizedCalls))
+		for _, toolCall := range normalizedCalls {
+			result, toolErr := n.invokeFunctionTool(ctx, emit, env.Trace.RunID, toolCall)
+			toolResults = append(toolResults, core.LLMToolResult{
+				CallID:  toolCall.ID,
+				Content: result,
+				IsError: toolErr != nil,
+			})
+		}
+		conversation = append(conversation, core.LLMMessage{
+			Role:        "tool",
+			ToolResults: toolResults,
+		})
+	}
+
+	if !finalized {
+		return nil, fmt.Errorf("LLM tool loop exceeded maximum turns (%d)", maxToolTurns)
+	}
+
+	if n.config.Budget != nil {
+		if err := n.checkBudget(finalResp.Usage); err != nil {
+			return nil, err
+		}
+	}
+
+	emit(runtime.NewEvent(runtime.EventNodeOutputFinal, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("text", finalResp.Text))
+
+	n.storeResponse(env, prompt, finalResp)
 	return env, nil
 }
 
 // runStreaming executes a streaming LLM call, emitting delta events for each chunk.
 func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamClient core.StreamingLLMClient, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
-	// Build the LLM request
-	req := core.LLMRequest{
-		Model:      n.config.Model,
-		System:     n.config.System,
-		InputText:  prompt,
-		JSONSchema: n.config.JSONSchema,
-	}
-
-	if n.config.Temperature != nil {
-		req.Temperature = n.config.Temperature
-	}
-	if n.config.MaxTokens != nil {
-		req.MaxTokens = n.config.MaxTokens
-	}
+	req := n.buildRequest(nil, prompt)
 
 	// Start streaming
 	ch, err := streamClient.CompleteStream(ctx, req)
@@ -265,13 +274,144 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("text", text))
 
-	// Store output in envelope
-	env.SetVar(n.config.OutputKey, text)
+	n.storeResponse(env, prompt, core.LLMResponse{
+		Text: text,
+		Usage: core.LLMTokenUsage{
+			InputTokens:  usage.InputTokens,
+			OutputTokens: usage.OutputTokens,
+			TotalTokens:  usage.TotalTokens,
+			CostUSD:      usage.CostUSD,
+		},
+	})
 
-	// Record token usage
-	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage(usage))
+	return env, nil
+}
 
-	// Record messages if configured
+func (n *LLMNode) buildRequest(messages []core.LLMMessage, inputText string) core.LLMRequest {
+	req := core.LLMRequest{
+		Model:      n.config.Model,
+		System:     n.config.System,
+		Messages:   messages,
+		InputText:  inputText,
+		JSONSchema: n.config.JSONSchema,
+	}
+	if n.config.Temperature != nil {
+		req.Temperature = n.config.Temperature
+	}
+	if n.config.MaxTokens != nil {
+		req.MaxTokens = n.config.MaxTokens
+	}
+	return req
+}
+
+func (n *LLMNode) completeWithRetries(ctx context.Context, req core.LLMRequest) (core.LLMResponse, error) {
+	var (
+		resp    core.LLMResponse
+		lastErr error
+	)
+
+	for attempt := 1; attempt <= n.config.RetryPolicy.MaxAttempts; attempt++ {
+		resp, lastErr = n.client.Complete(ctx, req)
+		if lastErr == nil {
+			return resp, nil
+		}
+
+		if ctx.Err() != nil {
+			return core.LLMResponse{}, ctx.Err()
+		}
+
+		if attempt < n.config.RetryPolicy.MaxAttempts {
+			select {
+			case <-ctx.Done():
+				return core.LLMResponse{}, ctx.Err()
+			case <-time.After(n.config.RetryPolicy.Backoff * time.Duration(attempt)):
+			}
+		}
+	}
+
+	return core.LLMResponse{}, fmt.Errorf("LLM call failed after %d attempts: %w", n.config.RetryPolicy.MaxAttempts, lastErr)
+}
+
+func (n *LLMNode) invokeFunctionTool(
+	ctx context.Context,
+	emit runtime.EventEmitter,
+	runID string,
+	call core.LLMToolCall,
+) (any, error) {
+	args := n.applyToolConfigDefaults(call.Name, maps.Clone(call.Arguments))
+	emit(runtime.NewEvent(runtime.EventToolCall, runID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("tool_name", call.Name).
+		WithPayload("call_id", call.ID).
+		WithPayload("arguments", args))
+
+	tool, ok := n.config.ToolRegistry.Get(call.Name)
+	if !ok {
+		err := fmt.Errorf("tool %q not found", call.Name)
+		emit(runtime.NewEvent(runtime.EventToolResult, runID).
+			WithNode(n.ID(), n.Kind()).
+			WithPayload("tool_name", call.Name).
+			WithPayload("call_id", call.ID).
+			WithPayload("is_error", true).
+			WithPayload("error", err.Error()))
+		return err.Error(), err
+	}
+
+	output, err := tool.Invoke(ctx, args)
+	if err != nil {
+		emit(runtime.NewEvent(runtime.EventToolResult, runID).
+			WithNode(n.ID(), n.Kind()).
+			WithPayload("tool_name", call.Name).
+			WithPayload("call_id", call.ID).
+			WithPayload("is_error", true).
+			WithPayload("error", err.Error()))
+		return err.Error(), err
+	}
+
+	emit(runtime.NewEvent(runtime.EventToolResult, runID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("tool_name", call.Name).
+		WithPayload("call_id", call.ID).
+		WithPayload("is_error", false).
+		WithPayload("output", output))
+	return output, nil
+}
+
+func (n *LLMNode) applyToolConfigDefaults(toolRef string, args map[string]any) map[string]any {
+	baseTool := strings.TrimSpace(toolRef)
+	if idx := strings.Index(baseTool, "."); idx > 0 {
+		baseTool = baseTool[:idx]
+	}
+	overrides := n.config.ToolConfig[baseTool]
+	if len(overrides) == 0 {
+		return args
+	}
+	if args == nil {
+		args = make(map[string]any, len(overrides))
+	}
+	for key, value := range overrides {
+		if _, exists := args[key]; exists {
+			continue
+		}
+		args[key] = value
+	}
+	return args
+}
+
+func (n *LLMNode) storeResponse(env *core.Envelope, prompt string, resp core.LLMResponse) {
+	if n.config.JSONSchema != nil && resp.JSON != nil {
+		env.SetVar(n.config.OutputKey, resp.JSON)
+	} else {
+		env.SetVar(n.config.OutputKey, resp.Text)
+	}
+
+	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage{
+		InputTokens:  resp.Usage.InputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+		TotalTokens:  resp.Usage.TotalTokens,
+		CostUSD:      resp.Usage.CostUSD,
+	})
+
 	if n.config.RecordMessages {
 		env.AppendMessage(core.Message{
 			Role:    "user",
@@ -280,12 +420,14 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 		})
 		env.AppendMessage(core.Message{
 			Role:    "assistant",
-			Content: text,
+			Content: resp.Text,
 			Name:    n.ID(),
+			Meta: map[string]any{
+				"model":    resp.Model,
+				"provider": resp.Provider,
+			},
 		})
 	}
-
-	return env, nil
 }
 
 // buildPrompt constructs the prompt from envelope variables.

@@ -91,6 +91,66 @@ function buildModelOptions(
   }))
 }
 
+function normalizeExecutionConfigForTasks(
+  execution: ExecutionConfig,
+  tasks: Record<string, Task>
+): ExecutionConfig {
+  const taskIDs = Object.keys(tasks)
+
+  if (execution.strategy === 'sequential') {
+    const existingOrder = Array.isArray(execution.task_order) ? execution.task_order : []
+    const seen = new Set<string>()
+    const ordered = existingOrder.filter((taskID) => {
+      if (!taskIDs.includes(taskID) || seen.has(taskID)) {
+        return false
+      }
+      seen.add(taskID)
+      return true
+    })
+    const missing = taskIDs.filter((taskID) => !seen.has(taskID))
+    return {
+      ...execution,
+      task_order: [...ordered, ...missing],
+    }
+  }
+
+  if (execution.strategy === 'custom') {
+    const existing = execution.tasks || {}
+    const normalized: Record<string, { depends_on: string[]; condition?: string }> = {}
+    for (const taskID of taskIDs) {
+      const entry = existing[taskID]
+      const dependsOn = Array.isArray(entry?.depends_on)
+        ? entry.depends_on.filter((depID) => taskIDs.includes(depID) && depID !== taskID)
+        : []
+      normalized[taskID] = entry?.condition
+        ? { depends_on: dependsOn, condition: entry.condition }
+        : { depends_on: dependsOn }
+    }
+    return {
+      ...execution,
+      tasks: normalized,
+    }
+  }
+
+  return execution
+}
+
+function readAgentConfigNumber(
+  agent: Agent & { id: string },
+  key: 'temperature' | 'max_tokens',
+  fallback: number
+): number {
+  const fromConfig = agent.config?.[key]
+  if (typeof fromConfig === 'number' && Number.isFinite(fromConfig)) {
+    return fromConfig
+  }
+  const legacyValue = agent[key]
+  if (typeof legacyValue === 'number' && Number.isFinite(legacyValue)) {
+    return legacyValue
+  }
+  return fallback
+}
+
 export function AgentDesigner() {
   const activeSource = useWorkflowStore((s) => s.activeSource)
   const setActiveSource = useWorkflowStore((s) => s.setActiveSource)
@@ -160,21 +220,27 @@ export function AgentDesigner() {
 
   const updateTask = (taskId: string, updates: Partial<Task>) => {
     if (!workflowData) return
+    const nextTasks = {
+      ...workflowData.tasks,
+      [taskId]: { ...workflowData.tasks[taskId], ...updates },
+    }
     const updated = {
       ...workflowData,
-      tasks: {
-        ...workflowData.tasks,
-        [taskId]: { ...workflowData.tasks[taskId], ...updates },
-      },
+      tasks: nextTasks,
+      execution: normalizeExecutionConfigForTasks(workflowData.execution, nextTasks),
     }
     setActiveSource(JSON.stringify(updated, null, 2))
   }
 
   const updateExecution = (updates: Partial<ExecutionConfig>) => {
     if (!workflowData) return
+    const nextExecution = normalizeExecutionConfigForTasks(
+      { ...workflowData.execution, ...updates },
+      workflowData.tasks
+    )
     const updated = {
       ...workflowData,
-      execution: { ...workflowData.execution, ...updates },
+      execution: nextExecution,
     }
     setActiveSource(JSON.stringify(updated, null, 2))
   }
@@ -191,9 +257,13 @@ export function AgentDesigner() {
         [id]: {
           id,
           role: 'New Agent',
-          goal: '',
+          goal: 'Complete assigned tasks accurately and clearly.',
           provider: initialProviderType,
           model: initialModel,
+          config: {
+            temperature: 0.7,
+            max_tokens: 4096,
+          },
         },
       },
     }
@@ -204,16 +274,19 @@ export function AgentDesigner() {
   const addTask = () => {
     if (!workflowData) return
     const id = `task_${Date.now()}`
+    const nextTasks = {
+      ...workflowData.tasks,
+      [id]: {
+        id,
+        description: 'New task description',
+        agent: agents[0]?.id || '',
+        expected_output: 'A clear, concise task result.',
+      },
+    }
     const updated = {
       ...workflowData,
-      tasks: {
-        ...workflowData.tasks,
-        [id]: {
-          id,
-          description: 'New task description',
-          agent: agents[0]?.id || '',
-        },
-      },
+      tasks: nextTasks,
+      execution: normalizeExecutionConfigForTasks(workflowData.execution, nextTasks),
     }
     setActiveSource(JSON.stringify(updated, null, 2))
     selectTask(id)
@@ -423,16 +496,32 @@ function AgentsPanel({
           <div className="grid grid-cols-2 gap-2.5">
             <SliderInput
               label="Temperature"
-              value={selectedAgent.temperature ?? 0.7}
-              onChange={(v) => onUpdate(selectedAgent.id, { temperature: v })}
+              value={readAgentConfigNumber(selectedAgent, 'temperature', 0.7)}
+              onChange={(v) =>
+                onUpdate(selectedAgent.id, {
+                  config: {
+                    ...(selectedAgent.config || {}),
+                    temperature: v,
+                  },
+                })
+              }
               min={0}
               max={2}
               step={0.1}
             />
             <FormInput
               label="Max Tokens"
-              value={String(selectedAgent.max_tokens || 4096)}
-              onChange={(v) => onUpdate(selectedAgent.id, { max_tokens: parseInt(v) || 4096 })}
+              value={String(readAgentConfigNumber(selectedAgent, 'max_tokens', 4096))}
+              onChange={(v) => {
+                const parsed = Number.parseInt(v, 10)
+                const nextValue = Number.isFinite(parsed) && parsed > 0 ? parsed : 4096
+                onUpdate(selectedAgent.id, {
+                  config: {
+                    ...(selectedAgent.config || {}),
+                    max_tokens: nextValue,
+                  },
+                })
+              }}
               type="number"
             />
           </div>

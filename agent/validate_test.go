@@ -146,6 +146,41 @@ func TestValidate_AT004_KnownTool(t *testing.T) {
 	}
 }
 
+func TestValidate_AT004_KnownToolNameWithRegisteredActions(t *testing.T) {
+	const toolName = "phase3_tool_name_lookup"
+
+	registry.Global().Register(registry.NodeTypeDef{
+		Type:     toolName + ".resolve",
+		Category: "tool",
+		IsTool:   true,
+		ToolMode: "function_call",
+		ConfigSchema: map[string]any{
+			"tool_config": map[string]tool.FieldSpec{
+				"workspace": {Type: tool.TypeString},
+			},
+		},
+	})
+
+	wf := validWorkflow()
+	wf.Agents["researcher"] = Agent{
+		Role:     "R",
+		Goal:     "G",
+		Provider: "openai",
+		Model:    "gpt-4",
+		Tools:    []string{toolName},
+		ToolConfig: map[string]map[string]any{
+			toolName: {
+				"workspace": "petalflow",
+			},
+		},
+	}
+
+	diags := Validate(wf)
+	if found := findDiagCode(diags, "AT-004"); found != nil {
+		t.Fatalf("expected no AT-004 diagnostics, got: %v", diags)
+	}
+}
+
 func TestValidate_AT004_ToolActionAndToolConfig(t *testing.T) {
 	const toolName = "phase3_tool_cfg_ok"
 
