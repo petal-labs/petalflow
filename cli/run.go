@@ -59,9 +59,13 @@ func NewRunCmd() *cobra.Command {
 func runRun(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
+	explicitStore := hasRunExplicitStore(cmd)
 	store, err := resolveToolStore(cmd)
 	if err != nil {
-		return exitError(exitRuntime, "loading tool store: %v", err)
+		if explicitStore {
+			return exitError(exitRuntime, "loading tool store: %v", err)
+		}
+		store = runNoopToolStore{}
 	}
 	defer closeToolStore(store)
 
@@ -192,6 +196,20 @@ func applyRunEnvVars(cmd *cobra.Command) {
 			_ = os.Setenv(parts[0], parts[1])
 		}
 	}
+}
+
+func hasRunExplicitStore(cmd *cobra.Command) bool {
+	storePath, _ := cmd.Flags().GetString("store-path")
+	if strings.TrimSpace(storePath) != "" {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("PETALFLOW_SQLITE_PATH")) != "" {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("PETALFLOW_TOOLS_STORE_PATH")) != "" {
+		return true
+	}
+	return false
 }
 
 func closeToolStore(store tool.Store) {

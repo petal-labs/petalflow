@@ -48,3 +48,21 @@ func syncRunToolNodeTypes(ctx context.Context, store tool.Store) error {
 
 	return nil
 }
+
+type runNoopToolStore struct{}
+
+func (runNoopToolStore) List(context.Context) ([]tool.ToolRegistration, error) {
+	return nil, nil
+}
+
+func (runNoopToolStore) Get(context.Context, string) (tool.ToolRegistration, bool, error) {
+	return tool.ToolRegistration{}, false, nil
+}
+
+func (runNoopToolStore) Upsert(context.Context, tool.ToolRegistration) error {
+	return nil
+}
+
+func (runNoopToolStore) Delete(context.Context, string) error {
+	return nil
+}

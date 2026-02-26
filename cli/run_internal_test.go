@@ -120,6 +120,34 @@ func TestRunRuntimeError(t *testing.T) {
 	}
 }
 
+func TestRunDryRunFallsBackWhenImplicitStoreUnavailable(t *testing.T) {
+	path := writeTestFile(t, "workflow.json", validAgentJSON)
+	t.Setenv("HOME", t.TempDir())
+
+	root := newTestRoot()
+	stdout, stderr, err := executeCommand(root, "run", path, "--dry-run")
+	if err != nil {
+		t.Fatalf("expected no error, got %v\nstdout=%q\nstderr=%q", err, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "Validation and compilation successful.") {
+		t.Fatalf("stdout = %q, want validation success", stdout)
+	}
+}
+
+func TestRunDryRunExplicitStoreFailureStillErrors(t *testing.T) {
+	path := writeTestFile(t, "workflow.json", validAgentJSON)
+	explicitInvalidStorePath := filepath.Join(t.TempDir(), "missing", "petalflow.db")
+
+	root := newTestRoot()
+	_, _, err := executeCommand(root, "run", path, "--dry-run", "--store-path", explicitInvalidStorePath)
+	if err == nil {
+		t.Fatal("expected explicit store path failure")
+	}
+	if !strings.Contains(err.Error(), "loading tool store") {
+		t.Fatalf("error = %q, want loading tool store message", err.Error())
+	}
+}
+
 func TestRunDryRunIncludesStoredToolActionsForAgentValidation(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "petalflow.db")
 	store, err := tool.NewSQLiteStore(tool.SQLiteStoreConfig{
