@@ -475,7 +475,7 @@ func (s *Server) syncRegistry(ctx context.Context) error {
 		return err
 	}
 
-	nodeDefs := buildToolNodeTypes(regs)
+	nodeDefs := BuildToolNodeTypes(regs)
 	newDynamic := make(map[string]struct{}, len(nodeDefs))
 
 	s.mu.Lock()
@@ -492,7 +492,8 @@ func (s *Server) syncRegistry(ctx context.Context) error {
 	return nil
 }
 
-func buildToolNodeTypes(regs []tool.ToolRegistration) []registry.NodeTypeDef {
+// BuildToolNodeTypes converts tool registrations into action-level node types.
+func BuildToolNodeTypes(regs []tool.ToolRegistration) []registry.NodeTypeDef {
 	sortedRegs := make([]tool.ToolRegistration, len(regs))
 	copy(sortedRegs, regs)
 	sort.Slice(sortedRegs, func(i, j int) bool {
