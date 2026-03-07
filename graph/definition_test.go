@@ -17,7 +17,7 @@ func TestGraphDefinition_JSONRoundTrip(t *testing.T) {
 			"source_kind": "agent_workflow",
 		},
 		Nodes: []NodeDef{
-			{ID: "a", Type: "llm_prompt", Config: map[string]any{"model": "gpt-4"}},
+			{ID: "a", Type: "llm_prompt", Config: map[string]any{"model": "gpt-5.4"}},
 			{ID: "b", Type: "transform"},
 		},
 		Edges: []EdgeDef{

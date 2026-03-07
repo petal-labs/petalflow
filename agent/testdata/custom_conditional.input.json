@@ -4,9 +4,9 @@
   "id": "custom_conditional",
   "name": "Custom with Conditional Branching",
   "agents": {
-    "analyzer": { "role": "Analyzer", "goal": "Analyze input", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "deep_diver": { "role": "Deep Diver", "goal": "Deep analysis", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "reporter": { "role": "Reporter", "goal": "Write report", "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+    "analyzer": { "role": "Analyzer", "goal": "Analyze input", "provider": "anthropic", "model": "claude-sonnet-4-6" },
+    "deep_diver": { "role": "Deep Diver", "goal": "Deep analysis", "provider": "anthropic", "model": "claude-sonnet-4-6" },
+    "reporter": { "role": "Reporter", "goal": "Write report", "provider": "anthropic", "model": "claude-sonnet-4-6" }
   },
   "tasks": {
     "analyze": { "description": "Analyze the data", "agent": "analyzer", "expected_output": "Analysis with confidence score" },

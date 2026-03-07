@@ -4,9 +4,9 @@
   "id": "custom_dag",
   "name": "Custom DAG",
   "agents": {
-    "a1": { "role": "Agent 1", "goal": "Step 1", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "a2": { "role": "Agent 2", "goal": "Step 2", "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "a3": { "role": "Agent 3", "goal": "Step 3", "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+    "a1": { "role": "Agent 1", "goal": "Step 1", "provider": "anthropic", "model": "claude-sonnet-4-6" },
+    "a2": { "role": "Agent 2", "goal": "Step 2", "provider": "anthropic", "model": "claude-sonnet-4-6" },
+    "a3": { "role": "Agent 3", "goal": "Step 3", "provider": "anthropic", "model": "claude-sonnet-4-6" }
   },
   "tasks": {
     "task_a": { "description": "First task", "agent": "a1", "expected_output": "Output A" },
