@@ -43,7 +43,7 @@ func TestNewLiveNodeFactory_LLMPrompt(t *testing.T) {
 		Type: "llm_prompt",
 		Config: map[string]any{
 			"provider":        "anthropic",
-			"model":           "claude-3-haiku",
+			"model":           "claude-haiku-4-5",
 			"system_prompt":   "You summarize text.",
 			"prompt_template": "Summarize: {{.input}}",
 			"output_key":      "summary",
@@ -63,8 +63,8 @@ func TestNewLiveNodeFactory_LLMPrompt(t *testing.T) {
 	}
 
 	cfg := llmNode.Config()
-	if cfg.Model != "claude-3-haiku" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "claude-3-haiku")
+	if cfg.Model != "claude-haiku-4-5" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "claude-haiku-4-5")
 	}
 	if cfg.System != "You summarize text." {
 		t.Errorf("System = %q, want %q", cfg.System, "You summarize text.")
@@ -95,7 +95,7 @@ func TestNewLiveNodeFactory_LLMRouter(t *testing.T) {
 		Type: "llm_router",
 		Config: map[string]any{
 			"provider":      "openai",
-			"model":         "gpt-4",
+			"model":         "gpt-5.4",
 			"system_prompt": "Classify the input.",
 			"allowed_targets": map[string]any{
 				"positive": "happy_path",
@@ -115,8 +115,8 @@ func TestNewLiveNodeFactory_LLMRouter(t *testing.T) {
 	}
 
 	cfg := router.Config()
-	if cfg.Model != "gpt-4" {
-		t.Errorf("Model = %q, want %q", cfg.Model, "gpt-4")
+	if cfg.Model != "gpt-5.4" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "gpt-5.4")
 	}
 	if cfg.System != "Classify the input." {
 		t.Errorf("System = %q, want %q", cfg.System, "Classify the input.")
@@ -155,7 +155,7 @@ func TestNewLiveNodeFactory_MissingProvider(t *testing.T) {
 		Type: "llm_prompt",
 		Config: map[string]any{
 			"provider": "anthropic",
-			"model":    "claude-3",
+			"model":    "claude-sonnet-4-6-4-6",
 		},
 	}
 
@@ -176,7 +176,7 @@ func TestNewLiveNodeFactory_MissingProviderField(t *testing.T) {
 		ID:   "node1",
 		Type: "llm_prompt",
 		Config: map[string]any{
-			"model": "claude-3",
+			"model": "claude-sonnet-4-6-4-6",
 			// no "provider" key
 		},
 	}
@@ -201,7 +201,7 @@ func TestNewLiveNodeFactory_ClientCaching(t *testing.T) {
 			Type: "llm_prompt",
 			Config: map[string]any{
 				"provider": "anthropic",
-				"model":    "claude-3",
+				"model":    "claude-sonnet-4-6-4-6",
 			},
 		}
 		if _, err := nodeFactory(nd); err != nil {
@@ -227,7 +227,7 @@ func TestNewLiveNodeFactory_NumericCoercion(t *testing.T) {
 		Type: "llm_prompt",
 		Config: map[string]any{
 			"provider":    "anthropic",
-			"model":       "claude-3",
+			"model":       "claude-sonnet-4-6-4-6",
 			"temperature": float64(0.3),
 			"max_tokens":  float64(2048),
 		},
@@ -260,7 +260,7 @@ func TestNewLiveNodeFactory_DefaultOutputKey(t *testing.T) {
 		Type: "llm_prompt",
 		Config: map[string]any{
 			"provider": "anthropic",
-			"model":    "claude-3",
+			"model":    "claude-sonnet-4-6-4-6",
 			// no output_key — NewLLMNode defaults to id + "_output"
 		},
 	}
@@ -1096,7 +1096,7 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 				Type: "llm_prompt",
 				Config: map[string]any{
 					"provider": "anthropic",
-					"model":    "claude-sonnet",
+					"model":    "claude-sonnet-4-6",
 				},
 			},
 		},
@@ -1106,7 +1106,7 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 				Type: "llm_router",
 				Config: map[string]any{
 					"provider": "anthropic",
-					"model":    "claude-sonnet",
+					"model":    "claude-sonnet-4-6",
 				},
 			},
 		},

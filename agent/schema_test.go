@@ -19,7 +19,7 @@ func fullWorkflow() AgentWorkflow {
 				Goal:      "Find relevant information",
 				Backstory: "Expert in data analysis",
 				Provider:  "openai",
-				Model:     "gpt-4",
+				Model:     "gpt-5.4",
 				Tools:     []string{"web_search", "arxiv"},
 				Config: map[string]any{
 					"temperature": 0.7,
@@ -30,7 +30,7 @@ func fullWorkflow() AgentWorkflow {
 				Role:     "Technical Writer",
 				Goal:     "Produce clear documentation",
 				Provider: "anthropic",
-				Model:    "claude-3",
+				Model:    "claude-sonnet-4-6",
 			},
 		},
 		Tasks: map[string]Task{
@@ -107,8 +107,8 @@ func TestJSONRoundTrip(t *testing.T) {
 	if researcher.Provider != "openai" {
 		t.Errorf("researcher.Provider = %q, want %q", researcher.Provider, "openai")
 	}
-	if researcher.Model != "gpt-4" {
-		t.Errorf("researcher.Model = %q, want %q", researcher.Model, "gpt-4")
+	if researcher.Model != "gpt-5.4" {
+		t.Errorf("researcher.Model = %q, want %q", researcher.Model, "gpt-5.4")
 	}
 	if len(researcher.Tools) != 2 {
 		t.Fatalf("researcher.Tools count = %d, want 2", len(researcher.Tools))
@@ -185,7 +185,7 @@ func TestOmitemptyFieldsOmittedWhenEmpty(t *testing.T) {
 				Role:     "Analyst",
 				Goal:     "Analyze data",
 				Provider: "openai",
-				Model:    "gpt-4",
+				Model:    "gpt-5.4",
 				// Backstory, Tools, Config all empty.
 			},
 		},
@@ -269,7 +269,7 @@ func TestLoadFromBytes(t *testing.T) {
 						"role": "Developer",
 						"goal": "Write code",
 						"provider": "openai",
-						"model": "gpt-4"
+						"model": "gpt-5.4"
 					}
 				},
 				"tasks": {
@@ -380,19 +380,19 @@ func TestMapKeysPreserved(t *testing.T) {
 				"role": "Alpha",
 				"goal": "Be first",
 				"provider": "openai",
-				"model": "gpt-4"
+				"model": "gpt-5.4"
 			},
 			"agent-beta": {
 				"role": "Beta",
 				"goal": "Be second",
 				"provider": "anthropic",
-				"model": "claude-3"
+				"model": "claude-sonnet-4-6"
 			},
 			"agent-gamma": {
 				"role": "Gamma",
 				"goal": "Be third",
 				"provider": "openai",
-				"model": "gpt-3.5"
+				"model": "gpt-5-mini"
 			}
 		},
 		"tasks": {

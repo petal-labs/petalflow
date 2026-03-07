@@ -690,7 +690,7 @@ func TestSSEHandler_SSEFormat(t *testing.T) {
 		Time:     time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
 		Attempt:  2,
 		Elapsed:  1500 * time.Millisecond,
-		Payload:  map[string]any{"model": "gpt-4"},
+		Payload:  map[string]any{"model": "gpt-5.4"},
 		Seq:      42,
 		TraceID:  "abc123",
 		SpanID:   "def456",
@@ -775,8 +775,8 @@ func TestSSEHandler_SSEFormat(t *testing.T) {
 		t.Errorf("expected span_id def456, got %v", data["span_id"])
 	}
 	if payload, ok := data["payload"].(map[string]any); ok {
-		if payload["model"] != "gpt-4" {
-			t.Errorf("expected payload.model gpt-4, got %v", payload["model"])
+		if payload["model"] != "gpt-5.4" {
+			t.Errorf("expected payload.model gpt-5.4, got %v", payload["model"])
 		}
 	} else {
 		t.Error("expected payload to be a map")

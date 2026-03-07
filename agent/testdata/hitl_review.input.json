@@ -8,7 +8,7 @@
       "role": "Content Drafter",
       "goal": "Draft content for review",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514"
+      "model": "claude-sonnet-4-6"
     }
   },
   "tasks": {

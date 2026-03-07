@@ -55,7 +55,7 @@ func TestComplete_SimplePrompt(t *testing.T) {
 		id: "test-provider",
 		chatResponse: &iriscore.ChatResponse{
 			ID:     "resp-1",
-			Model:  "claude-3",
+			Model:  "claude-sonnet-4-6",
 			Output: "Hello from LLM",
 			Usage: iriscore.TokenUsage{
 				PromptTokens:     12,
@@ -67,7 +67,7 @@ func TestComplete_SimplePrompt(t *testing.T) {
 	adapter := &irisAdapter{provider: mock}
 
 	resp, err := adapter.Complete(context.Background(), core.LLMRequest{
-		Model:     "claude-3",
+		Model:     "claude-sonnet-4-6",
 		System:    "You are helpful",
 		InputText: "Say hello",
 	})
@@ -81,8 +81,8 @@ func TestComplete_SimplePrompt(t *testing.T) {
 	if resp.Provider != "test-provider" {
 		t.Errorf("Provider = %q, want %q", resp.Provider, "test-provider")
 	}
-	if resp.Model != "claude-3" {
-		t.Errorf("Model = %q, want %q", resp.Model, "claude-3")
+	if resp.Model != "claude-sonnet-4-6" {
+		t.Errorf("Model = %q, want %q", resp.Model, "claude-sonnet-4-6")
 	}
 	if resp.Usage.InputTokens != 12 {
 		t.Errorf("InputTokens = %d, want 12", resp.Usage.InputTokens)

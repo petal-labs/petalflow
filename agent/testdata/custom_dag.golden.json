@@ -15,7 +15,7 @@
       "id": "task_a__a1",
       "type": "llm_prompt",
       "config": {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
         "prompt_template": "First task",
         "provider": "anthropic",
         "system_prompt": "You are a Agent 1.\n\nGoal: Step 1\n\nExpected output: Output A"
@@ -25,7 +25,7 @@
       "id": "task_b__a2",
       "type": "llm_prompt",
       "config": {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
         "prompt_template": "Second task",
         "provider": "anthropic",
         "system_prompt": "You are a Agent 2.\n\nGoal: Step 2\n\nExpected output: Output B"
@@ -35,7 +35,7 @@
       "id": "task_c__a3",
       "type": "llm_prompt",
       "config": {
-        "model": "claude-sonnet-4-20250514",
+        "model": "claude-sonnet-4-6",
         "prompt_template": "Third task",
         "provider": "anthropic",
         "system_prompt": "You are a Agent 3.\n\nGoal: Step 3\n\nExpected output: Output C"

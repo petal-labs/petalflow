@@ -8,13 +8,13 @@
       "role": "Senior Researcher",
       "goal": "Find relevant information",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514"
+      "model": "claude-sonnet-4-6"
     },
     "writer": {
       "role": "Technical Writer",
       "goal": "Write clear documentation",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514"
+      "model": "claude-sonnet-4-6"
     }
   },
   "tasks": {

@@ -57,7 +57,7 @@ const validAgentJSON = `{
       "role": "Researcher",
       "goal": "Find information",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514"
+      "model": "claude-sonnet-4-6"
     }
   },
   "tasks": {
@@ -115,7 +115,7 @@ const invalidSchemaVersionAgentJSON = `{
       "role": "Researcher",
       "goal": "Find information",
       "provider": "anthropic",
-      "model": "claude-sonnet-4-20250514"
+      "model": "claude-sonnet-4-6"
     }
   },
   "tasks": {
@@ -167,7 +167,7 @@ agents:
     role: Researcher
     goal: Find information
     provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
 tasks:
   research:
     description: Research the topic

@@ -38,7 +38,7 @@ func TestWorkflowNodeTypesE2E_DaemonAPI_RunCoverage(t *testing.T) {
 					"type": "llm_router",
 					"config": map[string]any{
 						"provider": "openai",
-						"model":    "gpt-4o-mini",
+						"model":    "gpt-5-mini",
 						"allowed_targets": map[string]any{
 							"openai": "route_a",
 							"other":  "route_b",

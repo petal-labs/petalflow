@@ -174,13 +174,13 @@ agents:
     role: Research Analyst
     goal: Gather useful facts about a topic
     provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
 
   writer:
     role: Technical Writer
     goal: Turn findings into a concise report
     provider: anthropic
-    model: claude-sonnet-4-20250514
+    model: claude-sonnet-4-6
 
 tasks:
   research:

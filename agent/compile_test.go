@@ -19,7 +19,7 @@ func minimalWorkflow() *AgentWorkflow {
 				Role:     "Senior Researcher",
 				Goal:     "Find relevant information",
 				Provider: "anthropic",
-				Model:    "claude-sonnet-4-20250514",
+				Model:    "claude-sonnet-4-6",
 			},
 		},
 		Tasks: map[string]Task{
@@ -125,8 +125,8 @@ func TestCompile_Sequential_MultipleTask(t *testing.T) {
 		ID:      "multi_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"researcher": {Role: "Researcher", Goal: "Research", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"writer":     {Role: "Writer", Goal: "Write", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"researcher": {Role: "Researcher", Goal: "Research", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"writer":     {Role: "Writer", Goal: "Write", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"research": {Description: "Research topic", Agent: "researcher", ExpectedOutput: "Findings"},
@@ -176,8 +176,8 @@ func TestCompile_Parallel(t *testing.T) {
 		ID:      "par_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"a1": {Role: "Agent 1", Goal: "Goal 1", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"a2": {Role: "Agent 2", Goal: "Goal 2", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"a1": {Role: "Agent 1", Goal: "Goal 1", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"a2": {Role: "Agent 2", Goal: "Goal 2", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"task1": {Description: "Task 1", Agent: "a1", ExpectedOutput: "Output 1"},
@@ -234,8 +234,8 @@ func TestCompile_Hierarchical(t *testing.T) {
 		ID:      "hier_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"manager": {Role: "Manager", Goal: "Coordinate", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"worker":  {Role: "Worker", Goal: "Execute", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"manager": {Role: "Manager", Goal: "Coordinate", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"worker":  {Role: "Worker", Goal: "Execute", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"work": {Description: "Do work", Agent: "worker", ExpectedOutput: "Results"},
@@ -295,7 +295,7 @@ func TestCompile_Hierarchical_MissingManager(t *testing.T) {
 		ID:      "hier_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"worker": {Role: "Worker", Goal: "Execute", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"worker": {Role: "Worker", Goal: "Execute", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"work": {Description: "Do work", Agent: "worker", ExpectedOutput: "Results"},
@@ -317,9 +317,9 @@ func TestCompile_Custom(t *testing.T) {
 		ID:      "custom_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"a1": {Role: "Agent 1", Goal: "Goal 1", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"a2": {Role: "Agent 2", Goal: "Goal 2", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"a3": {Role: "Agent 3", Goal: "Goal 3", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"a1": {Role: "Agent 1", Goal: "Goal 1", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"a2": {Role: "Agent 2", Goal: "Goal 2", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"a3": {Role: "Agent 3", Goal: "Goal 3", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"task_a": {Description: "Task A", Agent: "a1", ExpectedOutput: "A"},
@@ -381,7 +381,7 @@ func TestCompile_SystemPrompt(t *testing.T) {
 		Goal:      "Find relevant information",
 		Backstory: "Has 20 years of experience",
 		Provider:  "anthropic",
-		Model:     "claude-sonnet-4-20250514",
+		Model:     "claude-sonnet-4-6",
 	}
 
 	gd, err := Compile(wf)
@@ -428,7 +428,7 @@ func TestCompile_AgentConfig(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Config: map[string]any{
 			"temperature": 0.7,
 			"max_tokens":  4096,
@@ -450,8 +450,8 @@ func TestCompile_AgentConfig(t *testing.T) {
 	if node.Config["provider"] != "anthropic" {
 		t.Errorf("provider = %v, want %q", node.Config["provider"], "anthropic")
 	}
-	if node.Config["model"] != "claude-sonnet-4-20250514" {
-		t.Errorf("model = %v, want %q", node.Config["model"], "claude-sonnet-4-20250514")
+	if node.Config["model"] != "claude-sonnet-4-6" {
+		t.Errorf("model = %v, want %q", node.Config["model"], "claude-sonnet-4-6")
 	}
 }
 
@@ -478,7 +478,7 @@ func TestCompile_ToolDuality_FunctionCall(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Tools:    []string{"web_search"},
 	}
 
@@ -521,7 +521,7 @@ func TestCompile_ToolDuality_Standalone(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Tools:    []string{"pdf_extract"},
 	}
 
@@ -573,8 +573,8 @@ func TestCompile_InputReferences(t *testing.T) {
 		ID:      "ref_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"researcher": {Role: "Researcher", Goal: "Research", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"writer":     {Role: "Writer", Goal: "Write", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"researcher": {Role: "Researcher", Goal: "Research", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"writer":     {Role: "Writer", Goal: "Write", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"research": {Description: "Research topic", Agent: "researcher", ExpectedOutput: "Findings"},
@@ -615,8 +615,8 @@ func TestCompile_ContextReferences(t *testing.T) {
 		ID:      "ctx_wf",
 		Version: "1.0",
 		Agents: map[string]Agent{
-			"researcher": {Role: "Researcher", Goal: "Research", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
-			"writer":     {Role: "Writer", Goal: "Write", Provider: "anthropic", Model: "claude-sonnet-4-20250514"},
+			"researcher": {Role: "Researcher", Goal: "Research", Provider: "anthropic", Model: "claude-sonnet-4-6"},
+			"writer":     {Role: "Writer", Goal: "Write", Provider: "anthropic", Model: "claude-sonnet-4-6"},
 		},
 		Tasks: map[string]Task{
 			"research": {Description: "Research topic", Agent: "researcher", ExpectedOutput: "Findings"},
@@ -811,7 +811,7 @@ func TestCompile_MixedTools(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Tools:    []string{"search_api", "data_loader"},
 	}
 
@@ -880,7 +880,7 @@ func TestCompile_ToolActionReferencesAndToolConfig(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Tools:    []string{"s3_fetch.list", "s3_fetch.download"},
 		ToolConfig: map[string]map[string]any{
 			"s3_fetch": {
@@ -963,7 +963,7 @@ func TestCompile_StandaloneToolDefaultArgsTemplate(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Tools:    []string{"http_fetch.fetch"},
 	}
 
@@ -1027,7 +1027,7 @@ func TestCompile_ToolModeInferredFromBytesPorts(t *testing.T) {
 		Role:     "Researcher",
 		Goal:     "Research",
 		Provider: "anthropic",
-		Model:    "claude-sonnet-4-20250514",
+		Model:    "claude-sonnet-4-6",
 		Tools:    []string{"pdf_extract.extract"},
 	}
 

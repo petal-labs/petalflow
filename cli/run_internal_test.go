@@ -195,7 +195,7 @@ func TestRunDryRunIncludesStoredToolActionsForAgentValidation(t *testing.T) {
       "role": "Researcher",
       "goal": "Use custom tool",
       "provider": "openai",
-      "model": "gpt-4",
+      "model": "gpt-5.4",
       "tools": ["%s.%s"]
     }
   },
