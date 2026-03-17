@@ -62,6 +62,21 @@ const (
 
 	// EventRunSnapshot is emitted to capture a point-in-time snapshot of run state.
 	EventRunSnapshot EventKind = "run.snapshot"
+
+	// EventLLMCall is emitted when an LLM request is about to be sent to a provider.
+	// Payload includes: provider, model, system_prompt, messages, tools, temperature, max_tokens.
+	EventLLMCall EventKind = "llm.call"
+
+	// EventLLMResponse is emitted when an LLM response is received from a provider.
+	// Payload includes: provider, model, completion, tool_calls, usage (input_tokens,
+	// output_tokens, total_tokens, cache_read_tokens, cache_creation_tokens),
+	// stop_reason, request_id, ttft_ms, latency_ms.
+	EventLLMResponse EventKind = "llm.response"
+
+	// EventEdgeTransfer is emitted when data flows between nodes via an edge.
+	// Payload includes: source_node, source_port, target_node, target_port,
+	// data_size_bytes, data_preview.
+	EventEdgeTransfer EventKind = "edge.transfer"
 )
 
 // String returns the string representation of the EventKind.
