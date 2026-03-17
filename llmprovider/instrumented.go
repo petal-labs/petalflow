@@ -204,7 +204,7 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 
 		var finalUsage *core.LLMTokenUsage
 		var ttftMs int64
-		var firstChunk bool = true
+		firstChunk := true
 
 		for chunk := range stream {
 			if firstChunk && chunk.Delta != "" {
