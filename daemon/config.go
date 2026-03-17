@@ -22,7 +22,141 @@ const (
 
 // ToolConfigFile is the declarative startup config shape for tool registrations.
 type ToolConfigFile struct {
-	Tools map[string]ToolDeclaration `yaml:"tools"`
+	Tools         map[string]ToolDeclaration `yaml:"tools"`
+	Observability *ObservabilityConfig       `yaml:"observability,omitempty"`
+}
+
+// ObservabilityConfig holds settings for telemetry and tracing integrations.
+type ObservabilityConfig struct {
+	PetalTrace *PetalTraceConfig `yaml:"petaltrace,omitempty"`
+}
+
+// PetalTraceConfig configures the PetalTrace observability integration.
+type PetalTraceConfig struct {
+	// Enabled controls whether PetalTrace integration is active.
+	Enabled bool `yaml:"enabled"`
+
+	// Endpoint is the OTLP collector endpoint (e.g., "http://localhost:4318").
+	Endpoint string `yaml:"endpoint"`
+
+	// CaptureMode controls the level of detail captured.
+	// Values: "minimal", "standard", "full"
+	CaptureMode string `yaml:"capture_mode"`
+
+	// SampleRate controls the percentage of runs to trace (0.0 - 1.0).
+	SampleRate float64 `yaml:"sample_rate"`
+
+	// AlwaysCaptureErrors ensures failed runs are always captured regardless of sample rate.
+	AlwaysCaptureErrors bool `yaml:"always_capture_errors"`
+
+	// Tags are key-value pairs attached to all traces.
+	Tags map[string]string `yaml:"tags,omitempty"`
+
+	// SampleOverrides allows tag-based sample rate overrides.
+	// Example: {"environment:staging": 1.0} captures all staging runs.
+	SampleOverrides map[string]float64 `yaml:"sample_overrides,omitempty"`
+}
+
+// CaptureMode constants for PetalTrace capture levels.
+const (
+	// CaptureModeMinimal captures OTel spans only (latency, status, token counts).
+	CaptureModeMinimal = "minimal"
+
+	// CaptureModeStandard captures prompts, completions, tool args/results.
+	CaptureModeStandard = "standard"
+
+	// CaptureModeFull captures all data including edge transfers and graph snapshots.
+	CaptureModeFull = "full"
+)
+
+// PetalTraceConfigFromEnv returns a PetalTraceConfig populated from environment variables.
+// Environment variables take precedence over config file values.
+func PetalTraceConfigFromEnv() *PetalTraceConfig {
+	endpoint := os.Getenv("PETALTRACE_ENDPOINT")
+	if endpoint == "" {
+		return nil
+	}
+
+	cfg := &PetalTraceConfig{
+		Enabled:             true,
+		Endpoint:            endpoint,
+		CaptureMode:         CaptureModeStandard,
+		SampleRate:          1.0,
+		AlwaysCaptureErrors: true,
+	}
+
+	if mode := os.Getenv("PETALTRACE_CAPTURE_MODE"); mode != "" {
+		cfg.CaptureMode = mode
+	}
+
+	if rateStr := os.Getenv("PETALTRACE_SAMPLE_RATE"); rateStr != "" {
+		if rate, err := parseFloat(rateStr); err == nil {
+			cfg.SampleRate = rate
+		}
+	}
+
+	if errCapture := os.Getenv("PETALTRACE_ALWAYS_CAPTURE_ERRORS"); errCapture != "" {
+		cfg.AlwaysCaptureErrors = strings.ToLower(errCapture) == "true" || errCapture == "1"
+	}
+
+	return cfg
+}
+
+// MergeWithEnv merges environment variable overrides into the config.
+// Environment variables take precedence over config file values.
+func (c *PetalTraceConfig) MergeWithEnv() *PetalTraceConfig {
+	if c == nil {
+		return PetalTraceConfigFromEnv()
+	}
+
+	result := *c
+
+	if endpoint := os.Getenv("PETALTRACE_ENDPOINT"); endpoint != "" {
+		result.Endpoint = endpoint
+		result.Enabled = true
+	}
+
+	if mode := os.Getenv("PETALTRACE_CAPTURE_MODE"); mode != "" {
+		result.CaptureMode = mode
+	}
+
+	if rateStr := os.Getenv("PETALTRACE_SAMPLE_RATE"); rateStr != "" {
+		if rate, err := parseFloat(rateStr); err == nil {
+			result.SampleRate = rate
+		}
+	}
+
+	if errCapture := os.Getenv("PETALTRACE_ALWAYS_CAPTURE_ERRORS"); errCapture != "" {
+		result.AlwaysCaptureErrors = strings.ToLower(errCapture) == "true" || errCapture == "1"
+	}
+
+	return &result
+}
+
+// IsValid checks if the PetalTrace config has valid values.
+func (c *PetalTraceConfig) IsValid() bool {
+	if c == nil || !c.Enabled {
+		return false
+	}
+	if c.Endpoint == "" {
+		return false
+	}
+	switch c.CaptureMode {
+	case CaptureModeMinimal, CaptureModeStandard, CaptureModeFull:
+		// Valid
+	default:
+		return false
+	}
+	if c.SampleRate < 0 || c.SampleRate > 1 {
+		return false
+	}
+	return true
+}
+
+func parseFloat(s string) (float64, error) {
+	var f float64
+	_, err := fmt.Sscanf(s, "%f", &f)
+	return f, err
 }
 
 // ToolDeclaration defines one tool in petalflow.yaml.
@@ -364,4 +498,59 @@ func resolveConfigRelative(baseDir, p string) string {
 		return clean
 	}
 	return filepath.Join(baseDir, clean)
+}
+
+// LoadPetalTraceConfig loads PetalTrace configuration from the config file
+// and merges with environment variable overrides.
+func LoadPetalTraceConfig(configPath string) (*PetalTraceConfig, error) {
+	if configPath == "" {
+		// No config file, try environment only
+		return PetalTraceConfigFromEnv(), nil
+	}
+
+	cfg, err := loadToolConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	var ptCfg *PetalTraceConfig
+	if cfg.Observability != nil && cfg.Observability.PetalTrace != nil {
+		ptCfg = cfg.Observability.PetalTrace
+	}
+
+	// Merge with environment overrides
+	return ptCfg.MergeWithEnv(), nil
+}
+
+// LoadObservabilityConfig loads the observability section from a config file.
+func LoadObservabilityConfig(configPath string) (*ObservabilityConfig, error) {
+	if configPath == "" {
+		ptCfg := PetalTraceConfigFromEnv()
+		if ptCfg == nil {
+			return nil, nil
+		}
+		return &ObservabilityConfig{PetalTrace: ptCfg}, nil
+	}
+
+	cfg, err := loadToolConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if cfg.Observability == nil {
+		ptCfg := PetalTraceConfigFromEnv()
+		if ptCfg == nil {
+			return nil, nil
+		}
+		return &ObservabilityConfig{PetalTrace: ptCfg}, nil
+	}
+
+	// Merge PetalTrace config with environment
+	if cfg.Observability.PetalTrace != nil {
+		cfg.Observability.PetalTrace = cfg.Observability.PetalTrace.MergeWithEnv()
+	} else {
+		cfg.Observability.PetalTrace = PetalTraceConfigFromEnv()
+	}
+
+	return cfg.Observability, nil
 }

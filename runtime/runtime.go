@@ -62,6 +62,27 @@ type RunOptions struct {
 	// EventBus distributes events to subscribers.
 	// If nil, events are only sent to EventHandler and eventCh.
 	EventBus EventPublisher
+
+	// CaptureSnapshots enables PetalTrace snapshot capture for replay support.
+	// When true, GraphDefinition and Inputs are included in the run.started event.
+	CaptureSnapshots bool
+
+	// GraphDefinition is the graph definition to include in snapshots.
+	// Only used when CaptureSnapshots is true.
+	GraphDefinition any
+
+	// Inputs are the initial workflow inputs to include in snapshots.
+	// Only used when CaptureSnapshots is true.
+	Inputs any
+
+	// TriggerSource identifies what triggered this run (e.g., "cli", "api", "ui", "schedule").
+	TriggerSource string
+
+	// WorkflowID is the workflow identifier for tracing.
+	WorkflowID string
+
+	// WorkflowVersion is the workflow version for tracing.
+	WorkflowVersion string
 }
 
 // DefaultRunOptions returns sensible default options.
@@ -137,9 +158,32 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 
 	// Emit run started
 	runStart := opts.Now()
-	emit(NewEvent(EventRunStarted, runID).
+	runStartEvent := NewEvent(EventRunStarted, runID).
 		WithPayload("graph", g.Name()).
-		WithPayload("entry", g.Entry()))
+		WithPayload("entry", g.Entry())
+
+	// Add PetalTrace metadata if available
+	if opts.TriggerSource != "" {
+		runStartEvent = runStartEvent.WithPayload("trigger", opts.TriggerSource)
+	}
+	if opts.WorkflowID != "" {
+		runStartEvent = runStartEvent.WithPayload("workflow_id", opts.WorkflowID)
+	}
+	if opts.WorkflowVersion != "" {
+		runStartEvent = runStartEvent.WithPayload("workflow_version", opts.WorkflowVersion)
+	}
+
+	// Add snapshot data for PetalTrace replay support
+	if opts.CaptureSnapshots {
+		if opts.GraphDefinition != nil {
+			runStartEvent = runStartEvent.WithPayload("graph_definition", opts.GraphDefinition)
+		}
+		if opts.Inputs != nil {
+			runStartEvent = runStartEvent.WithPayload("inputs", opts.Inputs)
+		}
+	}
+
+	emit(runStartEvent)
 
 	// Execute graph
 	result, err := r.executeGraph(ctx, g, env, opts, emit, runStart)
