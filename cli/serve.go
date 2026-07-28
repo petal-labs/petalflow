@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -39,6 +38,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().String("host", "0.0.0.0", "Listen host")
 	cmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
 	cmd.Flags().String("sqlite-path", "", "Path to SQLite database (default: ~/.petalflow/petalflow.db)")
+	cmd.Flags().String("database-dsn", "", "Database DSN. postgres:// or postgresql:// selects PostgreSQL; otherwise treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 	cmd.Flags().String("config", "", "Path to petalflow.yaml tool config")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable)")
 	cmd.Flags().String("tls-cert", "", "TLS certificate file")
@@ -63,21 +63,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
 
-	sqliteDSN, sqliteScope, err := resolveServeSQLiteDSN(cmd)
+	dsn, backend, scope, err := resolveDatabaseDSN(cmd)
 	if err != nil {
 		return err
 	}
 
 	// --- Daemon tool server (Phase 3) ---
-	toolStore, err := tool.NewSQLiteStore(tool.SQLiteStoreConfig{
-		DSN:   sqliteDSN,
-		Scope: sqliteScope,
-	})
+	toolStore, err := openToolStore(dsn, backend, scope)
 	if err != nil {
-		return fmt.Errorf("opening sqlite tool store: %w", err)
+		return fmt.Errorf("opening tool store: %w", err)
 	}
 	defer func() {
-		_ = toolStore.Close()
+		_ = closeIfCloser(toolStore)
 	}()
 
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{
@@ -137,17 +134,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	eb := bus.NewMemBus(bus.MemBusConfig{})
-	es, err := bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{DSN: sqliteDSN})
+	es, err := openEventStore(dsn, backend)
 	if err != nil {
-		return fmt.Errorf("opening sqlite event store: %w", err)
+		return fmt.Errorf("opening event store: %w", err)
 	}
 	defer func() {
 		_ = es.Close()
 	}()
 
-	workflowStore, err := server.NewSQLiteStore(server.SQLiteStoreConfig{DSN: sqliteDSN})
+	workflowStore, err := openWorkflowStore(dsn, backend)
 	if err != nil {
-		return fmt.Errorf("opening sqlite workflow store: %w", err)
+		return fmt.Errorf("opening workflow store: %w", err)
 	}
 	defer func() {
 		_ = workflowStore.Close()
@@ -236,33 +233,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 		return nil
 	}
-}
-
-func resolveServeSQLiteDSN(cmd *cobra.Command) (string, string, error) {
-	sqlitePath, _ := cmd.Flags().GetString("sqlite-path")
-	dsn := strings.TrimSpace(sqlitePath)
-	if dsn == "" {
-		dsn = strings.TrimSpace(os.Getenv("PETALFLOW_SQLITE_PATH"))
-	}
-	if dsn == "" {
-		// Backward-compatible fallback for existing automation/env usage.
-		dsn = strings.TrimSpace(os.Getenv("PETALFLOW_TOOLS_STORE_PATH"))
-	}
-	if dsn == "" {
-		defaultPath, err := tool.DefaultSQLitePath()
-		if err != nil {
-			return "", "", fmt.Errorf("resolving default sqlite path: %w", err)
-		}
-		dsn = defaultPath
-	}
-
-	scope := dsn
-	if !strings.HasPrefix(strings.ToLower(dsn), "file:") {
-		clean := filepath.Clean(dsn)
-		dsn = clean
-		scope = clean
-	}
-	return dsn, scope, nil
 }
 
 func withCORS(next http.Handler, allowedOrigin string) http.Handler {

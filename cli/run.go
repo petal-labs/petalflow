@@ -51,6 +51,7 @@ func NewRunCmd() *cobra.Command {
 	cmd.Flags().StringArray("env", nil, "Set environment variable (repeatable)")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable, e.g. --provider-key anthropic=sk-...)")
 	cmd.Flags().String("store-path", "", "Path to SQLite store for tool registry (default: ~/.petalflow/petalflow.db)")
+	cmd.Flags().String("database-dsn", "", "Database DSN. postgres:// or postgresql:// selects PostgreSQL; otherwise treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 	cmd.Flags().Bool("stream", false, "Enable streaming output via SSE to stdout")
 
 	return cmd
@@ -199,6 +200,13 @@ func applyRunEnvVars(cmd *cobra.Command) {
 }
 
 func hasRunExplicitStore(cmd *cobra.Command) bool {
+	databaseDSN, _ := cmd.Flags().GetString("database-dsn")
+	if strings.TrimSpace(databaseDSN) != "" {
+		return true
+	}
+	if strings.TrimSpace(os.Getenv("PETALFLOW_DATABASE_DSN")) != "" {
+		return true
+	}
 	storePath, _ := cmd.Flags().GetString("store-path")
 	if strings.TrimSpace(storePath) != "" {
 		return true

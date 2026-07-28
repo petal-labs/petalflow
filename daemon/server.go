@@ -42,6 +42,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if service == nil {
 		store := cfg.Store
 		if store == nil {
+			// Zero-config default: SQLite at ~/.petalflow/petalflow.db.
+			// Postgres is selected by the caller, not here: build a store
+			// with the CLI's openToolStore(dsn, backend, scope) and inject
+			// it via ServerConfig.Store.
 			sqliteStore, err := tool.NewDefaultSQLiteStore()
 			if err != nil {
 				return nil, fmt.Errorf("create default sqlite tool store: %w", err)
