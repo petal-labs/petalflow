@@ -4,6 +4,8 @@ package bus
 
 import (
 	"database/sql"
+	"fmt"
+	"hash/fnv"
 	"os"
 	"strings"
 	"testing"
@@ -35,7 +37,7 @@ func uniqueSchema(t *testing.T, baseDSN string) string {
 	if err != nil {
 		t.Fatalf("open admin: %v", err)
 	}
-	name := "pf_test_" + sanitize(t.Name())
+	name := schemaName(t.Name())
 	if _, err := admin.Exec("DROP SCHEMA IF EXISTS " + name + " CASCADE"); err != nil {
 		t.Fatalf("drop schema: %v", err)
 	}
@@ -67,4 +69,25 @@ func sanitize(name string) string {
 		}
 	}
 	return b.String()
+}
+
+// schemaNamePrefixMaxLen bounds the readable portion of a generated schema
+// name so the full identifier (prefix + separator + hash) always stays
+// well under PostgreSQL's 63-byte NAMEDATALEN identifier limit.
+const schemaNamePrefixMaxLen = 40
+
+// schemaName builds a PostgreSQL schema identifier from a test name. It
+// pairs a truncated, sanitized, human-readable prefix with an 8-hex-digit
+// FNV-32a hash of the FULL test name, so uniqueness never depends on the
+// name staying under PostgreSQL's 63-byte identifier limit: two test names
+// that share a long common prefix (and would otherwise truncate to the
+// same schema and collide) still hash to different suffixes.
+func schemaName(testName string) string {
+	prefix := sanitize(testName)
+	if len(prefix) > schemaNamePrefixMaxLen {
+		prefix = prefix[:schemaNamePrefixMaxLen]
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(testName))
+	return fmt.Sprintf("pf_test_%s_%08x", prefix, h.Sum32())
 }
