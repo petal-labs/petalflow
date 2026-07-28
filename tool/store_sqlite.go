@@ -122,7 +122,7 @@ ORDER BY name ASC`)
 		if err := rows.Scan(&payload); err != nil {
 			return nil, fmt.Errorf("tool: sqlite scan registration: %w", err)
 		}
-		reg, err := s.decodeRegistration(payload)
+		reg, err := decodeRegistration(s.scope, payload)
 		if err != nil {
 			return nil, err
 		}
@@ -157,7 +157,7 @@ WHERE name = ?`, name)
 		return ToolRegistration{}, false, fmt.Errorf("tool: sqlite get registration: %w", err)
 	}
 
-	reg, err := s.decodeRegistration(payload)
+	reg, err := decodeRegistration(s.scope, payload)
 	if err != nil {
 		return ToolRegistration{}, false, err
 	}
@@ -196,7 +196,7 @@ func (s *SQLiteStore) Upsert(ctx context.Context, reg ToolRegistration) error {
 		reg.LastHealthCheck = existing.LastHealthCheck
 	}
 
-	payload, err := s.encodeRegistration(reg)
+	payload, err := encodeRegistration(s.scope, reg)
 	if err != nil {
 		return err
 	}
@@ -238,81 +238,6 @@ func (s *SQLiteStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
-}
-
-func (s *SQLiteStore) encodeRegistration(reg ToolRegistration) ([]byte, error) {
-	clone := cloneRegistration(reg)
-	if err := s.encryptSensitiveRegistration(&clone); err != nil {
-		return nil, err
-	}
-	data, err := json.Marshal(clone)
-	if err != nil {
-		return nil, fmt.Errorf("tool: sqlite encode registration: %w", err)
-	}
-	return data, nil
-}
-
-func (s *SQLiteStore) decodeRegistration(payload []byte) (ToolRegistration, error) {
-	var reg ToolRegistration
-	if err := json.Unmarshal(payload, &reg); err != nil {
-		return ToolRegistration{}, fmt.Errorf("tool: sqlite decode registration: %w", err)
-	}
-	if err := s.decryptSensitiveRegistration(&reg); err != nil {
-		return ToolRegistration{}, err
-	}
-	return reg, nil
-}
-
-func (s *SQLiteStore) encryptSensitiveRegistration(reg *ToolRegistration) error {
-	if reg == nil || len(reg.Config) == 0 || len(reg.Manifest.Config) == 0 {
-		return nil
-	}
-
-	codec, err := newSecretCodec(s.scope)
-	if err != nil {
-		return fmt.Errorf("tool: initialize secret codec: %w", err)
-	}
-	for key, spec := range reg.Manifest.Config {
-		if !spec.Sensitive {
-			continue
-		}
-		value := reg.Config[key]
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		encrypted, err := codec.Encrypt(value)
-		if err != nil {
-			return fmt.Errorf("tool: encrypt config %q for %s: %w", key, reg.Name, err)
-		}
-		reg.Config[key] = encrypted
-	}
-	return nil
-}
-
-func (s *SQLiteStore) decryptSensitiveRegistration(reg *ToolRegistration) error {
-	if reg == nil || len(reg.Config) == 0 || len(reg.Manifest.Config) == 0 {
-		return nil
-	}
-
-	codec, err := newSecretCodec(s.scope)
-	if err != nil {
-		return fmt.Errorf("tool: initialize secret codec: %w", err)
-	}
-	for key, spec := range reg.Manifest.Config {
-		if !spec.Sensitive {
-			continue
-		}
-		value := reg.Config[key]
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		plain, err := codec.Decrypt(value)
-		if err != nil {
-			return fmt.Errorf("tool: decrypt config %q for %s: %w", key, reg.Name, err)
-		}
-		reg.Config[key] = plain
-	}
-	return nil
 }
 
 func migrateLegacySQLiteSchema(db *sql.DB, scope string) error {
@@ -385,7 +310,6 @@ func sqliteTableColumns(db *sql.DB, table string) (map[string]bool, error) {
 }
 
 func backfillLegacyPayloadFromColumnSchema(db *sql.DB, scope string, columns map[string]bool) error {
-	store := &SQLiteStore{db: db, scope: scope}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	manifestExpr := sqliteLegacyColumnExpr(columns, "manifest_json", "''")
@@ -468,7 +392,7 @@ FROM tool_registrations`,
 			sqliteAnyToBool(enabledRaw, true),
 		)
 
-		payload, err := store.encodeRegistration(reg)
+		payload, err := encodeRegistration(scope, reg)
 		if err != nil {
 			return err
 		}
@@ -567,7 +491,6 @@ func decodeLegacySQLiteRegistration(
 }
 
 func backfillMissingPayloadDefaults(db *sql.DB, scope string) error {
-	store := &SQLiteStore{db: db, scope: scope}
 	rows, err := db.Query(`SELECT name FROM tool_registrations WHERE payload IS NULL`)
 	if err != nil {
 		return fmt.Errorf("tool: sqlite query registrations missing payload: %w", err)
@@ -594,7 +517,7 @@ func backfillMissingPayloadDefaults(db *sql.DB, scope string) error {
 			Status:   StatusUnverified,
 			Enabled:  true,
 		}
-		payload, err := store.encodeRegistration(reg)
+		payload, err := encodeRegistration(scope, reg)
 		if err != nil {
 			return err
 		}

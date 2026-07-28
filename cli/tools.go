@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,6 +23,7 @@ func NewToolsCmd() *cobra.Command {
 		Short: "Manage tool registrations",
 	}
 	cmd.PersistentFlags().String("store-path", "", "Path to SQLite store (default: ~/.petalflow/petalflow.db)")
+	cmd.PersistentFlags().String("database-dsn", "", "Database DSN. Only URL-form DSNs (postgres:// or postgresql://) are detected as PostgreSQL; anything else, including libpq keyword DSNs like \"host=... dbname=...\", is treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 
 	cmd.AddCommand(newToolsRegisterCmd())
 	cmd.AddCommand(newToolsListCmd())
@@ -653,28 +653,11 @@ func runToolsHealth(cmd *cobra.Command, args []string) error {
 }
 
 func resolveToolStore(cmd *cobra.Command) (tool.Store, error) {
-	storePath, _ := cmd.Flags().GetString("store-path")
-	if strings.TrimSpace(storePath) == "" {
-		storePath = os.Getenv("PETALFLOW_SQLITE_PATH")
+	dsn, backend, scope, err := resolveDatabaseDSN(cmd)
+	if err != nil {
+		return nil, err
 	}
-	if strings.TrimSpace(storePath) == "" {
-		storePath = os.Getenv("PETALFLOW_TOOLS_STORE_PATH")
-	}
-	if strings.TrimSpace(storePath) == "" {
-		return tool.NewDefaultSQLiteStore()
-	}
-
-	dsn := strings.TrimSpace(storePath)
-	scope := dsn
-	if !strings.HasPrefix(strings.ToLower(dsn), "file:") {
-		clean := filepath.Clean(dsn)
-		dsn = clean
-		scope = clean
-	}
-	return tool.NewSQLiteStore(tool.SQLiteStoreConfig{
-		DSN:   dsn,
-		Scope: scope,
-	})
+	return openToolStore(dsn, backend, scope)
 }
 
 func resolveRegistration(ctx context.Context, store tool.Store, name string) (tool.ToolRegistration, bool, error) {
