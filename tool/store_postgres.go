@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -83,7 +82,7 @@ ORDER BY name ASC`))
 		if err := rows.Scan(&payload); err != nil {
 			return nil, fmt.Errorf("tool: postgres scan registration: %w", err)
 		}
-		reg, err := s.decodeRegistration(payload)
+		reg, err := decodeRegistration(s.scope, payload)
 		if err != nil {
 			return nil, err
 		}
@@ -118,7 +117,7 @@ WHERE name = ?`), name)
 		return ToolRegistration{}, false, fmt.Errorf("tool: postgres get registration: %w", err)
 	}
 
-	reg, err := s.decodeRegistration(payload)
+	reg, err := decodeRegistration(s.scope, payload)
 	if err != nil {
 		return ToolRegistration{}, false, err
 	}
@@ -157,7 +156,7 @@ func (s *PostgresStore) Upsert(ctx context.Context, reg ToolRegistration) error 
 		reg.LastHealthCheck = existing.LastHealthCheck
 	}
 
-	payload, err := s.encodeRegistration(reg)
+	payload, err := encodeRegistration(s.scope, reg)
 	if err != nil {
 		return err
 	}
@@ -199,81 +198,6 @@ func (s *PostgresStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
-}
-
-func (s *PostgresStore) encodeRegistration(reg ToolRegistration) ([]byte, error) {
-	clone := cloneRegistration(reg)
-	if err := s.encryptSensitiveRegistration(&clone); err != nil {
-		return nil, err
-	}
-	data, err := json.Marshal(clone)
-	if err != nil {
-		return nil, fmt.Errorf("tool: postgres encode registration: %w", err)
-	}
-	return data, nil
-}
-
-func (s *PostgresStore) decodeRegistration(payload []byte) (ToolRegistration, error) {
-	var reg ToolRegistration
-	if err := json.Unmarshal(payload, &reg); err != nil {
-		return ToolRegistration{}, fmt.Errorf("tool: postgres decode registration: %w", err)
-	}
-	if err := s.decryptSensitiveRegistration(&reg); err != nil {
-		return ToolRegistration{}, err
-	}
-	return reg, nil
-}
-
-func (s *PostgresStore) encryptSensitiveRegistration(reg *ToolRegistration) error {
-	if reg == nil || len(reg.Config) == 0 || len(reg.Manifest.Config) == 0 {
-		return nil
-	}
-
-	codec, err := newSecretCodec(s.scope)
-	if err != nil {
-		return fmt.Errorf("tool: initialize secret codec: %w", err)
-	}
-	for key, spec := range reg.Manifest.Config {
-		if !spec.Sensitive {
-			continue
-		}
-		value := reg.Config[key]
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		encrypted, err := codec.Encrypt(value)
-		if err != nil {
-			return fmt.Errorf("tool: encrypt config %q for %s: %w", key, reg.Name, err)
-		}
-		reg.Config[key] = encrypted
-	}
-	return nil
-}
-
-func (s *PostgresStore) decryptSensitiveRegistration(reg *ToolRegistration) error {
-	if reg == nil || len(reg.Config) == 0 || len(reg.Manifest.Config) == 0 {
-		return nil
-	}
-
-	codec, err := newSecretCodec(s.scope)
-	if err != nil {
-		return fmt.Errorf("tool: initialize secret codec: %w", err)
-	}
-	for key, spec := range reg.Manifest.Config {
-		if !spec.Sensitive {
-			continue
-		}
-		value := reg.Config[key]
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		plain, err := codec.Decrypt(value)
-		if err != nil {
-			return fmt.Errorf("tool: decrypt config %q for %s: %w", key, reg.Name, err)
-		}
-		reg.Config[key] = plain
-	}
-	return nil
 }
 
 var _ Store = (*PostgresStore)(nil)
