@@ -51,7 +51,7 @@ func NewRunCmd() *cobra.Command {
 	cmd.Flags().StringArray("env", nil, "Set environment variable (repeatable)")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable, e.g. --provider-key anthropic=sk-...)")
 	cmd.Flags().String("store-path", "", "Path to SQLite store for tool registry (default: ~/.petalflow/petalflow.db)")
-	cmd.Flags().String("database-dsn", "", "Database DSN. postgres:// or postgresql:// selects PostgreSQL; otherwise treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
+	cmd.Flags().String("database-dsn", "", "Database DSN. Only URL-form DSNs (postgres:// or postgresql://) are detected as PostgreSQL; anything else, including libpq keyword DSNs like \"host=... dbname=...\", is treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 	cmd.Flags().Bool("stream", false, "Enable streaming output via SSE to stdout")
 
 	return cmd

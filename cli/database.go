@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,23 @@ func detectBackend(dsn string) databaseBackend {
 		return backendPostgres
 	}
 	return backendSQLite
+}
+
+// normalizePostgresScope reduces a Postgres DSN to a stable identity
+// consisting of host, port, and database name only. User credentials and
+// query parameters (e.g. sslmode) are intentionally excluded so that
+// benign DSN edits, such as a password rotation or an added query param,
+// do not change the derived tool-secret key (see deriveSecretKey in
+// tool/secrets.go, which hashes username:hostname:scope). If the DSN
+// cannot be parsed as a URL or yields no host, the original DSN is
+// returned unchanged rather than panicking.
+func normalizePostgresScope(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Hostname() == "" {
+		return dsn
+	}
+	dbName := strings.TrimPrefix(u.Path, "/")
+	return fmt.Sprintf("%s:%s/%s", u.Hostname(), u.Port(), dbName)
 }
 
 // flagString reads a string flag's value, returning "" if the flag is not
@@ -81,7 +99,10 @@ func resolveDatabaseDSN(cmd *cobra.Command) (string, databaseBackend, string, er
 
 	backend := detectBackend(dsn)
 	scope := dsn
-	if backend == backendSQLite && !strings.HasPrefix(strings.ToLower(dsn), "file:") {
+	switch {
+	case backend == backendPostgres:
+		scope = normalizePostgresScope(dsn)
+	case !strings.HasPrefix(strings.ToLower(dsn), "file:"):
 		clean := filepath.Clean(dsn)
 		dsn, scope = clean, clean
 	}

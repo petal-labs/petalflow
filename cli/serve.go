@@ -38,7 +38,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().String("host", "0.0.0.0", "Listen host")
 	cmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
 	cmd.Flags().String("sqlite-path", "", "Path to SQLite database (default: ~/.petalflow/petalflow.db)")
-	cmd.Flags().String("database-dsn", "", "Database DSN. postgres:// or postgresql:// selects PostgreSQL; otherwise treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
+	cmd.Flags().String("database-dsn", "", "Database DSN. Only URL-form DSNs (postgres:// or postgresql://) are detected as PostgreSQL; anything else, including libpq keyword DSNs like \"host=... dbname=...\", is treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 	cmd.Flags().String("config", "", "Path to petalflow.yaml tool config")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable)")
 	cmd.Flags().String("tls-cert", "", "TLS certificate file")

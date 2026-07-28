@@ -23,7 +23,7 @@ func NewToolsCmd() *cobra.Command {
 		Short: "Manage tool registrations",
 	}
 	cmd.PersistentFlags().String("store-path", "", "Path to SQLite store (default: ~/.petalflow/petalflow.db)")
-	cmd.PersistentFlags().String("database-dsn", "", "Database DSN. postgres:// or postgresql:// selects PostgreSQL; otherwise treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
+	cmd.PersistentFlags().String("database-dsn", "", "Database DSN. Only URL-form DSNs (postgres:// or postgresql://) are detected as PostgreSQL; anything else, including libpq keyword DSNs like \"host=... dbname=...\", is treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 
 	cmd.AddCommand(newToolsRegisterCmd())
 	cmd.AddCommand(newToolsListCmd())

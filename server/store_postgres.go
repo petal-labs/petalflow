@@ -216,6 +216,12 @@ WHERE workflow_id = ? AND id = ?`), workflowID, scheduleID)
 	return schedule, true, nil
 }
 
+// CreateSchedule inserts a new workflow schedule. Unlike SQLite (where
+// PRAGMA foreign_keys=ON is not reliably enforced across the pool),
+// Postgres always enforces the workflow_schedules.workflow_id foreign
+// key, so callers must ensure the workflow exists first (as the HTTP
+// handler does via workflowExists); a resulting 23503 violation is not
+// mapped to a sentinel error here.
 func (s *PostgresStore) CreateSchedule(ctx context.Context, schedule WorkflowSchedule) error {
 	now := time.Now().UTC()
 	if schedule.CreatedAt.IsZero() {
