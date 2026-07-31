@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-31
+
+### Added
+
+- **PostgreSQL persistence backends**: Optional Postgres storage alongside SQLite
+  - Event store, workflow/schedule store, and tool registration store backends
+  - CLI selects SQLite or Postgres automatically by DSN scheme
+  - Shared `sqldialect` placeholder-rebind helper and a registration codec shared between stores
+- **Event bus and streaming subsystem**
+  - `EventBus` interface with in-memory (`MemBus`) implementation
+  - `EventStore` interface with in-memory and `SQLiteEventStore` (WAL mode, retention pruning) backends
+  - `StoreSubscriber` for event persistence and `ThrottledEmitter` for delta event coalescing
+  - Monotonic per-run sequence generation and correlation fields on events
+  - Dot-delimited event kinds and new lifecycle event types
+- **Server-Sent Events (SSE)**: SSE handler with replay and live subscription
+- **LLM streaming**
+  - `StreamingLLMClient` interface and `StreamChunk` type
+  - `petalflow run --stream` streaming output
+  - `CompleteStream` streaming via the Iris adapter with delta event emission
+- **Observability**
+  - PetalTrace integration support
+  - OpenTelemetry `TracingHandler` (event-to-span), `MetricsHandler` (event-to-metric), and `EnrichEmitter` for trace-context propagation
+- **Webhook nodes**: Webhook node implementations with accompanying examples
+- **Workflow scheduling**: UTC cron-based workflow scheduling
+- **Schema versioning**: Semver `schema_version` with kind normalization and CLI/daemon coverage
+- **Live node execution**: Real LLM calls, merge/human/tool node instantiation, and non-LLM node hydration wired into `petalflow run`
+- **Testing**: OpenAI integration tests with a daily CI workflow and extensive daemon API / workflow lifecycle e2e coverage
+
+### Changed
+
+- Upgraded Iris dependency from v0.11.0 to v0.15.0
+- Adopted SQLite-only persistence defaults before adding optional Postgres backends
+- Refactored CLI run, server streaming, sequential runtime, and stdio adapter flows into focused helpers to reduce complexity
+- Updated model names in examples to realistic current values
+- Rewrote README and documentation guides; added a contributing guide
+
+### Fixed
+
+- Registry-aware graph validation and fail-fast handling for unsupported node hydration
+- Deterministic compile ordering for edges and custom strategies
+- Context cancellation handling after the stream chunk loop in the Iris adapter
+- Import cycle in graph tests and duplicate provider imports
+- Provider base URL wiring with multi-module CI enforcement
+- gosec SQL formatting findings and golangci-lint CI failures
+
 ## [0.2.0] - 2026-02-06
 
 ### Added
