@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.24'
 
@@ -40,10 +40,10 @@ jobs:
             suffix: '.exe'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.24'
 
@@ -58,7 +58,7 @@ jobs:
           go build -ldflags="-s -w -X main.version=${VERSION}" -o "${OUTPUT}" ./cmd/petalflow
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: petalflow-${{ matrix.goos }}-${{ matrix.goarch }}
           path: petalflow-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
@@ -68,12 +68,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -106,7 +106,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body_path: release_notes.md
           draft: false
