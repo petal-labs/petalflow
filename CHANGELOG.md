@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Node errors are now surfaced to callers.** The `EnvelopeJSON` wire contract
+  (used by `petalflow run --format json` and the daemon HTTP API) previously
+  dropped the envelope's recorded node errors entirely, so runs that continued
+  past a failed node returned a success-looking result with no trace of the
+  failure. `EnvelopeJSON` now includes an `errors` array, and the `pretty` CLI
+  output prints an `Errors` section.
+
+### Changed
+
+- **Completed the `EnvelopeJSON` wire contract.** Added `input`, per-message and
+  per-artifact `meta`, and trace `parent_id`/`span_id`, which were previously
+  discarded during serialization.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added
