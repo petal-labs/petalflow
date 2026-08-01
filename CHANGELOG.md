@@ -61,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returning an error (surfaced through the node error path) instead of storing a
   wrong-typed value. Note: this validates that the output is a JSON object, not
   full JSON Schema conformance.
+- **`MemBus` now deregisters subscriptions on close.** Closing a subscription
+  previously only closed its channel; the subscription stayed registered on the
+  bus forever. In a long-running daemon every SSE client and run subscription
+  accumulated without bound, leaking memory and making each `Publish` iterate an
+  ever-growing list of dead subscriptions. Closing a subscription now removes it
+  from the bus (deleting empty per-run entries), with lock ordering that avoids
+  deadlocking against concurrent `Publish`.
 
 - **Per-node timeout (`RunOptions.NodeTimeout`, CLI `--node-timeout`).** When
   set, each node runs with a deadline and the runtime returns as soon as the
