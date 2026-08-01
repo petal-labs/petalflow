@@ -27,6 +27,19 @@ func webhookConfigStringSlice(m map[string]any, key string) ([]string, bool) {
 	return out, true
 }
 
+func webhookConfigInt64(m map[string]any, key string) int64 {
+	switch v := m[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
 func webhookConfigDuration(m map[string]any, key string) time.Duration {
 	switch v := m[key].(type) {
 	case string:

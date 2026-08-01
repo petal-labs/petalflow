@@ -408,6 +408,44 @@ func (m *mockStreamingLLMClient) CompleteStream(ctx context.Context, req core.LL
 	return ch, nil
 }
 
+// stallingStreamingLLMClient returns a stream that never sends and never
+// closes, simulating a streaming client that stalls and ignores context.
+type stallingStreamingLLMClient struct{}
+
+func (m *stallingStreamingLLMClient) Complete(ctx context.Context, req core.LLMRequest) (core.LLMResponse, error) {
+	return core.LLMResponse{}, nil
+}
+
+func (m *stallingStreamingLLMClient) CompleteStream(ctx context.Context, req core.LLMRequest) (<-chan core.StreamChunk, error) {
+	return make(chan core.StreamChunk), nil // never sent to, never closed
+}
+
+func TestLLMNode_Run_StreamingStallHonorsContext(t *testing.T) {
+	node := NewLLMNode("test-llm", &stallingStreamingLLMClient{}, LLMNodeConfig{
+		Model:     "gpt-4",
+		OutputKey: "answer",
+		Timeout:   50 * time.Millisecond,
+	})
+
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := node.Run(context.Background(), env)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected a context error from a stalled stream, got nil")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("LLMNode.Run did not return when the streaming client stalled")
+	}
+}
+
 func TestLLMNode_Run_Streaming(t *testing.T) {
 	client := &mockStreamingLLMClient{
 		chunks: []core.StreamChunk{

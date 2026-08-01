@@ -28,12 +28,22 @@ const (
 	WebhookCallErrorPolicyRecord   WebhookCallErrorPolicy = "record"
 )
 
+// defaultWebhookTimeout bounds an outbound webhook call when no timeout is
+// configured, so a stalled endpoint cannot hang a run indefinitely.
+const defaultWebhookTimeout = 30 * time.Second
+
+// defaultWebhookMaxResponseBytes caps how much of a webhook response body is
+// read when no limit is configured, protecting against unbounded/hostile
+// responses exhausting memory.
+const defaultWebhookMaxResponseBytes int64 = 10 << 20 // 10 MiB
+
 // WebhookCallNodeConfig configures a WebhookCallNode.
 type WebhookCallNodeConfig struct {
 	URL              string
 	Method           string
 	Headers          map[string]string
 	Timeout          time.Duration
+	MaxResponseBytes int64
 	InputVars        []string
 	IncludeArtifacts bool
 	IncludeMessages  bool
@@ -47,12 +57,13 @@ type WebhookCallNodeConfig struct {
 // ParseWebhookCallConfig normalizes webhook_call config from graph JSON.
 func ParseWebhookCallConfig(m map[string]any) (WebhookCallNodeConfig, error) {
 	cfg := WebhookCallNodeConfig{
-		URL:         strings.TrimSpace(webhookConfigString(m, "url")),
-		Method:      strings.TrimSpace(webhookConfigString(m, "method")),
-		Template:    webhookConfigString(m, "template"),
-		ResultVar:   strings.TrimSpace(webhookConfigString(m, "result_var")),
-		ErrorPolicy: WebhookCallErrorPolicy(strings.TrimSpace(webhookConfigString(m, "error_policy"))),
-		Timeout:     webhookConfigDuration(m, "timeout"),
+		URL:              strings.TrimSpace(webhookConfigString(m, "url")),
+		Method:           strings.TrimSpace(webhookConfigString(m, "method")),
+		Template:         webhookConfigString(m, "template"),
+		ResultVar:        strings.TrimSpace(webhookConfigString(m, "result_var")),
+		ErrorPolicy:      WebhookCallErrorPolicy(strings.TrimSpace(webhookConfigString(m, "error_policy"))),
+		Timeout:          webhookConfigDuration(m, "timeout"),
+		MaxResponseBytes: webhookConfigInt64(m, "max_response_bytes"),
 	}
 	if inputVars, ok := webhookConfigStringSlice(m, "input_vars"); ok {
 		cfg.InputVars = inputVars
@@ -101,6 +112,12 @@ func normalizeWebhookCallConfig(cfg WebhookCallNodeConfig) (WebhookCallNodeConfi
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = http.DefaultClient
 	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = defaultWebhookTimeout
+	}
+	if cfg.MaxResponseBytes <= 0 {
+		cfg.MaxResponseBytes = defaultWebhookMaxResponseBytes
+	}
 	if len(cfg.Headers) == 0 {
 		cfg.Headers = nil
 	}
@@ -126,6 +143,12 @@ func NewWebhookCallNode(id string, config WebhookCallNodeConfig) *WebhookCallNod
 		}
 		if normalized.ErrorPolicy == "" {
 			normalized.ErrorPolicy = WebhookCallErrorPolicyFail
+		}
+		if normalized.Timeout <= 0 {
+			normalized.Timeout = defaultWebhookTimeout
+		}
+		if normalized.MaxResponseBytes <= 0 {
+			normalized.MaxResponseBytes = defaultWebhookMaxResponseBytes
 		}
 	}
 
@@ -175,9 +198,19 @@ func (n *WebhookCallNode) Run(ctx context.Context, env *core.Envelope) (*core.En
 	}
 	defer resp.Body.Close()
 
-	respBody, readErr := io.ReadAll(resp.Body)
+	limit := n.config.MaxResponseBytes
+	if limit <= 0 {
+		limit = defaultWebhookMaxResponseBytes
+	}
+	// Read one byte past the limit so we can detect an oversized body rather
+	// than silently truncating it.
+	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if readErr != nil {
 		return n.handleFailure(env, resp.StatusCode, resp.Header, nil, fmt.Errorf("read response body: %w", readErr))
+	}
+	if int64(len(respBody)) > limit {
+		return n.handleFailure(env, resp.StatusCode, resp.Header, nil,
+			fmt.Errorf("response body exceeds max %d bytes", limit))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

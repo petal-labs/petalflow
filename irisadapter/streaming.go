@@ -30,43 +30,66 @@ func (a *ProviderAdapter) CompleteStream(ctx context.Context, req petalflow.LLMR
 		var accumulated strings.Builder
 		index := 0
 
-		// Read text deltas from the stream's Ch channel.
-		for chunk := range stream.Ch {
-			accumulated.WriteString(chunk.Delta)
-			sc := petalflow.StreamChunk{
-				Delta:       chunk.Delta,
-				Index:       index,
-				Accumulated: accumulated.String(),
+		// send delivers a delta to out, applying backpressure but never
+		// blocking past cancellation, so a gone consumer cannot leak this
+		// goroutine. It returns false if the context was canceled first.
+		send := func(sc petalflow.StreamChunk) bool {
+			select {
+			case out <- sc:
+				return true
+			case <-ctx.Done():
+				return false
 			}
+		}
+
+		// sendTerminal delivers the final/error chunk. It blocks until the
+		// consumer receives it, but if the context is already canceled it makes
+		// one best-effort non-blocking attempt so the terminal chunk still lands
+		// in the buffered channel (rather than being lost to a random select)
+		// without risking a permanent block when the consumer is gone.
+		sendTerminal := func(sc petalflow.StreamChunk) {
 			select {
 			case out <- sc:
 			case <-ctx.Done():
-				out <- petalflow.StreamChunk{
-					Error: ctx.Err(),
-					Done:  true,
+				select {
+				case out <- sc:
+				default:
 				}
-				return
 			}
-			index++
 		}
 
-		// Check if context was canceled while reading chunks.
-		if ctx.Err() != nil {
-			out <- petalflow.StreamChunk{
-				Error: ctx.Err(),
-				Done:  true,
+		// Read text deltas from the stream's Ch channel. The receive selects on
+		// ctx.Done() so a provider that stalls (never sends, never closes Ch)
+		// cannot hang this goroutine.
+		streaming := true
+		for streaming {
+			select {
+			case <-ctx.Done():
+				sendTerminal(petalflow.StreamChunk{Error: ctx.Err(), Done: true})
+				return
+			case chunk, ok := <-stream.Ch:
+				if !ok {
+					streaming = false
+					break
+				}
+				accumulated.WriteString(chunk.Delta)
+				if !send(petalflow.StreamChunk{
+					Delta:       chunk.Delta,
+					Index:       index,
+					Accumulated: accumulated.String(),
+				}) {
+					sendTerminal(petalflow.StreamChunk{Error: ctx.Err(), Done: true})
+					return
+				}
+				index++
 			}
-			return
 		}
 
 		// Check for streaming errors.
 		select {
 		case err, ok := <-stream.Err:
 			if ok && err != nil {
-				out <- petalflow.StreamChunk{
-					Error: err,
-					Done:  true,
-				}
+				sendTerminal(petalflow.StreamChunk{Error: err, Done: true})
 				return
 			}
 		default:
@@ -91,7 +114,7 @@ func (a *ProviderAdapter) CompleteStream(ctx context.Context, req petalflow.LLMR
 			finalChunk.Error = ctx.Err()
 		}
 
-		out <- finalChunk
+		sendTerminal(finalChunk)
 	}()
 
 	return out, nil

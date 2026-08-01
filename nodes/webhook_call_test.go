@@ -186,6 +186,54 @@ func TestWebhookCallNode_InvalidPolicy(t *testing.T) {
 	}
 }
 
+func TestWebhookCallNode_AppliesDefaultTimeout(t *testing.T) {
+	cfg, err := ParseWebhookCallConfig(map[string]any{
+		"url": "https://example.com/webhook",
+	})
+	if err != nil {
+		t.Fatalf("ParseWebhookCallConfig() error = %v", err)
+	}
+	if cfg.Timeout <= 0 {
+		t.Errorf("expected a positive default timeout, got %v", cfg.Timeout)
+	}
+}
+
+func TestWebhookCallNode_PreservesExplicitTimeout(t *testing.T) {
+	cfg, err := ParseWebhookCallConfig(map[string]any{
+		"url":     "https://example.com/webhook",
+		"timeout": "5s",
+	})
+	if err != nil {
+		t.Fatalf("ParseWebhookCallConfig() error = %v", err)
+	}
+	if cfg.Timeout != 5*time.Second {
+		t.Errorf("Timeout = %v, want 5s", cfg.Timeout)
+	}
+}
+
+func TestWebhookCallNode_RejectsOversizeResponse(t *testing.T) {
+	node := NewWebhookCallNode("call", WebhookCallNodeConfig{
+		URL:              "https://example.com/webhook",
+		MaxResponseBytes: 8,
+		ErrorPolicy:      WebhookCallErrorPolicyFail,
+		HTTPClient: &MockHTTPClient{
+			Response: &http.Response{
+				StatusCode: 200,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("0123456789ABCDEF")), // 16 bytes
+			},
+		},
+	})
+
+	_, err := node.Run(context.Background(), core.NewEnvelope())
+	if err == nil {
+		t.Fatal("expected error for oversize response body, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error = %v, want it to mention the size limit", err)
+	}
+}
+
 func TestWebhookCallNode_ConfigDefaults(t *testing.T) {
 	cfg, err := ParseWebhookCallConfig(map[string]any{
 		"url": "https://example.com/webhook",
