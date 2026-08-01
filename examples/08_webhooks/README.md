@@ -157,4 +157,4 @@ In the receiver terminal, you should see the incoming payload printed.
 ## Notes
 
 1. `webhook_trigger` auth in this demo uses `header_token`.
-2. `webhook_call` supports `error_policy`; this example uses `"fail"` so non-2xx responses fail the run.
+2. `webhook_call` returns an error on non-2xx responses; the run then fails, or records the error and continues if the run was started with continue-on-error.

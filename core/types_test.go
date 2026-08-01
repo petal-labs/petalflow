@@ -140,18 +140,6 @@ func TestParseNodeKind(t *testing.T) {
 	}
 }
 
-func TestErrorPolicy_Values(t *testing.T) {
-	if ErrorPolicyFail != "fail" {
-		t.Errorf("ErrorPolicyFail = %v, want 'fail'", ErrorPolicyFail)
-	}
-	if ErrorPolicyContinue != "continue" {
-		t.Errorf("ErrorPolicyContinue = %v, want 'continue'", ErrorPolicyContinue)
-	}
-	if ErrorPolicyRecord != "record" {
-		t.Errorf("ErrorPolicyRecord = %v, want 'record'", ErrorPolicyRecord)
-	}
-}
-
 func TestStreamChunk_ZeroValue(t *testing.T) {
 	var chunk StreamChunk
 	if chunk.Done {
