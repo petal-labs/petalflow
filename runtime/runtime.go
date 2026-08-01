@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -18,7 +19,47 @@ var (
 	ErrMaxHopsExceeded = errors.New("maximum hops exceeded")
 	ErrRunCanceled     = errors.New("run was canceled")
 	ErrNodeExecution   = errors.New("node execution failed")
+	// ErrNodePanic indicates a node's Run method panicked and was recovered.
+	// The panic is converted into an error so it flows through the normal
+	// fail / continue-on-error path instead of crashing the process.
+	ErrNodePanic = errors.New("node panicked")
 )
+
+// NodePanicError is returned when a node's Run method panics. The panic is
+// recovered so it does not crash the runtime (or the daemon hosting it); the
+// recovered value and stack trace are captured for diagnostics. It unwraps to
+// ErrNodePanic so callers can detect panics with errors.Is.
+type NodePanicError struct {
+	NodeID string
+	Value  any
+	Stack  []byte
+}
+
+func (e *NodePanicError) Error() string {
+	return fmt.Sprintf("node %s panicked: %v", e.NodeID, e.Value)
+}
+
+func (e *NodePanicError) Unwrap() error {
+	return ErrNodePanic
+}
+
+// runNodeSafely invokes node.Run, converting any panic into a *NodePanicError.
+// This is the single choke point through which both the sequential path and
+// the parallel workers execute nodes, so recovering here protects every node
+// execution regardless of concurrency.
+func runNodeSafely(ctx context.Context, node core.Node, env *core.Envelope) (result *core.Envelope, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			result = nil
+			err = &NodePanicError{
+				NodeID: node.ID(),
+				Value:  rec,
+				Stack:  debug.Stack(),
+			}
+		}
+	}()
+	return node.Run(ctx, env)
+}
 
 // Runtime executes graphs and emits events.
 type Runtime interface {
@@ -442,7 +483,7 @@ func resolveSequentialNodeOutcome(
 		return result, nil
 	}
 	if !opts.ContinueOnError {
-		return current, fmt.Errorf("%w: node %s: %v", ErrNodeExecution, nodeID, nodeErr)
+		return current, fmt.Errorf("%w: node %s: %w", ErrNodeExecution, nodeID, nodeErr)
 	}
 
 	current.AppendError(core.NodeError{
@@ -730,7 +771,7 @@ func resolveParallelResultEnvelope(
 		return result.envelope, nil
 	}
 	if !opts.ContinueOnError {
-		return nil, fmt.Errorf("%w: node %s: %v", ErrNodeExecution, result.nodeID, result.err)
+		return nil, fmt.Errorf("%w: node %s: %w", ErrNodeExecution, result.nodeID, result.err)
 	}
 
 	node, _ := g.NodeByID(result.nodeID)
@@ -952,18 +993,25 @@ func (r *BasicRuntime) executeNode(
 	// Inject emitter into context for node use
 	nodeCtx := ContextWithEmitter(ctx, emit)
 
-	// Execute node
-	result, err := node.Run(nodeCtx, env)
+	// Execute node with panic recovery so a misbehaving node cannot crash
+	// the runtime (or the daemon hosting it).
+	result, err := runNodeSafely(nodeCtx, node, env)
 
 	// Calculate elapsed time
 	nodeElapsed := opts.Now().Sub(nodeStart)
 
 	if err != nil {
 		// Emit node failed
-		emit(NewEvent(EventNodeFailed, runID).
+		failed := NewEvent(EventNodeFailed, runID).
 			WithNode(nodeID, nodeKind).
 			WithElapsed(nodeElapsed).
-			WithPayload("error", err.Error()))
+			WithPayload("error", err.Error())
+		// Surface the stack trace for panics so operators can diagnose them.
+		var panicErr *NodePanicError
+		if errors.As(err, &panicErr) {
+			failed = failed.WithPayload("panic_stack", string(panicErr.Stack))
+		}
+		emit(failed)
 		return nil, err
 	}
 

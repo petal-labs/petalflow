@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Node panics no longer crash the runtime or daemon.** A panic in any node's
+  `Run` method (including custom `FuncNode`s and tools) is now recovered and
+  converted into a node error that flows through the normal fail /
+  continue-on-error path. Previously an unrecovered panic terminated the whole
+  process, taking down every concurrent run in the daemon; in parallel mode the
+  panic occurred in a worker goroutine the caller could not recover at all.
+  Recovery is applied at the single `executeNode` choke point, so it covers both
+  sequential and parallel execution. Panics are detectable with
+  `errors.Is(err, runtime.ErrNodePanic)`, and the recovered stack trace is
+  attached to the `node.failed` event as `panic_stack`.
+
 ## [0.3.0] - 2026-07-31
 
 ### Added
