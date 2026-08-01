@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (never sends, never closes the channel) no longer hangs the run or leaks a
   goroutine; a terminal error chunk is delivered and the stream is closed.
 
+### Added
+
+- **Per-node timeout (`RunOptions.NodeTimeout`, CLI `--node-timeout`).** When
+  set, each node runs with a deadline and the runtime returns as soon as the
+  deadline or the parent context fires, even if the node itself ignores
+  cancellation. Previously a node that ignored its context could hang a run
+  indefinitely — the run-level timeout could never fire because the node call
+  never returned. Nodes run on a cloned envelope so a node abandoned on timeout
+  cannot corrupt the envelope the caller proceeds with. Defaults to 0 (disabled),
+  preserving the original inline execution when unset.
+
 ### Changed
 
 - **Completed the `EnvelopeJSON` wire contract.** Added `input`, per-message and

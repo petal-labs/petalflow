@@ -77,6 +77,27 @@ func TestBuildRunOptions_StreamingHandler(t *testing.T) {
 	}
 }
 
+func TestBuildRunOptions_NodeTimeout(t *testing.T) {
+	cmd := NewRunCmd()
+	if err := cmd.Flags().Set("node-timeout", "5s"); err != nil {
+		t.Fatalf("setting node-timeout flag: %v", err)
+	}
+
+	opts, _ := buildRunOptions(cmd)
+	if opts.NodeTimeout != 5*time.Second {
+		t.Errorf("NodeTimeout = %v, want 5s", opts.NodeTimeout)
+	}
+}
+
+func TestBuildRunOptions_NodeTimeoutDefaultDisabled(t *testing.T) {
+	cmd := NewRunCmd()
+
+	opts, _ := buildRunOptions(cmd)
+	if opts.NodeTimeout != 0 {
+		t.Errorf("NodeTimeout default = %v, want 0 (disabled)", opts.NodeTimeout)
+	}
+}
+
 func TestApplyRunEnvVars(t *testing.T) {
 	cmd := NewRunCmd()
 	key := "PETALFLOW_RUN_ENV_TEST"
