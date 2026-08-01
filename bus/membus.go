@@ -63,6 +63,8 @@ func (b *MemBus) Subscribe(runID string) Subscription {
 	defer b.mu.Unlock()
 
 	sub := newMemSub(b.bufSize)
+	sub.bus = b
+	sub.runID = runID
 	b.subs[runID] = append(b.subs[runID], sub)
 	return sub
 }
@@ -74,6 +76,8 @@ func (b *MemBus) SubscribeAll() Subscription {
 	defer b.mu.Unlock()
 
 	sub := newMemSub(b.bufSize)
+	sub.bus = b
+	sub.global = true
 	b.globalSubs = append(b.globalSubs, sub)
 	return sub
 }
@@ -85,19 +89,53 @@ func (b *MemBus) Close() error {
 
 	b.closed = true
 
-	// Close all run-specific subscriptions.
+	// Close every subscription's channel and drop all registrations. We close
+	// channels directly (markClosed) rather than via sub.close(), which would
+	// re-acquire b.mu to deregister and deadlock while we hold it here.
 	for _, subs := range b.subs {
 		for _, sub := range subs {
-			sub.close()
+			sub.markClosed()
 		}
 	}
-
-	// Close all global subscriptions.
 	for _, sub := range b.globalSubs {
-		sub.close()
+		sub.markClosed()
 	}
 
+	b.subs = make(map[string][]*memSub)
+	b.globalSubs = nil
+
 	return nil
+}
+
+// remove deregisters a subscription from the bus. It is called from
+// memSub.close, which must not hold the subscription lock (Publish takes the
+// bus lock and then the subscription lock, so the reverse order here would
+// risk a deadlock).
+func (b *MemBus) remove(sub *memSub) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if sub.global {
+		b.globalSubs = removeSub(b.globalSubs, sub)
+		return
+	}
+
+	remaining := removeSub(b.subs[sub.runID], sub)
+	if len(remaining) == 0 {
+		delete(b.subs, sub.runID)
+	} else {
+		b.subs[sub.runID] = remaining
+	}
+}
+
+// removeSub returns subs with the first occurrence of target removed.
+func removeSub(subs []*memSub, target *memSub) []*memSub {
+	for i, s := range subs {
+		if s == target {
+			return append(subs[:i], subs[i+1:]...)
+		}
+	}
+	return subs
 }
 
 // memSub is an in-memory subscription.
@@ -105,6 +143,12 @@ type memSub struct {
 	ch     chan runtime.Event
 	mu     sync.Mutex
 	closed bool
+
+	// bus, runID, and global identify where this subscription is registered so
+	// it can deregister itself on Close. Set once at subscription time.
+	bus    *MemBus
+	runID  string
+	global bool
 }
 
 func newMemSub(bufSize int) *memSub {
@@ -124,8 +168,19 @@ func (s *memSub) Close() error {
 	return nil
 }
 
-// close performs the actual channel close, guarded against double-close.
+// close closes the subscription's channel and deregisters it from the bus.
+// Deregistration happens after releasing the subscription lock so it does not
+// invert the bus/subscription lock order used by Publish.
 func (s *memSub) close() {
+	s.markClosed()
+	if s.bus != nil {
+		s.bus.remove(s)
+	}
+}
+
+// markClosed closes the channel, guarded against double-close, without
+// deregistering from the bus.
+func (s *memSub) markClosed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
