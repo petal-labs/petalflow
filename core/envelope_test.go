@@ -64,6 +64,78 @@ func TestEnvelope_Clone(t *testing.T) {
 	}
 }
 
+func TestEnvelope_Clone_DeepCopiesNestedVarMap(t *testing.T) {
+	original := NewEnvelope()
+	original.SetVar("nested", map[string]any{"k": "original"})
+
+	clone := original.Clone()
+	clone.Vars["nested"].(map[string]any)["k"] = "changed"
+
+	if got := original.Vars["nested"].(map[string]any)["k"]; got != "original" {
+		t.Errorf("nested var = %q, want %q (clone shared the nested map)", got, "original")
+	}
+}
+
+func TestEnvelope_Clone_DeepCopiesNestedVarSlice(t *testing.T) {
+	original := NewEnvelope()
+	original.SetVar("list", []any{"a", "b"})
+
+	clone := original.Clone()
+	clone.Vars["list"].([]any)[0] = "z"
+
+	if got := original.Vars["list"].([]any)[0]; got != "a" {
+		t.Errorf("nested slice element = %q, want %q (clone shared the backing array)", got, "a")
+	}
+}
+
+func TestEnvelope_Clone_DeepCopiesArtifactMeta(t *testing.T) {
+	original := NewEnvelope()
+	original.AppendArtifact(Artifact{ID: "a1", Meta: map[string]any{"score": 1}})
+
+	clone := original.Clone()
+	clone.Artifacts[0].Meta["score"] = 2
+
+	if got := original.Artifacts[0].Meta["score"]; got != 1 {
+		t.Errorf("artifact meta = %v, want 1 (clone shared the Meta map)", got)
+	}
+}
+
+func TestEnvelope_Clone_DeepCopiesArtifactBytes(t *testing.T) {
+	original := NewEnvelope()
+	original.AppendArtifact(Artifact{ID: "a1", Bytes: []byte{1, 2, 3}})
+
+	clone := original.Clone()
+	clone.Artifacts[0].Bytes[0] = 9
+
+	if got := original.Artifacts[0].Bytes[0]; got != 1 {
+		t.Errorf("artifact bytes[0] = %d, want 1 (clone shared the backing array)", got)
+	}
+}
+
+func TestEnvelope_Clone_DeepCopiesMessageMeta(t *testing.T) {
+	original := NewEnvelope()
+	original.AppendMessage(Message{Role: "assistant", Content: "hi", Meta: map[string]any{"model": "x"}})
+
+	clone := original.Clone()
+	clone.Messages[0].Meta["model"] = "y"
+
+	if got := original.Messages[0].Meta["model"]; got != "x" {
+		t.Errorf("message meta = %v, want x (clone shared the Meta map)", got)
+	}
+}
+
+func TestEnvelope_Clone_DeepCopiesNodeErrorDetails(t *testing.T) {
+	original := NewEnvelope()
+	original.AppendError(NodeError{NodeID: "n1", Details: map[string]any{"attempt": 1}})
+
+	clone := original.Clone()
+	clone.Errors[0].Details["attempt"] = 2
+
+	if got := original.Errors[0].Details["attempt"]; got != 1 {
+		t.Errorf("node error details = %v, want 1 (clone shared the Details map)", got)
+	}
+}
+
 func TestEnvelope_Clone_Nil(t *testing.T) {
 	var env *Envelope
 	clone := env.Clone()

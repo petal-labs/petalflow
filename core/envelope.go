@@ -47,8 +47,16 @@ func NewEnvelope() *Envelope {
 }
 
 // Clone creates a copy of the envelope suitable for parallel execution.
-// Maps and slices are shallow-copied to avoid accidental cross-branch mutation.
-// Note: payload fields inside Artifacts and Messages may still reference shared memory.
+//
+// Vars, Artifacts, Messages, and Errors are deep-copied so that mutations in
+// one branch (or a node abandoned on timeout) cannot affect another branch or
+// the caller. Deep copying covers JSON-like values — nested map[string]any,
+// []any, and []byte — as well as the Meta/Bytes/Details fields of Artifacts,
+// Messages, and NodeErrors.
+//
+// Input and any non-JSON-like values inside Vars (arbitrary structs, pointers,
+// channels, etc.) are copied by reference, since they cannot be deep-copied
+// generically; callers must treat such values as read-only across branches.
 func (e *Envelope) Clone() *Envelope {
 	if e == nil {
 		return nil
@@ -59,31 +67,84 @@ func (e *Envelope) Clone() *Envelope {
 		Trace: e.Trace,
 	}
 
-	// Deep copy Vars map
-	if e.Vars != nil {
-		out.Vars = make(map[string]any, len(e.Vars))
-		for k, v := range e.Vars {
-			out.Vars[k] = v
-		}
-	}
+	out.Vars = deepCopyStringMap(e.Vars)
 
-	// Copy slices
 	if e.Artifacts != nil {
 		out.Artifacts = make([]Artifact, len(e.Artifacts))
-		copy(out.Artifacts, e.Artifacts)
+		for i, a := range e.Artifacts {
+			out.Artifacts[i] = cloneArtifact(a)
+		}
 	}
 
 	if e.Messages != nil {
 		out.Messages = make([]Message, len(e.Messages))
-		copy(out.Messages, e.Messages)
+		for i, m := range e.Messages {
+			out.Messages[i] = cloneMessage(m)
+		}
 	}
 
 	if e.Errors != nil {
 		out.Errors = make([]NodeError, len(e.Errors))
-		copy(out.Errors, e.Errors)
+		for i, ne := range e.Errors {
+			out.Errors[i] = cloneNodeError(ne)
+		}
 	}
 
 	return out
+}
+
+// deepCopyValue returns a deep copy of JSON-like values (map[string]any, []any,
+// and []byte). Scalars and unrecognized types are returned as-is, since
+// PetalFlow cannot generically deep-copy arbitrary Go values.
+func deepCopyValue(v any) any {
+	switch val := v.(type) {
+	case map[string]any:
+		return deepCopyStringMap(val)
+	case []any:
+		out := make([]any, len(val))
+		for i, item := range val {
+			out[i] = deepCopyValue(item)
+		}
+		return out
+	case []byte:
+		return append([]byte(nil), val...)
+	default:
+		return v
+	}
+}
+
+// deepCopyStringMap returns a deep copy of a map[string]any, preserving nil.
+func deepCopyStringMap(m map[string]any) map[string]any {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = deepCopyValue(v)
+	}
+	return out
+}
+
+// cloneArtifact returns a copy of a with its Meta map and Bytes slice deep-copied.
+func cloneArtifact(a Artifact) Artifact {
+	a.Meta = deepCopyStringMap(a.Meta)
+	if a.Bytes != nil {
+		a.Bytes = append([]byte(nil), a.Bytes...)
+	}
+	return a
+}
+
+// cloneMessage returns a copy of m with its Meta map deep-copied.
+func cloneMessage(m Message) Message {
+	m.Meta = deepCopyStringMap(m.Meta)
+	return m
+}
+
+// cloneNodeError returns a copy of ne with its Details map deep-copied. The
+// Cause error is shared, as errors are treated as immutable.
+func cloneNodeError(ne NodeError) NodeError {
+	ne.Details = deepCopyStringMap(ne.Details)
+	return ne
 }
 
 // GetVar retrieves a variable by name from the Vars map.

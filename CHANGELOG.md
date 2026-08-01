@@ -35,8 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ctx.Done()` while awaiting chunks, so a provider that stalls mid-stream
   (never sends, never closes the channel) no longer hangs the run or leaks a
   goroutine; a terminal error chunk is delivered and the stream is closed.
-
-### Added
+- **`Envelope.Clone()` now deep-copies nested state.** Clone previously
+  shallow-copied `Vars` values and the `Meta`/`Bytes`/`Details` fields of
+  artifacts, messages, and node errors, so parallel branches (and nodes
+  abandoned on timeout) shared backing maps and slices — a latent data race and
+  cross-branch corruption. Clone now deep-copies JSON-like values
+  (`map[string]any`, `[]any`, `[]byte`) throughout, giving each branch fully
+  independent state. This completes the abandoned-node isolation added with
+  `NodeTimeout`. `Input` and non-JSON-like values remain copied by reference and
+  must be treated as read-only across branches.
 
 - **Per-node timeout (`RunOptions.NodeTimeout`, CLI `--node-timeout`).** When
   set, each node runs with a deadline and the runtime returns as soon as the
