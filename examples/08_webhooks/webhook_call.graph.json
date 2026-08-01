@@ -24,8 +24,7 @@
           "x-petalflow-source": "petalflow-example"
         },
         "template": "{\"event_type\":\"{{.vars.event_type}}\",\"event_id\":\"{{.vars.event_id}}\",\"tenant\":\"{{.vars.tenant}}\",\"event_key\":\"{{.vars.event_key}}\",\"payload\":{{ json .vars }}}",
-        "result_var": "webhook_result",
-        "error_policy": "fail"
+        "result_var": "webhook_result"
       }
     },
     {

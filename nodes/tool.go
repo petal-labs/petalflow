@@ -29,9 +29,6 @@ type ToolNodeConfig struct {
 
 	// RetryPolicy configures retry behavior for transient failures.
 	RetryPolicy core.RetryPolicy
-
-	// OnError defines how errors are handled.
-	OnError core.ErrorPolicy
 }
 
 // ToolNode executes a tool as a workflow step.
@@ -53,9 +50,6 @@ func NewToolNode(id string, tool core.PetalTool, config ToolNodeConfig) *ToolNod
 	}
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
-	}
-	if config.OnError == "" {
-		config.OnError = core.ErrorPolicyFail
 	}
 	if config.ToolName == "" && tool != nil {
 		config.ToolName = tool.Name()
@@ -80,9 +74,6 @@ func NewToolNodeWithRegistry(id string, registry *core.ToolRegistry, config Tool
 	if config.Timeout == 0 {
 		config.Timeout = 30 * time.Second
 	}
-	if config.OnError == "" {
-		config.OnError = core.ErrorPolicyFail
-	}
 
 	return &ToolNode{
 		BaseNode: core.NewBaseNode(id, core.NodeKindTool),
@@ -103,7 +94,7 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 	// Get the tool
 	tool, err := n.getTool()
 	if err != nil {
-		return n.handleError(env, err)
+		return nil, err
 	}
 
 	// Get event emitter from context
@@ -112,7 +103,7 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 	// Build arguments from envelope
 	args, err := n.buildArgs(env)
 	if err != nil {
-		return n.handleError(env, fmt.Errorf("failed to build args: %w", err))
+		return nil, fmt.Errorf("failed to build args: %w", err)
 	}
 
 	// Emit tool.call event
@@ -133,14 +124,14 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 
 		// Check if context is done
 		if ctx.Err() != nil {
-			return n.handleError(env, ctx.Err())
+			return nil, ctx.Err()
 		}
 
 		// Wait before retry (except on last attempt)
 		if attempt < n.config.RetryPolicy.MaxAttempts {
 			select {
 			case <-ctx.Done():
-				return n.handleError(env, ctx.Err())
+				return nil, ctx.Err()
 			case <-time.After(n.config.RetryPolicy.Backoff * time.Duration(attempt)):
 			}
 		}
@@ -153,8 +144,8 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 		WithPayload("is_error", lastErr != nil))
 
 	if lastErr != nil {
-		return n.handleError(env, fmt.Errorf("tool %q failed after %d attempts: %w",
-			n.config.ToolName, n.config.RetryPolicy.MaxAttempts, lastErr))
+		return nil, fmt.Errorf("tool %q failed after %d attempts: %w",
+			n.config.ToolName, n.config.RetryPolicy.MaxAttempts, lastErr)
 	}
 
 	// Store output in envelope
@@ -205,31 +196,6 @@ func (n *ToolNode) buildArgs(env *core.Envelope) (map[string]any, error) {
 	}
 
 	return args, nil
-}
-
-// handleError processes errors according to the OnError policy.
-func (n *ToolNode) handleError(env *core.Envelope, err error) (*core.Envelope, error) {
-	switch n.config.OnError {
-	case core.ErrorPolicyContinue, core.ErrorPolicyRecord:
-		// Record error and continue
-		env.AppendError(core.NodeError{
-			NodeID:  n.ID(),
-			Kind:    core.NodeKindTool,
-			Message: err.Error(),
-			At:      time.Now(),
-			Cause:   err,
-			Details: map[string]any{
-				"tool": n.config.ToolName,
-			},
-		})
-		// Set output to nil to indicate failure
-		env.SetVar(n.config.OutputKey, nil)
-		env.SetVar(n.config.OutputKey+"_error", err.Error())
-		return env, nil
-
-	default: // ErrorPolicyFail
-		return nil, err
-	}
 }
 
 // Config returns the node's configuration.

@@ -72,16 +72,6 @@ func TestNewToolNode_DefaultTimeout(t *testing.T) {
 	}
 }
 
-func TestNewToolNode_DefaultOnError(t *testing.T) {
-	tool := &mockPetalTool{name: "test-tool"}
-	node := NewToolNode("test", tool, ToolNodeConfig{})
-
-	config := node.Config()
-	if config.OnError != core.ErrorPolicyFail {
-		t.Errorf("expected default OnError 'fail', got %q", config.OnError)
-	}
-}
-
 func TestToolNode_Run_BasicExecution(t *testing.T) {
 	tool := &mockPetalTool{
 		name:   "test-tool",
@@ -174,66 +164,25 @@ func TestToolNode_Run_WithStaticArgs(t *testing.T) {
 	}
 }
 
-func TestToolNode_Run_Error_FailPolicy(t *testing.T) {
+func TestToolNode_Run_ToolFailureReturnsError(t *testing.T) {
 	tool := &mockPetalTool{
 		name: "failing-tool",
 		err:  errors.New("tool failed"),
 	}
 
 	node := NewToolNode("test", tool, ToolNodeConfig{
-		OnError:     core.ErrorPolicyFail,
-		RetryPolicy: core.RetryPolicy{MaxAttempts: 1, Backoff: time.Millisecond},
-	})
-
-	env := core.NewEnvelope()
-	_, err := node.Run(context.Background(), env)
-
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-}
-
-func TestToolNode_Run_Error_ContinuePolicy(t *testing.T) {
-	tool := &mockPetalTool{
-		name: "failing-tool",
-		err:  errors.New("tool failed"),
-	}
-
-	node := NewToolNode("test", tool, ToolNodeConfig{
-		OnError:     core.ErrorPolicyContinue,
 		OutputKey:   "result",
 		RetryPolicy: core.RetryPolicy{MaxAttempts: 1, Backoff: time.Millisecond},
 	})
 
-	env := core.NewEnvelope()
-	result, err := node.Run(context.Background(), env)
+	result, err := node.Run(context.Background(), core.NewEnvelope())
 
-	// Should not return error with continue policy
-	if err != nil {
-		t.Fatalf("expected no error with continue policy, got: %v", err)
+	// The node always returns its error; the runtime decides fail vs continue.
+	if err == nil {
+		t.Fatal("expected the tool failure to be returned as an error, got nil")
 	}
-
-	// Output should be nil
-	output, ok := result.GetVar("result")
-	if !ok {
-		t.Fatal("expected result key to exist")
-	}
-	if output != nil {
-		t.Errorf("expected nil output, got %v", output)
-	}
-
-	// Error should be recorded
-	errMsg, ok := result.GetVar("result_error")
-	if !ok {
-		t.Fatal("expected error message to be stored")
-	}
-	if errMsg == "" {
-		t.Error("expected non-empty error message")
-	}
-
-	// Should have error in Errors list
-	if len(result.Errors) != 1 {
-		t.Errorf("expected 1 error recorded, got %d", len(result.Errors))
+	if result != nil {
+		t.Errorf("expected a nil envelope on failure, got %v", result)
 	}
 }
 

@@ -56,9 +56,6 @@ type (
 	// TokenUsage tracks token consumption for cost tracking and budgeting.
 	TokenUsage = core.TokenUsage
 
-	// ErrorPolicy defines how a node handles errors.
-	ErrorPolicy = core.ErrorPolicy
-
 	// LLMClient abstracts a single provider/model backend for PetalFlow.
 	LLMClient = core.LLMClient
 
@@ -139,13 +136,6 @@ const (
 	NodeKindWebhookCall    = core.NodeKindWebhookCall
 	NodeKindWebhookTrigger = core.NodeKindWebhookTrigger
 	NodeKindHuman          = core.NodeKindHuman
-)
-
-// ErrorPolicy constants
-const (
-	ErrorPolicyFail     = core.ErrorPolicyFail
-	ErrorPolicyContinue = core.ErrorPolicyContinue
-	ErrorPolicyRecord   = core.ErrorPolicyRecord
 )
 
 // Core package constructors
@@ -532,9 +522,6 @@ type (
 	// WebhookCallNodeConfig configures a WebhookCallNode.
 	WebhookCallNodeConfig = nodes.WebhookCallNodeConfig
 
-	// WebhookCallErrorPolicy defines how webhook_call errors are handled.
-	WebhookCallErrorPolicy = nodes.WebhookCallErrorPolicy
-
 	// WebhookTriggerNode maps inbound webhook requests into workflow vars.
 	WebhookTriggerNode = nodes.WebhookTriggerNode
 
@@ -650,13 +637,6 @@ const (
 	HumanTimeoutFail    = nodes.HumanTimeoutFail
 	HumanTimeoutDefault = nodes.HumanTimeoutDefault
 	HumanTimeoutSkip    = nodes.HumanTimeoutSkip
-)
-
-// WebhookCallErrorPolicy constants
-const (
-	WebhookCallErrorPolicyFail     = nodes.WebhookCallErrorPolicyFail
-	WebhookCallErrorPolicyContinue = nodes.WebhookCallErrorPolicyContinue
-	WebhookCallErrorPolicyRecord   = nodes.WebhookCallErrorPolicyRecord
 )
 
 // Webhook auth mode constants.

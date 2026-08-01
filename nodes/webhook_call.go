@@ -19,15 +19,6 @@ type HTTPClient interface {
 	Do(req *http.Request) (*http.Response, error)
 }
 
-// WebhookCallErrorPolicy controls node behavior on outbound request failures.
-type WebhookCallErrorPolicy string
-
-const (
-	WebhookCallErrorPolicyFail     WebhookCallErrorPolicy = "fail"
-	WebhookCallErrorPolicyContinue WebhookCallErrorPolicy = "continue"
-	WebhookCallErrorPolicyRecord   WebhookCallErrorPolicy = "record"
-)
-
 // defaultWebhookTimeout bounds an outbound webhook call when no timeout is
 // configured, so a stalled endpoint cannot hang a run indefinitely.
 const defaultWebhookTimeout = 30 * time.Second
@@ -50,7 +41,6 @@ type WebhookCallNodeConfig struct {
 	IncludeTrace     bool
 	Template         string
 	ResultVar        string
-	ErrorPolicy      WebhookCallErrorPolicy
 	HTTPClient       HTTPClient
 }
 
@@ -61,7 +51,6 @@ func ParseWebhookCallConfig(m map[string]any) (WebhookCallNodeConfig, error) {
 		Method:           strings.TrimSpace(webhookConfigString(m, "method")),
 		Template:         webhookConfigString(m, "template"),
 		ResultVar:        strings.TrimSpace(webhookConfigString(m, "result_var")),
-		ErrorPolicy:      WebhookCallErrorPolicy(strings.TrimSpace(webhookConfigString(m, "error_policy"))),
 		Timeout:          webhookConfigDuration(m, "timeout"),
 		MaxResponseBytes: webhookConfigInt64(m, "max_response_bytes"),
 	}
@@ -100,15 +89,6 @@ func normalizeWebhookCallConfig(cfg WebhookCallNodeConfig) (WebhookCallNodeConfi
 	if !httpMethodTokenPattern.MatchString(cfg.Method) {
 		return WebhookCallNodeConfig{}, fmt.Errorf("method %q is invalid", cfg.Method)
 	}
-	if cfg.ErrorPolicy == "" {
-		cfg.ErrorPolicy = WebhookCallErrorPolicyFail
-	}
-	switch cfg.ErrorPolicy {
-	case WebhookCallErrorPolicyFail, WebhookCallErrorPolicyContinue, WebhookCallErrorPolicyRecord:
-		// valid
-	default:
-		return WebhookCallNodeConfig{}, fmt.Errorf("error_policy must be one of: fail, continue, record")
-	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = http.DefaultClient
 	}
@@ -140,9 +120,6 @@ func NewWebhookCallNode(id string, config WebhookCallNodeConfig) *WebhookCallNod
 		}
 		if normalized.Method == "" {
 			normalized.Method = http.MethodPost
-		}
-		if normalized.ErrorPolicy == "" {
-			normalized.ErrorPolicy = WebhookCallErrorPolicyFail
 		}
 		if normalized.Timeout <= 0 {
 			normalized.Timeout = defaultWebhookTimeout
@@ -194,7 +171,7 @@ func (n *WebhookCallNode) Run(ctx context.Context, env *core.Envelope) (*core.En
 
 	resp, err := n.config.HTTPClient.Do(req)
 	if err != nil {
-		return n.handleFailure(env, 0, nil, nil, err)
+		return nil, n.fail(err)
 	}
 	defer resp.Body.Close()
 
@@ -206,16 +183,14 @@ func (n *WebhookCallNode) Run(ctx context.Context, env *core.Envelope) (*core.En
 	// than silently truncating it.
 	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if readErr != nil {
-		return n.handleFailure(env, resp.StatusCode, resp.Header, nil, fmt.Errorf("read response body: %w", readErr))
+		return nil, n.fail(fmt.Errorf("read response body: %w", readErr))
 	}
 	if int64(len(respBody)) > limit {
-		return n.handleFailure(env, resp.StatusCode, resp.Header, nil,
-			fmt.Errorf("response body exceeds max %d bytes", limit))
+		return nil, n.fail(fmt.Errorf("response body exceeds max %d bytes", limit))
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		statusErr := fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		return n.handleFailure(env, resp.StatusCode, resp.Header, respBody, statusErr)
+		return nil, n.fail(fmt.Errorf("unexpected status code: %d", resp.StatusCode))
 	}
 
 	result := env.Clone()
@@ -335,43 +310,11 @@ func webhookCallTemplateFuncs() template.FuncMap {
 	}
 }
 
-func (n *WebhookCallNode) handleFailure(
-	env *core.Envelope,
-	statusCode int,
-	headers http.Header,
-	body []byte,
-	runErr error,
-) (*core.Envelope, error) {
-	result := env.Clone()
-	if n.config.ResultVar != "" {
-		result.SetVar(n.config.ResultVar, map[string]any{
-			"ok":          false,
-			"status_code": statusCode,
-			"headers":     responseHeaders(headers),
-			"body":        string(body),
-			"url":         n.config.URL,
-			"method":      n.config.Method,
-			"error":       runErr.Error(),
-		})
-	}
-
-	switch n.config.ErrorPolicy {
-	case WebhookCallErrorPolicyContinue:
-		return result, nil
-	case WebhookCallErrorPolicyRecord:
-		result.AppendError(core.NodeError{
-			NodeID:  n.ID(),
-			Kind:    core.NodeKindWebhookCall,
-			Message: runErr.Error(),
-			At:      time.Now(),
-			Cause:   runErr,
-		})
-		return result, nil
-	case WebhookCallErrorPolicyFail:
-		fallthrough
-	default:
-		return nil, fmt.Errorf("webhook_call node %s: %w", n.ID(), runErr)
-	}
+// fail wraps a request error with the node identity. The webhook node always
+// returns its error; the runtime decides whether to fail the run or record and
+// continue via RunOptions.ContinueOnError.
+func (n *WebhookCallNode) fail(runErr error) error {
+	return fmt.Errorf("webhook_call node %s: %w", n.ID(), runErr)
 }
 
 func responseHeaders(headers http.Header) map[string]any {

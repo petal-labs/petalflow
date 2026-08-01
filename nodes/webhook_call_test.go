@@ -30,12 +30,11 @@ func TestWebhookCallNode_Success(t *testing.T) {
 	}
 
 	node := NewWebhookCallNode("call", WebhookCallNodeConfig{
-		URL:         "https://example.com/webhook",
-		Method:      http.MethodPost,
-		Headers:     map[string]string{"X-Test": "yes"},
-		ResultVar:   "webhook_result",
-		ErrorPolicy: WebhookCallErrorPolicyFail,
-		HTTPClient:  mockClient,
+		URL:        "https://example.com/webhook",
+		Method:     http.MethodPost,
+		Headers:    map[string]string{"X-Test": "yes"},
+		ResultVar:  "webhook_result",
+		HTTPClient: mockClient,
 	})
 	env := core.NewEnvelope()
 	env.SetVar("order_id", "ord_123")
@@ -68,50 +67,22 @@ func TestWebhookCallNode_Success(t *testing.T) {
 	}
 }
 
-func TestWebhookCallNode_ErrorPolicy(t *testing.T) {
-	tests := []struct {
-		name          string
-		policy        WebhookCallErrorPolicy
-		wantErr       bool
-		wantRecorded  bool
-		wantResultVar bool
-		statusCode    int
-	}{
-		{name: "fail", policy: WebhookCallErrorPolicyFail, wantErr: true, statusCode: 500},
-		{name: "record", policy: WebhookCallErrorPolicyRecord, wantRecorded: true, wantResultVar: true, statusCode: 500},
-		{name: "continue", policy: WebhookCallErrorPolicyContinue, wantResultVar: true, statusCode: 500},
+func TestWebhookCallNode_NonSuccessStatusReturnsError(t *testing.T) {
+	mockClient := NewMockHTTPClient(500)
+	node := NewWebhookCallNode("call", WebhookCallNodeConfig{
+		URL:        "https://example.com/webhook",
+		Method:     http.MethodPost,
+		ResultVar:  "result",
+		HTTPClient: mockClient,
+	})
+
+	// The node always returns its error; the runtime decides fail vs continue.
+	result, err := node.Run(context.Background(), core.NewEnvelope())
+	if err == nil {
+		t.Fatal("expected an error for a non-2xx response, got nil")
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			mockClient := NewMockHTTPClient(tt.statusCode)
-			node := NewWebhookCallNode("call", WebhookCallNodeConfig{
-				URL:         "https://example.com/webhook",
-				Method:      http.MethodPost,
-				ResultVar:   "result",
-				ErrorPolicy: tt.policy,
-				HTTPClient:  mockClient,
-			})
-
-			out, err := node.Run(context.Background(), core.NewEnvelope())
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if tt.wantRecorded && !out.HasErrors() {
-				t.Fatal("expected recorded node error")
-			}
-			if tt.wantResultVar {
-				if _, ok := out.GetVar("result"); !ok {
-					t.Fatal("expected result var to be set")
-				}
-			}
-		})
+	if result != nil {
+		t.Errorf("expected a nil envelope on failure, got %v", result)
 	}
 }
 
@@ -158,10 +129,9 @@ func (c timeoutHTTPClient) Do(req *http.Request) (*http.Response, error) {
 
 func TestWebhookCallNode_Timeout(t *testing.T) {
 	node := NewWebhookCallNode("call", WebhookCallNodeConfig{
-		URL:         "https://example.com/webhook",
-		Timeout:     10 * time.Millisecond,
-		ErrorPolicy: WebhookCallErrorPolicyFail,
-		HTTPClient:  timeoutHTTPClient{delay: 200 * time.Millisecond},
+		URL:        "https://example.com/webhook",
+		Timeout:    10 * time.Millisecond,
+		HTTPClient: timeoutHTTPClient{delay: 200 * time.Millisecond},
 	})
 
 	_, err := node.Run(context.Background(), core.NewEnvelope())
@@ -170,19 +140,6 @@ func TestWebhookCallNode_Timeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
 		t.Fatalf("timeout error = %v, want context deadline exceeded", err)
-	}
-}
-
-func TestWebhookCallNode_InvalidPolicy(t *testing.T) {
-	_, err := ParseWebhookCallConfig(map[string]any{
-		"url":          "https://example.com",
-		"error_policy": "unknown",
-	})
-	if err == nil {
-		t.Fatal("expected invalid error_policy error, got nil")
-	}
-	if !strings.Contains(err.Error(), "error_policy") {
-		t.Fatalf("error = %v, want error_policy context", err)
 	}
 }
 
@@ -215,7 +172,6 @@ func TestWebhookCallNode_RejectsOversizeResponse(t *testing.T) {
 	node := NewWebhookCallNode("call", WebhookCallNodeConfig{
 		URL:              "https://example.com/webhook",
 		MaxResponseBytes: 8,
-		ErrorPolicy:      WebhookCallErrorPolicyFail,
 		HTTPClient: &MockHTTPClient{
 			Response: &http.Response{
 				StatusCode: 200,
@@ -243,9 +199,6 @@ func TestWebhookCallNode_ConfigDefaults(t *testing.T) {
 	}
 	if cfg.Method != http.MethodPost {
 		t.Fatalf("Method = %q, want POST", cfg.Method)
-	}
-	if cfg.ErrorPolicy != WebhookCallErrorPolicyFail {
-		t.Fatalf("ErrorPolicy = %q, want fail", cfg.ErrorPolicy)
 	}
 }
 

@@ -138,17 +138,10 @@ func (u TokenUsage) Add(other TokenUsage) TokenUsage {
 	}
 }
 
-// ErrorPolicy defines how a node handles errors.
-type ErrorPolicy string
-
-const (
-	// ErrorPolicyFail causes the node to fail and abort the run (default).
-	ErrorPolicyFail ErrorPolicy = "fail"
-	// ErrorPolicyContinue records the error and continues execution.
-	ErrorPolicyContinue ErrorPolicy = "continue"
-	// ErrorPolicyRecord records the error in the envelope and continues.
-	ErrorPolicyRecord ErrorPolicy = "record"
-)
+// Error handling is uniform across the framework: nodes always return their
+// error, and the runtime decides whether to fail the run or record the error
+// and continue, via RunOptions.ContinueOnError. Nodes do not carry their own
+// error policy.
 
 // =============================================================================
 // LLM Client Interface

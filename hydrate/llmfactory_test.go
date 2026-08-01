@@ -994,7 +994,6 @@ func TestNewLiveNodeFactory_WebhookCallNode(t *testing.T) {
 			"method":            "POST",
 			"headers":           map[string]any{"X-Test": "1"},
 			"template":          "{{ json .vars }}",
-			"error_policy":      "record",
 			"result_var":        "webhook_result",
 			"input_vars":        []any{"summary", "score"},
 			"include_artifacts": true,
@@ -1013,9 +1012,6 @@ func TestNewLiveNodeFactory_WebhookCallNode(t *testing.T) {
 		t.Fatalf("expected *nodes.WebhookCallNode, got %T", node)
 	}
 	cfg := webhookNode.Config()
-	if cfg.ErrorPolicy != nodes.WebhookCallErrorPolicyRecord {
-		t.Fatalf("ErrorPolicy = %q, want %q", cfg.ErrorPolicy, nodes.WebhookCallErrorPolicyRecord)
-	}
 	if cfg.URL != "https://example.com/webhook" {
 		t.Fatalf("URL = %q, want https://example.com/webhook", cfg.URL)
 	}

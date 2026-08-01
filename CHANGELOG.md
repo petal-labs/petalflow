@@ -86,6 +86,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Completed the `EnvelopeJSON` wire contract.** Added `input`, per-message and
   per-artifact `meta`, and trace `parent_id`/`span_id`, which were previously
   discarded during serialization.
+- **BREAKING: unified error handling on the runtime.** Nodes now always return
+  their error; the runtime alone decides whether to fail the run or record the
+  error and continue, via `RunOptions.ContinueOnError`. Removed the per-node
+  self-handling policies that made this inconsistent: `ToolNodeConfig.OnError`,
+  `WebhookCallNodeConfig.ErrorPolicy` / the `WebhookCallErrorPolicy` type, the
+  `core.ErrorPolicy` type and its constants, and their `petalflow.*` re-exports.
+  A failing tool or webhook node no longer returns a success envelope with
+  `<output>_error` / `ok:false` result vars — it returns an error like every
+  other node. The `error_policy` field in webhook `webhook_call` graph JSON is
+  now ignored. Migration: to continue past a failed node, set
+  `RunOptions.ContinueOnError` (or the equivalent workflow option) instead of a
+  per-node policy; the error is recorded on the envelope's `errors` array.
 
 ## [0.3.0] - 2026-07-31
 
