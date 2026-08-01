@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   past a failed node returned a success-looking result with no trace of the
   failure. `EnvelopeJSON` now includes an `errors` array, and the `pretty` CLI
   output prints an `Errors` section.
+- **Webhook calls can no longer hang or exhaust memory.** The `webhook_call`
+  node now applies a default 30s timeout when none is configured (previously an
+  unset timeout meant no timeout at all, so a stalled endpoint hung the run),
+  and bounds the response body read with a default 10 MiB limit
+  (`max_response_bytes`), returning an error instead of reading unbounded data.
+- **Streaming LLM calls honor context on a stalled provider.** The Iris
+  streaming adapter and the LLM node's stream consumer now select on
+  `ctx.Done()` while awaiting chunks, so a provider that stalls mid-stream
+  (never sends, never closes the channel) no longer hangs the run or leaks a
+  goroutine; a terminal error chunk is delivered and the stream is closed.
 
 ### Changed
 

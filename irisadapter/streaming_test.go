@@ -325,6 +325,50 @@ func TestProviderAdapter_CompleteStream_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestProviderAdapter_CompleteStream_StalledProviderHonorsContext(t *testing.T) {
+	// Provider returns a stream that never sends a chunk and never closes its
+	// channels, simulating a provider that stalls mid-stream and ignores ctx.
+	mock := &streamingMockProvider{
+		mockProvider: mockProvider{id: "mock"},
+		streamFn: func(ctx context.Context, req *core.ChatRequest) (*core.ChatStream, error) {
+			return &core.ChatStream{
+				Ch:    make(chan core.ChatChunk),     // never sent to, never closed
+				Err:   make(chan error),              // never closed
+				Final: make(chan *core.ChatResponse), // never closed
+			}, nil
+		},
+	}
+
+	adapter := NewProviderAdapter(mock)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	ch, err := adapter.CompleteStream(ctx, petalflow.LLMRequest{
+		Model:     "mock-model",
+		InputText: "Hello",
+	})
+	if err != nil {
+		t.Fatalf("unexpected setup error: %v", err)
+	}
+
+	// The adapter must emit a terminal error chunk and close its output channel
+	// once the context is canceled, even though the provider never closes its
+	// stream. Bound the wait so a regression (infinite hang) fails the test
+	// instead of hanging forever.
+	select {
+	case chunk, ok := <-ch:
+		if !ok {
+			t.Fatal("expected a terminal chunk before the channel closed")
+		}
+		if chunk.Error == nil {
+			t.Errorf("expected a context error chunk, got %+v", chunk)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CompleteStream did not honor context cancellation with a stalled provider")
+	}
+}
+
 func TestProviderAdapter_CompleteStream_NoFinalResponse(t *testing.T) {
 	mock := &streamingMockProvider{
 		mockProvider: mockProvider{id: "mock"},

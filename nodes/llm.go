@@ -226,28 +226,42 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 	var accumulated strings.Builder
 	var usage core.LLMTokenUsage
 
-	for chunk := range ch {
-		// Handle chunk errors
-		if chunk.Error != nil {
-			return nil, fmt.Errorf("streaming error: %w", chunk.Error)
-		}
-
-		if chunk.Done {
-			// Capture usage from the final chunk
-			if chunk.Usage != nil {
-				usage = *chunk.Usage
+	streaming := true
+	for streaming {
+		// Select on ctx.Done() so a client that stalls (never sends, never
+		// closes the channel) cannot hang the node past its timeout/cancel.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case chunk, ok := <-ch:
+			if !ok {
+				streaming = false
+				break
 			}
-			break
+
+			// Handle chunk errors
+			if chunk.Error != nil {
+				return nil, fmt.Errorf("streaming error: %w", chunk.Error)
+			}
+
+			if chunk.Done {
+				// Capture usage from the final chunk
+				if chunk.Usage != nil {
+					usage = *chunk.Usage
+				}
+				streaming = false
+				break
+			}
+
+			// Accumulate text
+			accumulated.WriteString(chunk.Delta)
+
+			// Emit delta event
+			emit(runtime.NewEvent(runtime.EventNodeOutputDelta, env.Trace.RunID).
+				WithNode(n.ID(), n.Kind()).
+				WithPayload("delta", chunk.Delta).
+				WithPayload("index", chunk.Index))
 		}
-
-		// Accumulate text
-		accumulated.WriteString(chunk.Delta)
-
-		// Emit delta event
-		emit(runtime.NewEvent(runtime.EventNodeOutputDelta, env.Trace.RunID).
-			WithNode(n.ID(), n.Kind()).
-			WithPayload("delta", chunk.Delta).
-			WithPayload("index", chunk.Index))
 	}
 
 	text := accumulated.String()
