@@ -3,6 +3,7 @@ package nodes
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"text/template"
@@ -163,12 +164,12 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("text", resp.Text))
 
-	// Store output in envelope
-	if n.config.JSONSchema != nil && resp.JSON != nil {
-		env.SetVar(n.config.OutputKey, resp.JSON)
-	} else {
-		env.SetVar(n.config.OutputKey, resp.Text)
+	// Store output in envelope, honoring structured output.
+	output, err := n.finalizeOutput(resp.Text, resp.JSON)
+	if err != nil {
+		return nil, err
 	}
+	env.SetVar(n.config.OutputKey, output)
 
 	// Record token usage
 	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage{
@@ -278,8 +279,12 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("text", text))
 
-	// Store output in envelope
-	env.SetVar(n.config.OutputKey, text)
+	// Store output in envelope, honoring structured output.
+	output, err := n.finalizeOutput(text, nil)
+	if err != nil {
+		return nil, err
+	}
+	env.SetVar(n.config.OutputKey, output)
 
 	// Record token usage
 	env.SetVar(n.config.OutputKey+"_usage", core.TokenUsage(usage))
@@ -364,6 +369,37 @@ func (n *LLMNode) checkBudget(usage core.LLMTokenUsage) error {
 	}
 
 	return nil
+}
+
+// finalizeOutput returns the value to store under the node's OutputKey. When a
+// JSONSchema is configured, structured output is required: the value must be a
+// valid JSON object, otherwise the node returns an error rather than silently
+// storing raw text. preParsed is the provider's already-parsed JSON, if any.
+func (n *LLMNode) finalizeOutput(text string, preParsed map[string]any) (any, error) {
+	if n.config.JSONSchema == nil {
+		return text, nil
+	}
+	if preParsed != nil {
+		return preParsed, nil
+	}
+	parsed, err := parseJSONObject(text)
+	if err != nil {
+		return nil, fmt.Errorf("structured output for node %q: model did not return a valid JSON object: %w", n.ID(), err)
+	}
+	return parsed, nil
+}
+
+// parseJSONObject parses s into a JSON object, rejecting empty or non-object output.
+func parseJSONObject(s string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return nil, fmt.Errorf("output was empty")
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Config returns the node's configuration.
