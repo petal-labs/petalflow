@@ -434,7 +434,7 @@ func (s *Server) handleRunStreaming(
 	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
 
 	if sub == nil {
-		s.streamWithoutSubscription(writer, doneCh, runID)
+		s.streamWithoutSubscription(ctx, writer, doneCh, runID)
 		return
 	}
 	s.streamWithSubscription(ctx, writer, sub, doneCh, runID)
@@ -457,6 +457,10 @@ func newSSEWriter(w http.ResponseWriter) (*sseWriter, bool) {
 }
 
 func (s *sseWriter) startResponse() {
+	// Clear any server WriteTimeout for this connection so a long-lived event
+	// stream is not severed mid-run. Best-effort: ignored if unsupported.
+	_ = http.NewResponseController(s.w).SetWriteDeadline(time.Time{})
+
 	s.w.Header().Set("Content-Type", "text/event-stream")
 	s.w.Header().Set("Cache-Control", "no-cache")
 	s.w.Header().Set("Connection", "keep-alive")
@@ -515,13 +519,26 @@ func (s *Server) startStreamingRuntime(
 	return doneCh
 }
 
-func (s *Server) streamWithoutSubscription(writer *sseWriter, doneCh <-chan error, runID string) {
-	err := <-doneCh
-	if err != nil {
-		writer.writeEvent("run.error", map[string]string{"error": err.Error()})
-		return
+func (s *Server) streamWithoutSubscription(ctx context.Context, writer *sseWriter, doneCh <-chan error, runID string) {
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case err := <-doneCh:
+			if err != nil {
+				writer.writeEvent("run.error", map[string]string{"error": err.Error()})
+				return
+			}
+			writer.writeEvent("run.finished", map[string]string{"run_id": runID, "status": "completed"})
+			return
+		case <-heartbeat.C:
+			writer.writeHeartbeat()
+		case <-ctx.Done():
+			writer.writeEvent("run.error", map[string]string{"error": "timeout"})
+			return
+		}
 	}
-	writer.writeEvent("run.finished", map[string]string{"run_id": runID, "status": "completed"})
 }
 
 func (s *Server) streamWithSubscription(
@@ -614,6 +631,9 @@ func (s *Server) handleRunEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, events)
 		return
 	}
+
+	// Clear any server WriteTimeout for this streaming response.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

@@ -104,6 +104,10 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		afterSeq = parsed
 	}
 
+	// Clear any server WriteTimeout for this connection so the long-lived event
+	// stream is not severed mid-run. Best-effort: ignored if unsupported.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
 	// Set SSE headers.
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

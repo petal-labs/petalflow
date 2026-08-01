@@ -44,11 +44,38 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().String("tls-cert", "", "TLS certificate file")
 	cmd.Flags().String("tls-key", "", "TLS key file")
 	cmd.Flags().Duration("read-timeout", 30*time.Second, "HTTP read timeout")
-	cmd.Flags().Duration("write-timeout", 60*time.Second, "HTTP write timeout")
+	cmd.Flags().Duration("write-timeout", 60*time.Second, "HTTP write timeout (does not apply to SSE streams)")
+	cmd.Flags().Duration("read-header-timeout", 10*time.Second, "HTTP read header timeout (Slowloris protection)")
+	cmd.Flags().Duration("idle-timeout", 120*time.Second, "HTTP idle (keep-alive) timeout")
 	cmd.Flags().Int64("max-body", 1<<20, "Max request body size in bytes")
 	cmd.Flags().Duration("workflow-schedule-poll", 5*time.Second, "Workflow schedule poll interval")
 
 	return cmd
+}
+
+// httpServerTimeouts groups the daemon's HTTP server timeout settings.
+type httpServerTimeouts struct {
+	Read       time.Duration
+	Write      time.Duration
+	ReadHeader time.Duration
+	Idle       time.Duration
+}
+
+// buildHTTPServer constructs the daemon HTTP server with hardening timeouts.
+//
+// ReadHeaderTimeout and IdleTimeout guard against slow-header (Slowloris) and
+// leaked keep-alive connections. WriteTimeout bounds normal responses but is
+// cleared per-connection by the SSE handlers (via http.ResponseController), so
+// long-lived event streams are not severed mid-run.
+func buildHTTPServer(addr string, handler http.Handler, t httpServerTimeouts) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadTimeout:       t.Read,
+		WriteTimeout:      t.Write,
+		ReadHeaderTimeout: t.ReadHeader,
+		IdleTimeout:       t.Idle,
+	}
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
@@ -57,6 +84,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	corsOrigin, _ := cmd.Flags().GetString("cors-origin")
 	readTimeout, _ := cmd.Flags().GetDuration("read-timeout")
 	writeTimeout, _ := cmd.Flags().GetDuration("write-timeout")
+	readHeaderTimeout, _ := cmd.Flags().GetDuration("read-header-timeout")
+	idleTimeout, _ := cmd.Flags().GetDuration("idle-timeout")
 	maxBody, _ := cmd.Flags().GetInt64("max-body")
 	workflowSchedulePoll, _ := cmd.Flags().GetDuration("workflow-schedule-poll")
 	tlsCert, _ := cmd.Flags().GetString("tls-cert")
@@ -195,12 +224,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	handler = maxBodyMiddleware(handler, maxBody)
 
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	httpServer := &http.Server{
-		Addr:         addr,
-		Handler:      handler,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-	}
+	httpServer := buildHTTPServer(addr, handler, httpServerTimeouts{
+		Read:       readTimeout,
+		Write:      writeTimeout,
+		ReadHeader: readHeaderTimeout,
+		Idle:       idleTimeout,
+	})
 
 	// Signal handling
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
