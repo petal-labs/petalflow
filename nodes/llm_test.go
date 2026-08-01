@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -179,6 +180,118 @@ func TestLLMNode_Run_WithJSONSchema(t *testing.T) {
 	jsonOutput := output.(map[string]any)
 	if jsonOutput["name"] != "test" {
 		t.Errorf("expected name 'test', got %v", jsonOutput["name"])
+	}
+}
+
+func TestLLMNode_Run_WithJSONSchema_InvalidJSONErrors(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{
+			Text: "not json at all",
+			// JSON nil: the provider could not parse structured output.
+		},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:       "gpt-4",
+		JSONSchema:  map[string]any{"type": "object"},
+		OutputKey:   "result",
+		RetryPolicy: core.RetryPolicy{MaxAttempts: 1, Backoff: time.Millisecond},
+	})
+
+	_, err := node.Run(context.Background(), core.NewEnvelope())
+	if err == nil {
+		t.Fatal("expected an error when structured output is requested but the model returned non-JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "JSON") {
+		t.Errorf("error = %v, want it to mention invalid JSON", err)
+	}
+}
+
+func TestLLMNode_Run_WithJSONSchema_ParsesTextWhenNotPreParsed(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{
+			Text: `{"name": "parsed"}`,
+			// JSON nil: force the node to parse the text itself.
+		},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:      "gpt-4",
+		JSONSchema: map[string]any{"type": "object"},
+		OutputKey:  "result",
+	})
+
+	result, err := node.Run(context.Background(), core.NewEnvelope())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, ok := result.GetVar("result")
+	if !ok {
+		t.Fatal("expected result to be stored")
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected result to be a JSON object, got %T", out)
+	}
+	if m["name"] != "parsed" {
+		t.Errorf("result[name] = %v, want %q", m["name"], "parsed")
+	}
+}
+
+func TestLLMNode_Run_Streaming_WithJSONSchema_ParsesJSON(t *testing.T) {
+	client := &mockStreamingLLMClient{
+		chunks: []core.StreamChunk{
+			{Delta: `{"name":`, Index: 0},
+			{Delta: ` "streamed"}`, Index: 1},
+			{Done: true},
+		},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:      "gpt-4",
+		JSONSchema: map[string]any{"type": "object"},
+		OutputKey:  "result",
+	})
+
+	ctx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) {})
+	env := core.NewEnvelope()
+	env.Trace.RunID = "r"
+
+	result, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, _ := result.GetVar("result")
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected streamed structured output to be a JSON object, got %T", out)
+	}
+	if m["name"] != "streamed" {
+		t.Errorf("result[name] = %v, want %q", m["name"], "streamed")
+	}
+}
+
+func TestLLMNode_Run_Streaming_WithJSONSchema_InvalidJSONErrors(t *testing.T) {
+	client := &mockStreamingLLMClient{
+		chunks: []core.StreamChunk{
+			{Delta: "plain text", Index: 0},
+			{Done: true},
+		},
+	}
+
+	node := NewLLMNode("test", client, LLMNodeConfig{
+		Model:      "gpt-4",
+		JSONSchema: map[string]any{"type": "object"},
+		OutputKey:  "result",
+	})
+
+	ctx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) {})
+	env := core.NewEnvelope()
+	env.Trace.RunID = "r"
+
+	_, err := node.Run(ctx, env)
+	if err == nil {
+		t.Fatal("expected an error when streamed structured output is not valid JSON, got nil")
 	}
 }
 

@@ -52,8 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel with no context handling, leaking the handler when a client
   disconnected or the run timed out; it now selects on the request context and
   emits heartbeats like the subscription path.
-
-### Added
+- **Structured LLM output is no longer silently downgraded to text.** When an
+  LLM node has a `JSONSchema`, it previously stored the model's raw text under
+  the output key whenever the response failed to parse as JSON — so downstream
+  nodes expecting a JSON object silently received a string. The streaming path
+  ignored `JSONSchema` entirely and always stored text. Both paths now require a
+  valid JSON object when a schema is configured, parsing the output and
+  returning an error (surfaced through the node error path) instead of storing a
+  wrong-typed value. Note: this validates that the output is a JSON object, not
+  full JSON Schema conformance.
 
 - **Per-node timeout (`RunOptions.NodeTimeout`, CLI `--node-timeout`).** When
   set, each node runs with a deadline and the runtime returns as soon as the
