@@ -356,6 +356,13 @@ func formatPretty(env *core.Envelope) string {
 		}
 	}
 
+	if len(env.Errors) > 0 {
+		sb.WriteString(fmt.Sprintf("\n=== Errors (%d) ===\n", len(env.Errors)))
+		for _, e := range env.Errors {
+			sb.WriteString(fmt.Sprintf("  [%s] %s: %s\n", e.Kind, e.NodeID, e.Message))
+		}
+	}
+
 	if env.Trace.RunID != "" {
 		sb.WriteString("\n=== Trace ===\n")
 		sb.WriteString(fmt.Sprintf("  Run ID: %s\n", env.Trace.RunID))

@@ -11,10 +11,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/tool"
 )
+
+func TestFormatPretty_SurfacesErrors(t *testing.T) {
+	env := core.NewEnvelope()
+	env.SetVar("result", "ok")
+	env.AppendError(core.NodeError{
+		NodeID:  "tool-1",
+		Kind:    core.NodeKindTool,
+		Message: "tool failed",
+	})
+
+	out := formatPretty(env)
+
+	if !strings.Contains(out, "Errors") {
+		t.Errorf("expected an Errors section, got:\n%s", out)
+	}
+	if !strings.Contains(out, "tool-1") {
+		t.Errorf("expected failing node id in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "tool failed") {
+		t.Errorf("expected error message in output, got:\n%s", out)
+	}
+}
 
 func TestBuildRunOptions_NonStreaming(t *testing.T) {
 	cmd := NewRunCmd()

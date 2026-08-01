@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -306,6 +307,178 @@ func TestRoundTrip(t *testing.T) {
 		if got != want {
 			t.Errorf("var %q = %v, want %v", k, got, want)
 		}
+	}
+}
+
+func TestEnvelopeToJSON_WithErrors(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{}
+	env.AppendError(core.NodeError{
+		NodeID:  "tool-1",
+		Kind:    core.NodeKindTool,
+		Message: "tool failed",
+		Attempt: 2,
+		At:      time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC),
+		Details: map[string]any{"tool": "search"},
+		Cause:   errors.New("connection refused"),
+	})
+
+	result := EnvelopeToJSON(env)
+
+	if len(result.Errors) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(result.Errors))
+	}
+	e := result.Errors[0]
+	if e.NodeID != "tool-1" {
+		t.Errorf("error.NodeID = %q, want %q", e.NodeID, "tool-1")
+	}
+	if e.Kind != "tool" {
+		t.Errorf("error.Kind = %q, want %q", e.Kind, "tool")
+	}
+	if e.Message != "tool failed" {
+		t.Errorf("error.Message = %q, want %q", e.Message, "tool failed")
+	}
+	if e.Attempt != 2 {
+		t.Errorf("error.Attempt = %d, want %d", e.Attempt, 2)
+	}
+	if e.At != "2026-02-07T12:00:00Z" {
+		t.Errorf("error.At = %q, want %q", e.At, "2026-02-07T12:00:00Z")
+	}
+	if e.Details["tool"] != "search" {
+		t.Errorf("error.Details[tool] = %v, want %q", e.Details["tool"], "search")
+	}
+	if e.Cause != "connection refused" {
+		t.Errorf("error.Cause = %q, want %q", e.Cause, "connection refused")
+	}
+}
+
+func TestEnvelopeToJSON_ErrorsMarshalToJSON(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{}
+	env.AppendError(core.NodeError{
+		NodeID:  "llm-1",
+		Kind:    core.NodeKindLLM,
+		Message: "boom",
+	})
+
+	data, err := json.Marshal(EnvelopeToJSON(env))
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+
+	errs, ok := decoded["errors"].([]any)
+	if !ok {
+		t.Fatalf("expected errors array in JSON output, got %T", decoded["errors"])
+	}
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error entry, got %d", len(errs))
+	}
+	entry, ok := errs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("error entry should be a JSON object, got %T", errs[0])
+	}
+	if entry["node_id"] != "llm-1" {
+		t.Errorf("errors[0].node_id = %v, want %q", entry["node_id"], "llm-1")
+	}
+	if entry["message"] != "boom" {
+		t.Errorf("errors[0].message = %v, want %q", entry["message"], "boom")
+	}
+}
+
+func TestEnvelopeToJSON_OmitsErrorsWhenNone(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{}
+
+	data, err := json.Marshal(EnvelopeToJSON(env))
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if _, ok := decoded["errors"]; ok {
+		t.Error("errors key should be omitted when there are no errors")
+	}
+}
+
+func TestEnvelopeToJSON_PreservesMessageMeta(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{}
+	env.AppendMessage(core.Message{
+		Role:    "assistant",
+		Content: "hi",
+		Meta:    map[string]any{"model": "gpt", "provider": "openai"},
+	})
+
+	result := EnvelopeToJSON(env)
+
+	if len(result.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result.Messages))
+	}
+	if result.Messages[0].Meta["model"] != "gpt" {
+		t.Errorf("message.Meta[model] = %v, want %q", result.Messages[0].Meta["model"], "gpt")
+	}
+	if result.Messages[0].Meta["provider"] != "openai" {
+		t.Errorf("message.Meta[provider] = %v, want %q", result.Messages[0].Meta["provider"], "openai")
+	}
+}
+
+func TestEnvelopeToJSON_PreservesArtifactMeta(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{}
+	env.AppendArtifact(core.Artifact{
+		ID:   "a1",
+		Type: "json",
+		Meta: map[string]any{"confidence": 0.9},
+	})
+
+	result := EnvelopeToJSON(env)
+
+	if len(result.Artifacts) != 1 {
+		t.Fatalf("expected 1 artifact, got %d", len(result.Artifacts))
+	}
+	if result.Artifacts[0].Meta["confidence"] != 0.9 {
+		t.Errorf("artifact.Meta[confidence] = %v, want %v", result.Artifacts[0].Meta["confidence"], 0.9)
+	}
+}
+
+func TestEnvelopeToJSON_PreservesInput(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{}
+	env.Input = "primary payload"
+
+	result := EnvelopeToJSON(env)
+
+	if result.Input != "primary payload" {
+		t.Errorf("Input = %v, want %q", result.Input, "primary payload")
+	}
+}
+
+func TestEnvelopeToJSON_PreservesTraceParentAndSpan(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Trace = core.TraceInfo{
+		RunID:    "run-1",
+		ParentID: "parent-1",
+		SpanID:   "span-1",
+	}
+
+	result := EnvelopeToJSON(env)
+
+	if result.Trace == nil {
+		t.Fatal("expected non-nil Trace")
+	}
+	if result.Trace.ParentID != "parent-1" {
+		t.Errorf("Trace.ParentID = %q, want %q", result.Trace.ParentID, "parent-1")
+	}
+	if result.Trace.SpanID != "span-1" {
+		t.Errorf("Trace.SpanID = %q, want %q", result.Trace.SpanID, "span-1")
 	}
 }
 
