@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Node panics no longer crash the runtime or daemon.** A panic in any node's
+  `Run` method (including custom `FuncNode`s and tools) is now recovered and
+  converted into a node error that flows through the normal fail /
+  continue-on-error path. Previously an unrecovered panic terminated the whole
+  process, taking down every concurrent run in the daemon; in parallel mode the
+  panic occurred in a worker goroutine the caller could not recover at all.
+  Recovery is applied at the single `executeNode` choke point, so it covers both
+  sequential and parallel execution. Panics are detectable with
+  `errors.Is(err, runtime.ErrNodePanic)`, and the recovered stack trace is
+  attached to the `node.failed` event as `panic_stack`.
 - **Node errors are now surfaced to callers.** The `EnvelopeJSON` wire contract
   (used by `petalflow run --format json` and the daemon HTTP API) previously
   dropped the envelope's recorded node errors entirely, so runs that continued
