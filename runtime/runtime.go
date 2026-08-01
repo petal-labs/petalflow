@@ -61,6 +61,36 @@ func runNodeSafely(ctx context.Context, node core.Node, env *core.Envelope) (res
 	return node.Run(ctx, env)
 }
 
+// runNodeInterruptible runs a node under a context that may be canceled (via a
+// per-node timeout or parent cancellation) and returns as soon as ctx fires,
+// even if the node itself ignores cancellation.
+//
+// The node runs on a clone of the envelope so that a node abandoned on
+// timeout — one that keeps running after we return — mutates its own copy
+// rather than the envelope the caller continues with. Top-level Vars are fully
+// isolated because Clone allocates a fresh map; deep isolation of nested values
+// is completed by the Clone deep-copy fix tracked separately.
+func runNodeInterruptible(ctx context.Context, node core.Node, env *core.Envelope) (*core.Envelope, error) {
+	type outcome struct {
+		env *core.Envelope
+		err error
+	}
+	done := make(chan outcome, 1)
+
+	branch := env.Clone()
+	go func() {
+		res, runErr := runNodeSafely(ctx, node, branch)
+		done <- outcome{env: res, err: runErr}
+	}()
+
+	select {
+	case oc := <-done:
+		return oc.env, oc.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // Runtime executes graphs and emits events.
 type Runtime interface {
 	// Run executes the graph with the given initial envelope.
@@ -81,6 +111,13 @@ type RunOptions struct {
 
 	// Concurrency sets the worker pool size for parallel execution (default: 1).
 	Concurrency int
+
+	// NodeTimeout bounds how long a single node may run. When > 0, each node
+	// executes on a goroutine with this deadline and the runtime returns as soon
+	// as the deadline (or the parent context) fires, even if the node itself
+	// ignores cancellation. When 0 (the default) nodes run inline with no
+	// runtime-imposed per-node deadline, preserving the original behavior.
+	NodeTimeout time.Duration
 
 	// Now provides the current time (for testing). If nil, uses time.Now.
 	Now func() time.Time
@@ -994,8 +1031,18 @@ func (r *BasicRuntime) executeNode(
 	nodeCtx := ContextWithEmitter(ctx, emit)
 
 	// Execute node with panic recovery so a misbehaving node cannot crash
-	// the runtime (or the daemon hosting it).
-	result, err := runNodeSafely(nodeCtx, node, env)
+	// the runtime (or the daemon hosting it). When a per-node timeout is
+	// configured, run the node interruptibly so it cannot hang the run.
+	var result *core.Envelope
+	var err error
+	if opts.NodeTimeout > 0 {
+		var cancel context.CancelFunc
+		nodeCtx, cancel = context.WithTimeout(nodeCtx, opts.NodeTimeout)
+		defer cancel()
+		result, err = runNodeInterruptible(nodeCtx, node, env)
+	} else {
+		result, err = runNodeSafely(nodeCtx, node, env)
+	}
 
 	// Calculate elapsed time
 	nodeElapsed := opts.Now().Sub(nodeStart)

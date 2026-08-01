@@ -47,6 +47,7 @@ func NewRunCmd() *cobra.Command {
 	cmd.Flags().StringP("output", "o", "", "Write output envelope to file (default: stdout)")
 	cmd.Flags().String("format", "pretty", "Output format: json | text | pretty")
 	cmd.Flags().Duration("timeout", 5*time.Minute, "Execution timeout")
+	cmd.Flags().Duration("node-timeout", 0, "Per-node timeout; interrupts a node that ignores cancellation (0 = disabled)")
 	cmd.Flags().Bool("dry-run", false, "Compile and validate only, do not execute")
 	cmd.Flags().StringArray("env", nil, "Set environment variable (repeatable)")
 	cmd.Flags().StringArray("provider-key", nil, "Set provider API key (repeatable, e.g. --provider-key anthropic=sk-...)")
@@ -234,6 +235,7 @@ func runContext(cmd *cobra.Command) (context.Context, context.CancelFunc, time.D
 
 func buildRunOptions(cmd *cobra.Command) (runtime.RunOptions, bool) {
 	opts := runtime.DefaultRunOptions()
+	opts.NodeTimeout, _ = cmd.Flags().GetDuration("node-timeout")
 	streaming, _ := cmd.Flags().GetBool("stream")
 	if streaming {
 		opts.EventHandler = runStreamingEventHandler(cmd.OutOrStdout())
