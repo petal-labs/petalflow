@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent state. This completes the abandoned-node isolation added with
   `NodeTimeout`. `Input` and non-JSON-like values remain copied by reference and
   must be treated as read-only across branches.
+- **Daemon HTTP server no longer severs SSE streams or leaks streaming handlers.**
+  The server's `WriteTimeout` applied to the whole response, so it terminated
+  long-lived Server-Sent Events streams mid-run; the SSE handlers now clear the
+  per-connection write deadline (via `http.ResponseController`) so streams are
+  not cut off. The non-subscription streaming path blocked on the run's done
+  channel with no context handling, leaking the handler when a client
+  disconnected or the run timed out; it now selects on the request context and
+  emits heartbeats like the subscription path.
+
+### Added
 
 - **Per-node timeout (`RunOptions.NodeTimeout`, CLI `--node-timeout`).** When
   set, each node runs with a deadline and the runtime returns as soon as the
@@ -53,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never returned. Nodes run on a cloned envelope so a node abandoned on timeout
   cannot corrupt the envelope the caller proceeds with. Defaults to 0 (disabled),
   preserving the original inline execution when unset.
+- **HTTP server hardening timeouts.** The daemon now sets `ReadHeaderTimeout`
+  (default 10s, Slowloris protection) and `IdleTimeout` (default 120s) via new
+  `--read-header-timeout` and `--idle-timeout` flags.
 
 ### Changed
 
