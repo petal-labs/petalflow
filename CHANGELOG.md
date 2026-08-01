@@ -19,6 +19,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sequential and parallel execution. Panics are detectable with
   `errors.Is(err, runtime.ErrNodePanic)`, and the recovered stack trace is
   attached to the `node.failed` event as `panic_stack`.
+- **Node errors are now surfaced to callers.** The `EnvelopeJSON` wire contract
+  (used by `petalflow run --format json` and the daemon HTTP API) previously
+  dropped the envelope's recorded node errors entirely, so runs that continued
+  past a failed node returned a success-looking result with no trace of the
+  failure. `EnvelopeJSON` now includes an `errors` array, and the `pretty` CLI
+  output prints an `Errors` section.
+
+### Changed
+
+- **Completed the `EnvelopeJSON` wire contract.** Added `input`, per-message and
+  per-artifact `meta`, and trace `parent_id`/`span_id`, which were previously
+  discarded during serialization.
 
 ## [0.3.0] - 2026-07-31
 
