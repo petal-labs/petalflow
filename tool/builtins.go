@@ -193,7 +193,7 @@ func (httpFetchTool) Invoke(ctx context.Context, action string, inputs map[strin
 		req.Header.Set("Authorization", auth)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := sharedHTTPClientPool.client(httpFetchTimeout).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http_fetch: request failed: %w", err)
 	}

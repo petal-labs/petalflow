@@ -2,9 +2,8 @@ package tool
 
 import (
 	"context"
-	"io"
 	"net/http"
-	"strings"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -57,17 +56,10 @@ func TestTemplateRenderBuiltinInvoke(t *testing.T) {
 }
 
 func TestHTTPFetchBuiltinInvoke(t *testing.T) {
-	prevTransport := http.DefaultTransport
-	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader("ok")),
-			Header:     make(http.Header),
-		}, nil
-	})
-	t.Cleanup(func() {
-		http.DefaultTransport = prevTransport
-	})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
 
 	native, ok := LookupBuiltinNativeTool("http_fetch")
 	if !ok {
@@ -78,7 +70,7 @@ func TestHTTPFetchBuiltinInvoke(t *testing.T) {
 	resp, err := adapter.Invoke(context.Background(), InvokeRequest{
 		Action: "fetch",
 		Inputs: map[string]any{
-			"url": "http://unit-test.local/ok",
+			"url": srv.URL + "/ok",
 		},
 	})
 	if err != nil {

@@ -10,7 +10,13 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
+
+// sseDefaultTimeout bounds the JSON-RPC request/response calls made by the SSE
+// transport when the caller does not supply a client, so a stalled endpoint
+// cannot hang a health check or tool invocation indefinitely.
+var sseDefaultTimeout = 30 * time.Second
 
 // SSETransportConfig configures an MCP endpoint transport.
 // The current implementation uses request/response JSON-RPC over HTTP while
@@ -35,7 +41,7 @@ func NewSSETransport(cfg SSETransportConfig) (*SSETransport, error) {
 		return nil, errors.New("mcp: sse endpoint is required")
 	}
 	if cfg.Client == nil {
-		cfg.Client = http.DefaultClient
+		cfg.Client = &http.Client{Timeout: sseDefaultTimeout}
 	}
 	return &SSETransport{
 		cfg:    cfg,

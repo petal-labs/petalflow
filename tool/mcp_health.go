@@ -9,6 +9,15 @@ import (
 )
 
 // EvaluateMCPHealth checks MCP availability using overlay strategy hints.
+// mcpHealthTimeout returns the per-probe HTTP timeout, honoring the overlay's
+// configured health timeout and falling back to a default.
+func mcpHealthTimeout(overlay *MCPOverlay) time.Duration {
+	if overlay != nil && overlay.Health.TimeoutMS > 0 {
+		return time.Duration(overlay.Health.TimeoutMS) * time.Millisecond
+	}
+	return defaultMCPHealthTimeout
+}
+
 func EvaluateMCPHealth(ctx context.Context, reg Registration) HealthReport {
 	report := HealthReport{
 		ToolName:  reg.Name,
@@ -46,7 +55,7 @@ func EvaluateMCPHealth(ctx context.Context, reg Registration) HealthReport {
 			report.ErrorMessage = err.Error()
 			return report
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := sharedHTTPClientPool.client(mcpHealthTimeout(overlay)).Do(req)
 		if err != nil {
 			report.State = HealthUnhealthy
 			report.ErrorMessage = err.Error()

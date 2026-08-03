@@ -47,7 +47,7 @@ func (DefaultReachabilityChecker) CheckHTTP(ctx context.Context, endpoint string
 		return fmt.Errorf("invalid endpoint: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := sharedHTTPClientPool.client(reachabilityHTTPTimeout).Do(req)
 	if err != nil {
 		return err
 	}
