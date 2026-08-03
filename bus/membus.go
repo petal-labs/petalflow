@@ -2,6 +2,7 @@ package bus
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -140,9 +141,10 @@ func removeSub(subs []*memSub, target *memSub) []*memSub {
 
 // memSub is an in-memory subscription.
 type memSub struct {
-	ch     chan runtime.Event
-	mu     sync.Mutex
-	closed bool
+	ch      chan runtime.Event
+	mu      sync.Mutex
+	closed  bool
+	dropped atomic.Uint64
 
 	// bus, runID, and global identify where this subscription is registered so
 	// it can deregister itself on Close. Set once at subscription time.
@@ -203,8 +205,15 @@ func (s *memSub) send(event runtime.Event) {
 	select {
 	case s.ch <- event:
 	default:
-		// Drop if channel full.
+		// Buffer full: drop the event and record it for observability.
+		s.dropped.Add(1)
 	}
+}
+
+// Dropped returns the cumulative number of events dropped for this subscription
+// because its buffer was full.
+func (s *memSub) Dropped() uint64 {
+	return s.dropped.Load()
 }
 
 // Compile-time interface checks.

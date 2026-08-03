@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
@@ -122,7 +123,10 @@ type RunOptions struct {
 	// Now provides the current time (for testing). If nil, uses time.Now.
 	Now func() time.Time
 
-	// EventHandler receives events during execution.
+	// EventHandler receives events during execution. It is invoked serially and
+	// in monotonic Seq order, even under parallel execution, so it need not be
+	// safe for concurrent use — but it should be fast and non-blocking, since it
+	// runs on the emit critical path.
 	EventHandler EventHandler
 
 	// EventEmitterDecorator wraps the internal event emitter.
@@ -175,6 +179,17 @@ func DefaultRunOptions() RunOptions {
 // BasicRuntime is a simple sequential runtime implementation.
 type BasicRuntime struct {
 	eventCh chan Event
+
+	// droppedEvents counts events discarded because the Events() channel was
+	// full (no reader keeping up). Observable via DroppedEvents().
+	droppedEvents atomic.Uint64
+}
+
+// DroppedEvents returns the cumulative number of events dropped because the
+// Events() channel buffer was full. A non-zero value means an event consumer is
+// not keeping up (or Events() is not being read).
+func (r *BasicRuntime) DroppedEvents() uint64 {
+	return r.droppedEvents.Load()
 }
 
 // NewRuntime creates a new runtime instance.
@@ -220,7 +235,15 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 
 	// Create event emitter
 	seq := newSeqGen()
+	// emit is serialized so that sequence assignment and delivery are atomic:
+	// subscribers and the EventHandler observe events in monotonic Seq order,
+	// and the EventHandler is never invoked concurrently (even under parallel
+	// execution). EventHandlers should therefore be fast and non-blocking.
+	var emitMu sync.Mutex
 	emit := func(e Event) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+
 		e.Seq = seq.Next()
 		if opts.EventBus != nil {
 			opts.EventBus.Publish(e)
@@ -231,7 +254,8 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		select {
 		case r.eventCh <- e:
 		default:
-			// Drop if channel is full
+			// Channel full: drop the event and record it for observability.
+			r.droppedEvents.Add(1)
 		}
 	}
 	if opts.EventEmitterDecorator != nil {

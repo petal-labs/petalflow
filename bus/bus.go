@@ -30,4 +30,8 @@ type Subscription interface {
 
 	// Close unsubscribes and releases resources.
 	Close() error
+
+	// Dropped returns the cumulative number of events dropped for this
+	// subscription because its buffer was full (the consumer fell behind).
+	Dropped() uint64
 }
