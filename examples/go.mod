@@ -8,7 +8,11 @@ require (
 	github.com/petal-labs/petalflow/irisadapter v0.0.0-00010101000000-000000000000
 )
 
-require github.com/google/uuid v1.6.0 // indirect
+require (
+	github.com/google/uuid v1.6.0 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	golang.org/x/text v0.34.0 // indirect
+)
 
 // Development replace directives - remove once packages are published
 replace github.com/petal-labs/petalflow => ../
