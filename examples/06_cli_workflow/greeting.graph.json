@@ -8,8 +8,9 @@
       "id": "greet",
       "type": "transform",
       "config": {
+        "transform": "template",
         "template": "Hello, {{.name}}! Welcome to PetalFlow.",
-        "output_key": "greeting"
+        "output_var": "greeting"
       }
     }
   ],

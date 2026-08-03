@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/registry"
@@ -219,6 +220,39 @@ func (gd *GraphDefinition) validateSchemaHeader() []Diagnostic {
 	return diags
 }
 
+// unknownConfigKeyDiagnostics returns GR-020 warnings for config keys on a node
+// that are not in its type's recognized ConfigKeys set. When a type declares no
+// ConfigKeys (nil/empty), no warnings are emitted so unannotated types are safe.
+func unknownConfigKeyDiagnostics(i int, node NodeDef, def registry.NodeTypeDef) []Diagnostic {
+	if len(def.ConfigKeys) == 0 || len(node.Config) == 0 {
+		return nil
+	}
+
+	known := make(map[string]bool, len(def.ConfigKeys))
+	for _, k := range def.ConfigKeys {
+		known[k] = true
+	}
+
+	unknown := make([]string, 0)
+	for k := range node.Config {
+		if !known[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+
+	diags := make([]Diagnostic, 0, len(unknown))
+	for _, k := range unknown {
+		diags = append(diags, Diagnostic{
+			Code:     "GR-020",
+			Severity: SeverityWarning,
+			Message:  fmt.Sprintf("Node %q has unrecognized config key %q for type %q", node.ID, k, node.Type),
+			Path:     fmt.Sprintf("nodes[%d].config.%s", i, k),
+		})
+	}
+	return diags
+}
+
 // ValidateWithRegistry runs structural validation plus registry-dependent checks:
 //   - GR-003: node type must exist in the registry
 //   - GR-006: source handle should map to a declared output port when static
@@ -260,6 +294,11 @@ func (gd *GraphDefinition) ValidateWithRegistry(reg *registry.Registry) []Diagno
 				Path:     fmt.Sprintf("nodes[%d].type", i),
 			})
 		}
+
+		// GR-020: warn (non-fatal) on unrecognized config keys, so typos in a
+		// node's config surface without rejecting workflows when a type's known
+		// key set is incomplete.
+		diags = append(diags, unknownConfigKeyDiagnostics(i, node, def)...)
 	}
 
 	// Validate source handles where port sets are static.

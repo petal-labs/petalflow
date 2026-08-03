@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -69,9 +70,13 @@ func LoadFromFile(path string) (*AgentWorkflow, error) {
 }
 
 // LoadFromBytes parses Agent/Task JSON from bytes into an AgentWorkflow.
+// Unknown structural fields are rejected so typos surface at load time rather
+// than being silently ignored.
 func LoadFromBytes(data []byte) (*AgentWorkflow, error) {
 	var wf AgentWorkflow
-	if err := json.Unmarshal(data, &wf); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wf); err != nil {
 		return nil, fmt.Errorf("parsing agent workflow JSON: %w", err)
 	}
 	return &wf, nil
