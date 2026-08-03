@@ -290,7 +290,7 @@ var builtinConfigKeys = map[string][]string{
 	"conditional":     {"default", "output_key", "evaluation_order", "pass_through", "conditions"},
 	"webhook_trigger": {"methods", "auth", "request_var", "body_var", "headers_var", "query_var", "metadata_var", "timeout"},
 	"webhook_call":    {"url", "method", "headers", "timeout", "max_response_bytes", "template", "result_var", "input_vars", "include_artifacts", "include_messages", "include_trace"},
-	"tool":            {"tool_name", "args_template", "static_args", "output_key", "timeout"},
+	"tool":            {"tool_name", "args_template", "static_args", "output_key", "timeout", "required_args"},
 }
 
 // applyBuiltinConfigKeys attaches the recognized config keys to each registered

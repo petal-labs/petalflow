@@ -68,6 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ever-growing list of dead subscriptions. Closing a subscription now removes it
   from the bus (deleting empty per-run entries), with lock ordering that avoids
   deadlocking against concurrent `Publish`.
+- **Tool-call argument handling no longer corrupts silently.** The Iris adapter
+  swallowed the error when a model returned tool-call arguments that were not
+  valid JSON (running the tool with empty args) and coerced any unrecognized
+  message role to `user`; both now return an error. Tool nodes gained an opt-in
+  `RequiredArgs` (config `required_args`): if a required argument does not
+  resolve from the envelope, the node returns an error instead of invoking the
+  tool with missing arguments.
 
 ### Added
 

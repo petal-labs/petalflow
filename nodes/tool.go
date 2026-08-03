@@ -3,6 +3,8 @@ package nodes
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
@@ -17,6 +19,11 @@ type ToolNodeConfig struct {
 	// ArgsTemplate maps argument names to envelope variable paths.
 	// Example: {"location": "user_location", "units": "preferences.units"}
 	ArgsTemplate map[string]string
+
+	// RequiredArgs lists argument names that must resolve to a value. If any is
+	// missing after building args, the node returns an error instead of invoking
+	// the tool with incomplete arguments.
+	RequiredArgs []string
 
 	// StaticArgs are arguments that don't come from the envelope.
 	StaticArgs map[string]any
@@ -193,6 +200,18 @@ func (n *ToolNode) buildArgs(env *core.Envelope) (map[string]any, error) {
 		if ok {
 			args[argName] = val
 		}
+	}
+
+	// Fail rather than invoke the tool with missing required arguments.
+	var missing []string
+	for _, name := range n.config.RequiredArgs {
+		if _, ok := args[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return nil, fmt.Errorf("missing required tool args: %s", strings.Join(missing, ", "))
 	}
 
 	return args, nil

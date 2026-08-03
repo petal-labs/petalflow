@@ -3,6 +3,7 @@ package irisadapter
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/petal-labs/iris/core"
@@ -289,14 +290,22 @@ func TestToRole(t *testing.T) {
 		{"system", core.RoleSystem},
 		{"user", core.RoleUser},
 		{"assistant", core.RoleAssistant},
-		{"unknown", core.RoleUser}, // default
 	}
 
 	for _, tt := range tests {
-		result := toRole(tt.input)
+		result, err := toRole(tt.input)
+		if err != nil {
+			t.Errorf("toRole(%q) unexpected error: %v", tt.input, err)
+		}
 		if result != tt.expected {
 			t.Errorf("toRole(%q) = %v, expected %v", tt.input, result, tt.expected)
 		}
+	}
+}
+
+func TestToRole_UnknownReturnsError(t *testing.T) {
+	if _, err := toRole("unknown"); err == nil {
+		t.Error("expected an error for an unknown role, got nil")
 	}
 }
 
@@ -318,7 +327,10 @@ func (c *capturingProvider) Chat(ctx context.Context, req *core.ChatRequest) (*c
 }
 
 func TestToRole_Tool(t *testing.T) {
-	result := toRole("tool")
+	result, err := toRole("tool")
+	if err != nil {
+		t.Fatalf("toRole(\"tool\") unexpected error: %v", err)
+	}
 	if result != core.RoleTool {
 		t.Errorf("toRole(\"tool\") = %v, expected %v", result, core.RoleTool)
 	}
@@ -522,5 +534,41 @@ func TestProviderAdapter_Complete_ToolCallsInMessage(t *testing.T) {
 	}
 	if assistantMsg.ToolCalls[0].ID != "call-1" {
 		t.Errorf("expected tool call ID 'call-1', got %q", assistantMsg.ToolCalls[0].ID)
+	}
+}
+
+func TestProviderAdapter_Complete_UnknownRoleErrors(t *testing.T) {
+	adapter := NewProviderAdapter(&mockProvider{id: "mock"})
+
+	_, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model:    "mock-model",
+		Messages: []petalflow.LLMMessage{{Role: "bogus_role", Content: "hi"}},
+	})
+	if err == nil {
+		t.Fatal("expected an error for an unknown message role, got nil")
+	}
+	if !strings.Contains(err.Error(), "bogus_role") {
+		t.Errorf("error = %v, want it to name the unknown role", err)
+	}
+}
+
+func TestProviderAdapter_Complete_MalformedToolArgsErrors(t *testing.T) {
+	mock := &mockProvider{
+		id: "mock",
+		chatResponse: &core.ChatResponse{
+			Model: "mock-model",
+			ToolCalls: []core.ToolCall{
+				{ID: "1", Name: "f", Arguments: json.RawMessage("{not valid json")},
+			},
+		},
+	}
+	adapter := NewProviderAdapter(mock)
+
+	_, err := adapter.Complete(context.Background(), petalflow.LLMRequest{
+		Model:     "mock-model",
+		InputText: "hi",
+	})
+	if err == nil {
+		t.Fatal("expected an error for malformed tool-call arguments, got nil")
 	}
 }
