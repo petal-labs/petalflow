@@ -267,4 +267,41 @@ func registerBuiltins(r *Registry) {
 			},
 		},
 	})
+
+	applyBuiltinConfigKeys(r)
+}
+
+// builtinConfigKeys lists the config keys the hydrate factory recognizes for
+// each built-in node type. Keys not listed here trigger a non-fatal GR-020
+// warning at load time. Types absent from this map (e.g. noop, func) accept no
+// config and are not checked. Keep in sync with hydrate/llmfactory.go.
+var builtinConfigKeys = map[string][]string{
+	"llm_prompt":      {"provider", "model", "system_prompt", "prompt_template", "output_key", "temperature", "max_tokens"},
+	"llm_router":      {"provider", "model", "system_prompt", "decision_key", "temperature", "allowed_targets"},
+	"rule_router":     {"default_target", "decision_key", "allow_multiple", "rules"},
+	"filter":          {"target", "input_var", "output_var", "stats_var", "filters"},
+	"transform":       {"transform", "input_var", "output_var", "template", "format", "separator", "merge_strategy", "input_vars", "fields"},
+	"merge":           {"output_key", "strategy", "var_name", "separator", "score_var", "higher_is_better"},
+	"gate":            {"condition_var", "on_fail", "fail_message", "redirect_node_id", "result_var"},
+	"guardian":        {"input_var", "on_fail", "fail_message", "redirect_node_id", "result_var", "stop_on_first_failure", "checks"},
+	"human":           {"mode", "prompt", "output_var", "timeout"},
+	"map":             {"input_var", "output_var", "item_var", "index_var", "concurrency", "continue_on_error", "preserve_order", "mapper_binding", "mapper_node"},
+	"cache":           {"cache_key", "ttl", "output_var", "output_key", "input_vars", "include_artifacts", "include_input", "wrapped_binding", "wrapped_node"},
+	"conditional":     {"default", "output_key", "evaluation_order", "pass_through", "conditions"},
+	"webhook_trigger": {"methods", "auth", "request_var", "body_var", "headers_var", "query_var", "metadata_var", "timeout"},
+	"webhook_call":    {"url", "method", "headers", "timeout", "max_response_bytes", "template", "result_var", "input_vars", "include_artifacts", "include_messages", "include_trace"},
+	"tool":            {"tool_name", "args_template", "static_args", "output_key", "timeout"},
+}
+
+// applyBuiltinConfigKeys attaches the recognized config keys to each registered
+// built-in type, re-registering it (which overwrites in place, preserving order).
+func applyBuiltinConfigKeys(r *Registry) {
+	for typ, keys := range builtinConfigKeys {
+		def, ok := r.Get(typ)
+		if !ok {
+			continue
+		}
+		def.ConfigKeys = keys
+		r.Register(def)
+	}
 }

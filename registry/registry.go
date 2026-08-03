@@ -12,9 +12,10 @@ type NodeTypeDef struct {
 	DisplayName  string     `json:"display_name"`
 	Description  string     `json:"description"`
 	Ports        PortSchema `json:"ports"`
-	ConfigSchema any        `json:"config_schema"` // JSON Schema for config validation
-	IsTool       bool       `json:"is_tool"`       // usable as an agent tool
-	ToolMode     string     `json:"tool_mode"`     // "function_call" | "standalone" | ""
+	ConfigSchema any        `json:"config_schema"`         // JSON Schema for config validation
+	ConfigKeys   []string   `json:"config_keys,omitempty"` // recognized config keys; unknown keys warn on load
+	IsTool       bool       `json:"is_tool"`               // usable as an agent tool
+	ToolMode     string     `json:"tool_mode"`             // "function_call" | "standalone" | ""
 }
 
 // PortSchema defines the input and output ports for a node type.

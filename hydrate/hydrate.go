@@ -1,6 +1,7 @@
 package hydrate
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -99,9 +100,21 @@ func loadConfigFile() (*Config, error) {
 		return nil, fmt.Errorf("reading config file %s: %w", path, err)
 	}
 
-	var cfg Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	cfg, err := parseConfigBytes(data)
+	if err != nil {
 		return nil, fmt.Errorf("parsing config file %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// parseConfigBytes decodes the provider config, rejecting unknown fields so
+// typos in the config file surface instead of being silently ignored.
+func parseConfigBytes(data []byte) (*Config, error) {
+	var cfg Config
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, err
 	}
 	return &cfg, nil
 }

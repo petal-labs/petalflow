@@ -69,6 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the bus (deleting empty per-run entries), with lock ordering that avoids
   deadlocking against concurrent `Publish`.
 
+### Added
+
+- **Unknown fields in workflow files are no longer silently ignored.** Loading a
+  graph definition, an agent/task workflow, or the provider config file now
+  rejects unknown structural fields (`DisallowUnknownFields`), so a typo like
+  `nodez` or a misspelled node field fails at load time instead of being
+  dropped. Unknown keys inside a node's freeform `config` are reported as
+  non-fatal `GR-020` validation warnings (via a per-type recognized-key set in
+  the registry), so a typo like `timout` surfaces without rejecting workflows
+  when a type's key set is incomplete. This surfaced and fixed a latent bug in
+  the `06_cli_workflow` greeting example (it used `output_key` and no transform
+  type; now `transform: template` + `output_var`).
 - **Per-node timeout (`RunOptions.NodeTimeout`, CLI `--node-timeout`).** When
   set, each node runs with a deadline and the runtime returns as soon as the
   deadline or the parent context fires, even if the node itself ignores

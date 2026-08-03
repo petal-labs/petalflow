@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -89,7 +90,9 @@ func loadGraphDefinition(data []byte, path string) (*graph.GraphDefinition, erro
 	}
 
 	var gd graph.GraphDefinition
-	if err := json.Unmarshal(jsonData, &gd); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(jsonData))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&gd); err != nil {
 		return nil, fmt.Errorf("parsing graph definition: %w", err)
 	}
 
