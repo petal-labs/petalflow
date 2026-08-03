@@ -594,6 +594,19 @@ func (p *parallelState) incrementHop(nodeID string) (int, *core.Envelope) {
 	return state.hopCount, state.envelope
 }
 
+// completedEnvelope returns the stored envelope for a node that has completed,
+// or (nil, false) if the node has no state, has not completed, or has no envelope.
+func (p *parallelState) completedEnvelope(nodeID string) (*core.Envelope, bool) {
+	p.statesMu.Lock()
+	defer p.statesMu.Unlock()
+
+	s := p.states[nodeID]
+	if s == nil || !s.completed || s.envelope == nil {
+		return nil, false
+	}
+	return s.envelope, true
+}
+
 func (p *parallelState) markNodeCompleted(nodeID string, env *core.Envelope) {
 	p.statesMu.Lock()
 	defer p.statesMu.Unlock()
@@ -712,14 +725,39 @@ func (r *BasicRuntime) executeGraphParallel(
 	// Cleanup
 	stopWorkers()
 
-	if finalEnvelope == nil {
-		finalEnvelope = env
+	// Select the run result deterministically: the completed envelope of the
+	// last sink node (in node-insertion order). This avoids returning whichever
+	// branch happened to finish last, which is nondeterministic for graphs with
+	// multiple non-merged leaves. Fall back to the last observed envelope, then
+	// the input, if no sink completed.
+	result := selectParallelResult(g, state)
+	if result == nil {
+		result = finalEnvelope
+	}
+	if result == nil {
+		result = env
 	}
 
-	// Merge recorded errors into final envelope
-	state.appendRecordedErrors(finalEnvelope)
+	// Merge recorded errors into the result envelope.
+	state.appendRecordedErrors(result)
 
-	return finalEnvelope, nil
+	return result, nil
+}
+
+// selectParallelResult returns the completed envelope of the last sink node (a
+// node with no successors) in node-insertion order, or nil if no sink completed.
+func selectParallelResult(g graph.Graph, state *parallelState) *core.Envelope {
+	var result *core.Envelope
+	for _, node := range g.Nodes() {
+		id := node.ID()
+		if len(g.Successors(id)) != 0 {
+			continue // not a sink
+		}
+		if env, ok := state.completedEnvelope(id); ok {
+			result = env
+		}
+	}
+	return result
 }
 
 func (r *BasicRuntime) startParallelWorkers(
