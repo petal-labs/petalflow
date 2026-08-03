@@ -16,8 +16,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/petal-labs/iris v0.15.0 h1:jcHgEFjfgUbUqSWPpnbH71HtkDGZcLZ1O7b/PYjTb1U=
-github.com/petal-labs/iris v0.15.0/go.mod h1:IadY26OyFubV/DE/e9YQ0t06NzikLeLk9nafoJv7/dA=
+github.com/petal-labs/iris v0.17.0 h1:JsGdpX5K8OPQubI8i3NehQVxivsmwQ+nT6kcfjWiYGA=
+github.com/petal-labs/iris v0.17.0/go.mod h1:IadY26OyFubV/DE/e9YQ0t06NzikLeLk9nafoJv7/dA=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec/go.mod h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=
 github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 h1:KRzFb2m7YtdldCEkzs6KqmJw4nqEVZGK7IN2kJkjTuQ=

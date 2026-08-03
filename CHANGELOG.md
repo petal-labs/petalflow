@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-03
 
 ### Fixed
 
@@ -127,6 +127,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Upgraded Iris dependency from v0.15.0 to v0.17.0.
 - **Completed the `EnvelopeJSON` wire contract.** Added `input`, per-message and
   per-artifact `meta`, and trace `parent_id`/`span_id`, which were previously
   discarded during serialization.
