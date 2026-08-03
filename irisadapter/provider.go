@@ -23,7 +23,10 @@ func NewProviderAdapter(provider core.Provider) *ProviderAdapter {
 // Complete sends a completion request to the underlying provider.
 func (a *ProviderAdapter) Complete(ctx context.Context, req petalflow.LLMRequest) (petalflow.LLMResponse, error) {
 	// Convert LLMRequest to core.ChatRequest
-	chatReq := a.toCoreChatRequest(req)
+	chatReq, err := a.toCoreChatRequest(req)
+	if err != nil {
+		return petalflow.LLMResponse{}, err
+	}
 
 	// Call the provider
 	chatResp, err := a.provider.Chat(ctx, chatReq)
@@ -32,11 +35,11 @@ func (a *ProviderAdapter) Complete(ctx context.Context, req petalflow.LLMRequest
 	}
 
 	// Convert core.ChatResponse to LLMResponse
-	return a.fromCoreChatResponse(chatResp, req), nil
+	return a.fromCoreChatResponse(chatResp, req)
 }
 
 // toCoreChatRequest converts a petalflow.LLMRequest to core.ChatRequest.
-func (a *ProviderAdapter) toCoreChatRequest(req petalflow.LLMRequest) *core.ChatRequest {
+func (a *ProviderAdapter) toCoreChatRequest(req petalflow.LLMRequest) (*core.ChatRequest, error) {
 	messages := make([]core.Message, 0, len(req.Messages)+2)
 
 	// Add system message if provided
@@ -49,8 +52,12 @@ func (a *ProviderAdapter) toCoreChatRequest(req petalflow.LLMRequest) *core.Chat
 
 	// Add conversation messages
 	for _, m := range req.Messages {
+		role, err := toRole(m.Role)
+		if err != nil {
+			return nil, err
+		}
 		msg := core.Message{
-			Role:    toRole(m.Role),
+			Role:    role,
 			Content: m.Content,
 		}
 
@@ -105,11 +112,11 @@ func (a *ProviderAdapter) toCoreChatRequest(req petalflow.LLMRequest) *core.Chat
 		chatReq.MaxTokens = req.MaxTokens
 	}
 
-	return chatReq
+	return chatReq, nil
 }
 
 // fromCoreChatResponse converts a core.ChatResponse to petalflow.LLMResponse.
-func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req petalflow.LLMRequest) petalflow.LLMResponse {
+func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req petalflow.LLMRequest) (petalflow.LLMResponse, error) {
 	result := petalflow.LLMResponse{
 		Text:     resp.Output,
 		Provider: a.provider.ID(),
@@ -142,7 +149,9 @@ func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req peta
 		for i, tc := range resp.ToolCalls {
 			args := make(map[string]any)
 			if len(tc.Arguments) > 0 {
-				_ = json.Unmarshal(tc.Arguments, &args) // Best effort parsing
+				if err := json.Unmarshal(tc.Arguments, &args); err != nil {
+					return petalflow.LLMResponse{}, fmt.Errorf("tool call %q (%s) has invalid JSON arguments: %w", tc.ID, tc.Name, err)
+				}
 			}
 			result.ToolCalls[i] = petalflow.LLMToolCall{
 				ID:        tc.ID,
@@ -172,22 +181,23 @@ func (a *ProviderAdapter) fromCoreChatResponse(resp *core.ChatResponse, req peta
 	}
 	result.Messages = append(result.Messages, assistantMsg)
 
-	return result
+	return result, nil
 }
 
-// toRole converts a string role to core.Role.
-func toRole(role string) core.Role {
+// toRole converts a string role to core.Role, returning an error for an
+// unrecognized role rather than silently coercing it to "user".
+func toRole(role string) (core.Role, error) {
 	switch role {
 	case "system":
-		return core.RoleSystem
+		return core.RoleSystem, nil
 	case "user":
-		return core.RoleUser
+		return core.RoleUser, nil
 	case "assistant":
-		return core.RoleAssistant
+		return core.RoleAssistant, nil
 	case "tool":
-		return core.RoleTool
+		return core.RoleTool, nil
 	default:
-		return core.RoleUser
+		return "", fmt.Errorf("unknown message role %q", role)
 	}
 }
 

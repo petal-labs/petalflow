@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,6 +162,48 @@ func TestToolNode_Run_WithStaticArgs(t *testing.T) {
 	}
 	if args["version"] != 2 {
 		t.Errorf("expected version 2, got %v", args["version"])
+	}
+}
+
+func TestToolNode_Run_MissingRequiredArgErrors(t *testing.T) {
+	tool := &mockPetalTool{name: "t", result: map[string]any{"ok": true}}
+	node := NewToolNode("test", tool, ToolNodeConfig{
+		ArgsTemplate: map[string]string{"location": "user_location"},
+		RequiredArgs: []string{"location"},
+	})
+
+	// user_location is not set on the envelope.
+	result, err := node.Run(context.Background(), core.NewEnvelope())
+	if err == nil {
+		t.Fatal("expected an error for a missing required arg, got nil")
+	}
+	if !strings.Contains(err.Error(), "location") {
+		t.Errorf("error = %v, want it to name the missing arg", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil envelope on failure, got %v", result)
+	}
+	if len(tool.calls) != 0 {
+		t.Error("tool should not be invoked when a required arg is missing")
+	}
+}
+
+func TestToolNode_Run_RequiredArgPresentSucceeds(t *testing.T) {
+	tool := &mockPetalTool{name: "t", result: map[string]any{"ok": true}}
+	node := NewToolNode("test", tool, ToolNodeConfig{
+		ArgsTemplate: map[string]string{"location": "user_location"},
+		RequiredArgs: []string{"location"},
+		OutputKey:    "out",
+	})
+
+	env := core.NewEnvelope()
+	env.SetVar("user_location", "Tokyo")
+
+	if _, err := node.Run(context.Background(), env); err != nil {
+		t.Fatalf("unexpected error when required arg is present: %v", err)
+	}
+	if len(tool.calls) != 1 || tool.calls[0]["location"] != "Tokyo" {
+		t.Errorf("tool called with args %v, want location=Tokyo", tool.calls)
 	}
 }
 

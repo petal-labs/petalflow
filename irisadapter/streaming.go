@@ -14,7 +14,10 @@ import (
 // has Done=true and includes Usage if available from the provider.
 func (a *ProviderAdapter) CompleteStream(ctx context.Context, req petalflow.LLMRequest) (<-chan petalflow.StreamChunk, error) {
 	// Convert LLMRequest to core.ChatRequest (reuse existing conversion)
-	chatReq := a.toCoreChatRequest(req)
+	chatReq, err := a.toCoreChatRequest(req)
+	if err != nil {
+		return nil, err
+	}
 
 	// Call the provider's StreamChat
 	stream, err := a.provider.StreamChat(ctx, chatReq)

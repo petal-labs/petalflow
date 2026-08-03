@@ -558,19 +558,15 @@ func cloneAnyMap(m map[string]any) map[string]any {
 
 // buildToolNode creates a ToolNode from a NodeDef and a resolved tool.
 func buildToolNode(nd graph.NodeDef, tool core.PetalTool) *nodes.ToolNode {
-	cfg := nodes.ToolNodeConfig{
-		ToolName:     nd.Type,
-		ArgsTemplate: configStringMap(nd.Config, "args_template"),
-		StaticArgs:   cloneAnyMap(configMapAnyMap(nd.Config, "static_args")),
-		OutputKey:    configString(nd.Config, "output_key"),
-		Timeout:      configDuration(nd.Config, "timeout"),
-	}
-
-	return nodes.NewToolNode(nd.ID, tool, cfg)
+	return nodes.NewToolNode(nd.ID, tool, toolNodeConfig(nd, nd.Type))
 }
 
 // buildToolNodeWithName creates a ToolNode from a NodeDef using an explicit tool name.
 func buildToolNodeWithName(nd graph.NodeDef, toolName string, tool core.PetalTool) *nodes.ToolNode {
+	return nodes.NewToolNode(nd.ID, tool, toolNodeConfig(nd, toolName))
+}
+
+func toolNodeConfig(nd graph.NodeDef, toolName string) nodes.ToolNodeConfig {
 	cfg := nodes.ToolNodeConfig{
 		ToolName:     toolName,
 		ArgsTemplate: configStringMap(nd.Config, "args_template"),
@@ -578,8 +574,10 @@ func buildToolNodeWithName(nd graph.NodeDef, toolName string, tool core.PetalToo
 		OutputKey:    configString(nd.Config, "output_key"),
 		Timeout:      configDuration(nd.Config, "timeout"),
 	}
-
-	return nodes.NewToolNode(nd.ID, tool, cfg)
+	if req, ok := configStringSlice(nd.Config, "required_args"); ok {
+		cfg.RequiredArgs = req
+	}
+	return cfg
 }
 
 func buildRuleRouter(nd graph.NodeDef) (core.Node, error) {
