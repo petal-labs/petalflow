@@ -130,6 +130,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Completed the `EnvelopeJSON` wire contract.** Added `input`, per-message and
   per-artifact `meta`, and trace `parent_id`/`span_id`, which were previously
   discarded during serialization.
+- **Structured LLM output is now validated for full JSON Schema conformance.**
+  Previously a configured `JSONSchema` only required the output to be a JSON
+  object; it now validates the output against the schema (required fields,
+  types, enums, patterns, nested schemas, etc.) and returns an error on
+  non-conformance. Validation is on by default whenever a `JSONSchema` is set.
+  Adds a dependency on `github.com/santhosh-tekuri/jsonschema/v6`.
 - **BREAKING: unified error handling on the runtime.** Nodes now always return
   their error; the runtime alone decides whether to fail the run or record the
   error and continue, via `RunOptions.ContinueOnError`. Removed the per-node

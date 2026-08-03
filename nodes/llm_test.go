@@ -295,6 +295,74 @@ func TestLLMNode_Run_Streaming_WithJSONSchema_InvalidJSONErrors(t *testing.T) {
 	}
 }
 
+func TestLLMNode_Run_StructuredOutput_NonConformingErrors(t *testing.T) {
+	// Valid JSON object, but missing the required "name" field.
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: `{"other": 1}`},
+	}
+	node := NewLLMNode("t", client, LLMNodeConfig{
+		Model: "gpt-4",
+		JSONSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"name": map[string]any{"type": "string"}},
+			"required":   []any{"name"},
+		},
+		OutputKey: "out",
+	})
+
+	_, err := node.Run(context.Background(), core.NewEnvelope())
+	if err == nil {
+		t.Fatal("expected a schema-conformance error for output missing a required field, got nil")
+	}
+	if !strings.Contains(err.Error(), "schema") && !strings.Contains(err.Error(), "conform") {
+		t.Errorf("error = %v, want it to mention schema conformance", err)
+	}
+}
+
+func TestLLMNode_Run_StructuredOutput_TypeMismatchErrors(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: `{"age": "not a number"}`},
+	}
+	node := NewLLMNode("t", client, LLMNodeConfig{
+		Model: "gpt-4",
+		JSONSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"age": map[string]any{"type": "integer"}},
+			"required":   []any{"age"},
+		},
+		OutputKey: "out",
+	})
+
+	if _, err := node.Run(context.Background(), core.NewEnvelope()); err == nil {
+		t.Fatal("expected a schema-conformance error for a wrong-typed field, got nil")
+	}
+}
+
+func TestLLMNode_Run_StructuredOutput_ConformingPasses(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: `{"name": "x"}`},
+	}
+	node := NewLLMNode("t", client, LLMNodeConfig{
+		Model: "gpt-4",
+		JSONSchema: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"name": map[string]any{"type": "string"}},
+			"required":   []any{"name"},
+		},
+		OutputKey: "out",
+	})
+
+	result, err := node.Run(context.Background(), core.NewEnvelope())
+	if err != nil {
+		t.Fatalf("unexpected error for conforming output: %v", err)
+	}
+	out, _ := result.GetVar("out")
+	m, ok := out.(map[string]any)
+	if !ok || m["name"] != "x" {
+		t.Errorf("output = %v, want a JSON object with name=x", out)
+	}
+}
+
 func TestLLMNode_Run_Error(t *testing.T) {
 	client := &mockLLMClient{
 		err: errors.New("API error"),

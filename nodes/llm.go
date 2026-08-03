@@ -9,6 +9,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -60,6 +62,12 @@ type LLMNode struct {
 	core.BaseNode
 	config LLMNodeConfig
 	client core.LLMClient
+
+	// schema is the compiled JSONSchema (nil if none configured). schemaErr
+	// holds a compile error to surface at run time, since NewLLMNode has no
+	// error return.
+	schema    *jsonschema.Schema
+	schemaErr error
 }
 
 // NewLLMNode creates a new LLM node with the given configuration.
@@ -75,11 +83,15 @@ func NewLLMNode(id string, client core.LLMClient, config LLMNodeConfig) *LLMNode
 		config.Timeout = 60 * time.Second
 	}
 
-	return &LLMNode{
+	node := &LLMNode{
 		BaseNode: core.NewBaseNode(id, core.NodeKindLLM),
 		config:   config,
 		client:   client,
 	}
+	if config.JSONSchema != nil {
+		node.schema, node.schemaErr = compileJSONSchema(config.JSONSchema)
+	}
+	return node
 }
 
 // Run executes the LLM call and stores the result in the envelope.
@@ -379,14 +391,30 @@ func (n *LLMNode) finalizeOutput(text string, preParsed map[string]any) (any, er
 	if n.config.JSONSchema == nil {
 		return text, nil
 	}
-	if preParsed != nil {
-		return preParsed, nil
+	if n.schemaErr != nil {
+		return nil, fmt.Errorf("structured output for node %q: invalid JSONSchema: %w", n.ID(), n.schemaErr)
 	}
-	parsed, err := parseJSONObject(text)
-	if err != nil {
-		return nil, fmt.Errorf("structured output for node %q: model did not return a valid JSON object: %w", n.ID(), err)
+
+	obj := preParsed
+	if obj == nil {
+		parsed, err := parseJSONObject(text)
+		if err != nil {
+			return nil, fmt.Errorf("structured output for node %q: model did not return a valid JSON object: %w", n.ID(), err)
+		}
+		obj = parsed
 	}
-	return parsed, nil
+
+	if n.schema != nil {
+		instance, err := schemaInstance(text, obj)
+		if err != nil {
+			return nil, fmt.Errorf("structured output for node %q: %w", n.ID(), err)
+		}
+		if err := n.schema.Validate(instance); err != nil {
+			return nil, fmt.Errorf("structured output for node %q: output does not conform to schema: %w", n.ID(), err)
+		}
+	}
+
+	return obj, nil
 }
 
 // parseJSONObject parses s into a JSON object, rejecting empty or non-object output.
@@ -400,6 +428,39 @@ func parseJSONObject(s string) (map[string]any, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// compileJSONSchema compiles a JSON Schema (as a decoded map) for validation.
+func compileJSONSchema(schema map[string]any) (*jsonschema.Schema, error) {
+	data, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	c := jsonschema.NewCompiler()
+	const loc = "petalflow://llm-node/schema"
+	if err := c.AddResource(loc, doc); err != nil {
+		return nil, err
+	}
+	return c.Compile(loc)
+}
+
+// schemaInstance decodes the model output into the value form the validator
+// expects (json.Number for numbers), preferring the raw text and falling back
+// to re-marshaling the parsed object.
+func schemaInstance(text string, obj map[string]any) (any, error) {
+	src := strings.TrimSpace(text)
+	if src == "" {
+		b, err := json.Marshal(obj)
+		if err != nil {
+			return nil, err
+		}
+		src = string(b)
+	}
+	return jsonschema.UnmarshalJSON(strings.NewReader(src))
 }
 
 // Config returns the node's configuration.
