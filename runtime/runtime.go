@@ -204,9 +204,13 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		return nil, err
 	}
 
-	// Initialize envelope if nil
+	// Initialize envelope if nil, and normalize a hand-built envelope whose
+	// Vars map is nil so nodes that write directly to env.Vars do not panic.
 	if env == nil {
 		env = core.NewEnvelope()
+	}
+	if env.Vars == nil {
+		env.Vars = make(map[string]any)
 	}
 
 	// Generate run ID
