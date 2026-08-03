@@ -201,10 +201,11 @@ func (g *BasicGraph) TopologicalSort(allowCycles bool) ([]string, error) {
 		inDegree[id] = len(g.predecessors[id])
 	}
 
-	// Start with nodes that have no predecessors
+	// Start with nodes that have no predecessors, in insertion order so the
+	// result is deterministic (map iteration order is not).
 	queue := make([]string, 0)
-	for id, degree := range inDegree {
-		if degree == 0 {
+	for _, id := range g.nodeOrder {
+		if inDegree[id] == 0 {
 			queue = append(queue, id)
 		}
 	}

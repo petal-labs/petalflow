@@ -86,6 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graph with multiple non-merged leaf nodes produced a nondeterministic result.
   The result is now the completed envelope of the last sink node in
   node-insertion order, independent of scheduling.
+- **Hand-built envelopes with a nil `Vars` map are normalized before a run**, so
+  a node that writes directly to `env.Vars` no longer panics when a caller
+  passes `&Envelope{}` instead of using `NewEnvelope()`.
+- **`graph.TopologicalSort` is now deterministic.** It seeded its work queue
+  from map iteration order; it now seeds in node-insertion order.
 
 ### Added
 
