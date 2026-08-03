@@ -91,6 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes `&Envelope{}` instead of using `NewEnvelope()`.
 - **`graph.TopologicalSort` is now deterministic.** It seeded its work queue
   from map iteration order; it now seeds in node-insertion order.
+- **Events are delivered in monotonic sequence order under concurrency.** In
+  parallel mode, workers could assign sequence numbers and then deliver out of
+  order, which also caused the SSE stream to silently drop a later-arriving
+  lower-sequence event via its dedup high-water mark. Event emission is now
+  serialized, so subscribers and the `EventHandler` observe events in `Seq`
+  order and the `EventHandler` is never invoked concurrently (it should be fast
+  and non-blocking). Dropped events are now observable: `BasicRuntime.DroppedEvents()`
+  counts events discarded when the `Events()` channel is full, and
+  `Subscription.Dropped()` counts per-subscriber buffer overflows.
 
 ### Added
 
