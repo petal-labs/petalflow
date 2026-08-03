@@ -81,6 +81,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a stalled endpoint could hang a tool call or block the (sequential) health
   loop indefinitely. They now use timeout-bounded clients (the health probe
   honors the overlay's configured timeout).
+- **Parallel runs now return a deterministic result envelope.** With
+  `Concurrency > 1`, the runtime returned whichever branch finished last, so a
+  graph with multiple non-merged leaf nodes produced a nondeterministic result.
+  The result is now the completed envelope of the last sink node in
+  node-insertion order, independent of scheduling.
 
 ### Added
 
