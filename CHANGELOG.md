@@ -75,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RequiredArgs` (config `required_args`): if a required argument does not
   resolve from the envelope, the node returns an error instead of invoking the
   tool with missing arguments.
+- **Tool-subsystem HTTP probes are now bounded by a timeout.** The MCP health
+  probe, the `http_fetch` builtin, the reachability checker (`CheckHTTP`), and
+  the MCP SSE transport used `http.DefaultClient`, which has no overall timeout,
+  so a stalled endpoint could hang a tool call or block the (sequential) health
+  loop indefinitely. They now use timeout-bounded clients (the health probe
+  honors the overlay's configured timeout).
 
 ### Added
 

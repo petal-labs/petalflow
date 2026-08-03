@@ -16,6 +16,15 @@ var sharedHTTPClientPool = &httpClientPool{
 	clients: map[time.Duration]*http.Client{},
 }
 
+// Timeouts bounding the tool subsystem's outbound HTTP probes, so a stalled
+// endpoint cannot hang a tool call or the (sequential) health-check loop. These
+// are vars rather than consts so tests can shorten them.
+var (
+	httpFetchTimeout        = 30 * time.Second
+	reachabilityHTTPTimeout = 10 * time.Second
+	defaultMCPHealthTimeout = 5 * time.Second
+)
+
 func (p *httpClientPool) client(timeout time.Duration) *http.Client {
 	p.mu.Lock()
 	defer p.mu.Unlock()
