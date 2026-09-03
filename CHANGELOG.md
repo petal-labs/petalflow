@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frozen `providers.Provider` alias. The `providers.Create` registry call is
   retained, as the Iris registry API is explicitly not deprecated.
 
+### Removed
+
+- **Editor/plugin JSON schema artifacts** `schemas/agent-workflow/v1.json` and
+  `schemas/graph-workflow/v1.json`, along with the README reference to them. No
+  PetalFlow code consumed these files; they were published solely for external
+  editor tooling, and the VS Code extension that was their only known consumer
+  is no longer being developed. Workflow validation is unaffected: it runs
+  through the Go validators in `graph` and `agent`, not these artifacts, and the
+  `schema_version` semantics they described are unchanged.
+
 ## [0.4.0] - 2026-08-03
 
 ### Fixed

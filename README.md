@@ -202,7 +202,6 @@ execution:
 
 `schema_version` uses semantic versioning (`MAJOR.MINOR.PATCH`). Current supported major is `1`.
 Legacy workflows without `schema_version` continue to load during the transition window for schema major `1`; they are planned to be rejected when schema major `2` is introduced.
-Versioned JSON schema artifacts for editor/plugin tooling live in `schemas/agent-workflow/v1.json` and `schemas/graph-workflow/v1.json`.
 
 ## Daemon API
 
