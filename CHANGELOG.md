@@ -18,7 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Minimum Go version is now 1.25.0**, raised from 1.24.0 across the root,
   `irisadapter`, and `examples` modules to match the floor Iris v1.0.0 requires.
   The CI, integration, and release workflows were bumped from Go 1.24 to 1.25 so
-  they can still build the modules.
+  they can still build the modules. The pinned golangci-lint was raised from
+  v2.0.2 to v2.9.0 for the same reason: the v2.0.2 release binary is built with
+  Go 1.24 and refuses to load a module targeting Go 1.25, failing with "the Go
+  language version (go1.24) used to build golangci-lint is lower than the
+  targeted Go version". v2.9.0 is the first release whose binary is built with a
+  Go toolchain new enough to lint this module.
 - **Migrated off the deprecated Iris `providers` re-export layer.**
   `llmprovider` now takes `core.Provider` directly (imported as `iriscore`,
   matching the existing convention in `llmprovider/adapter.go`) instead of the
