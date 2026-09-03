@@ -22,6 +22,7 @@ import (
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/llmprovider"
 	petalotel "github.com/petal-labs/petalflow/otel"
+	petalruntime "github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/server"
 	"github.com/petal-labs/petalflow/tool"
 )
@@ -178,6 +179,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer func() {
 		_ = workflowStore.Close()
 	}()
+
+	var runStore petalruntime.RunStore
+	var runStoreCloser interface{ Close() error }
+	switch backend {
+	case backendPostgres:
+		store, err := petalruntime.NewPostgresRunStore(petalruntime.PostgresRunStoreConfig{DSN: dsn})
+		if err != nil {
+			return fmt.Errorf("opening run store: %w", err)
+		}
+		runStore, runStoreCloser = store, store
+	case backendSQLite:
+		store, err := petalruntime.NewSQLiteRunStore(petalruntime.SQLiteRunStoreConfig{DSN: dsn})
+		if err != nil {
+			return fmt.Errorf("opening run store: %w", err)
+		}
+		runStore, runStoreCloser = store, store
+	}
+	if runStoreCloser != nil {
+		defer func() { _ = runStoreCloser.Close() }()
+	}
 	logger := slog.Default()
 
 	workflowServer := server.NewServer(server.ServerConfig{
@@ -190,6 +211,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		},
 		Bus:        eb,
 		EventStore: es,
+		RunStore:   runStore,
 		CORSOrigin: corsOrigin,
 		MaxBody:    maxBody,
 		Logger:     logger,

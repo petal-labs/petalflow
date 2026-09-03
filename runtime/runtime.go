@@ -97,6 +97,9 @@ type Runtime interface {
 	// Run executes the graph with the given initial envelope.
 	Run(ctx context.Context, g graph.Graph, env *core.Envelope, opts RunOptions) (*core.Envelope, error)
 
+	// Resume continues a persisted run from its latest durable checkpoint.
+	Resume(ctx context.Context, g graph.Graph, runID string, opts RunOptions) (*core.Envelope, error)
+
 	// Events returns a channel for receiving runtime events.
 	// The channel is closed when the run completes.
 	Events() <-chan Event
@@ -104,6 +107,26 @@ type Runtime interface {
 
 // RunOptions controls execution behavior.
 type RunOptions struct {
+	// RunStore enables durable run records and checkpoints. When set, execution
+	// uses the sequential durable executor so a worker can resume safely.
+	RunStore RunStore
+
+	// RunID optionally supplies the ID for a new run. Resume sets this through
+	// BasicRuntime.Resume; normal callers generally leave it empty.
+	RunID string
+
+	// Resume continues an existing RunStore record identified by RunID.
+	Resume bool
+
+	// IdempotencyKey identifies a caller's side-effecting operation. Nodes that
+	// perform external side effects should pass this key to their provider and
+	// make repeated execution safe.
+	IdempotencyKey string
+
+	// HumanRequestHandler optionally routes human interactions through a
+	// durable approval service. It is called before a node's configured handler.
+	HumanRequestHandler HumanRequestHandler
+
 	// MaxHops protects against infinite cycles (default: 100).
 	MaxHops int
 
@@ -206,6 +229,10 @@ func (r *BasicRuntime) Events() <-chan Event {
 
 // Run executes the graph sequentially, following edges from the entry node.
 func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelope, opts RunOptions) (*core.Envelope, error) {
+	if opts.RunStore != nil {
+		return r.runDurable(ctx, g, env, opts)
+	}
+
 	// Apply defaults
 	if opts.MaxHops <= 0 {
 		opts.MaxHops = 100
@@ -229,7 +256,10 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	}
 
 	// Generate run ID
-	runID := generateRunID()
+	runID := opts.RunID
+	if runID == "" {
+		runID = generateRunID()
+	}
 	env.Trace.RunID = runID
 	env.Trace.Started = opts.Now()
 
@@ -301,7 +331,7 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 
 	if err != nil {
 		finishEvent = finishEvent.
-			WithPayload("status", "failed").
+			WithPayload("status", runStatusForError(err)).
 			WithPayload("error", err.Error())
 	} else {
 		finishEvent = finishEvent.
@@ -310,6 +340,30 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	emit(finishEvent)
 
 	return result, err
+}
+
+// Resume continues a paused or interrupted durable run from its latest
+// checkpoint. The graph must be the same workflow version used to create it.
+func (r *BasicRuntime) Resume(ctx context.Context, g graph.Graph, runID string, opts RunOptions) (*core.Envelope, error) {
+	if opts.RunStore == nil {
+		return nil, errors.New("resume requires a RunStore")
+	}
+	if runID == "" {
+		return nil, errors.New("resume requires a run ID")
+	}
+	opts.RunID = runID
+	opts.Resume = true
+	return r.runDurable(ctx, g, nil, opts)
+}
+
+func runStatusForError(err error) string {
+	if errors.Is(err, ErrRunCanceled) || errors.Is(err, context.Canceled) {
+		return string(RunStatusCanceled)
+	}
+	if errors.Is(err, ErrHumanPending) {
+		return string(RunStatusPaused)
+	}
+	return string(RunStatusFailed)
 }
 
 // executeGraph performs the actual graph execution.
@@ -1095,6 +1149,9 @@ func (r *BasicRuntime) executeNode(
 
 	// Inject emitter into context for node use
 	nodeCtx := ContextWithEmitter(ctx, emit)
+	if opts.HumanRequestHandler != nil {
+		nodeCtx = ContextWithHumanRequestHandler(nodeCtx, opts.HumanRequestHandler)
+	}
 
 	// Execute node with panic recovery so a misbehaving node cannot crash
 	// the runtime (or the daemon hosting it). When a per-node timeout is
