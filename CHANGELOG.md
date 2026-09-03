@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Upgraded Iris to v1.0.0** (from v0.17.0), the first stable Iris release.
+  PetalFlow's use of the Iris surface was unaffected by most of the 1.0.0
+  breaking changes: the `Conversation`/`Memory` context requirement, the
+  `iris/testing` to `iris/iristest` package move, and the CLI entrypoint move
+  are all unused here, and the `core.Tool` `Schema() ToolSchema` contract is
+  already satisfied because `tools.ToolSchema` is an alias of the `core` type.
+- **Minimum Go version is now 1.25.0**, raised from 1.24.0 across the root,
+  `irisadapter`, and `examples` modules to match the floor Iris v1.0.0 requires.
+  The CI, integration, and release workflows were bumped from Go 1.24 to 1.25 so
+  they can still build the modules.
+- **Migrated off the deprecated Iris `providers` re-export layer.**
+  `llmprovider` now takes `core.Provider` directly (imported as `iriscore`,
+  matching the existing convention in `llmprovider/adapter.go`) instead of the
+  frozen `providers.Provider` alias. The `providers.Create` registry call is
+  retained, as the Iris registry API is explicitly not deprecated.
+
 ## [0.4.0] - 2026-08-03
 
 ### Fixed

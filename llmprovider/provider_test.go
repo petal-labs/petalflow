@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/petal-labs/iris/providers"
+	iriscore "github.com/petal-labs/iris/core"
 	"github.com/petal-labs/petalflow/hydrate"
 )
 
@@ -94,7 +94,7 @@ func TestNewClient_UnknownProvider(t *testing.T) {
 	}
 }
 
-func readProviderConfigStringField(t *testing.T, p providers.Provider, field string) string {
+func readProviderConfigStringField(t *testing.T, p iriscore.Provider, field string) string {
 	t.Helper()
 
 	pv := reflect.ValueOf(p)

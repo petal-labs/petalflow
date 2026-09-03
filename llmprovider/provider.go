@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	iriscore "github.com/petal-labs/iris/core"
 	"github.com/petal-labs/iris/providers"
 	anthropicprovider "github.com/petal-labs/iris/providers/anthropic"
 	ollamaprovider "github.com/petal-labs/iris/providers/ollama"
@@ -23,7 +24,7 @@ func NewClient(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) 
 	return &irisAdapter{provider: provider}, nil
 }
 
-func createProvider(name string, cfg hydrate.ProviderConfig) (providers.Provider, error) {
+func createProvider(name string, cfg hydrate.ProviderConfig) (iriscore.Provider, error) {
 	normalized := strings.ToLower(name)
 
 	switch normalized {
