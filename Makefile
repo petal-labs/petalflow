@@ -1,12 +1,14 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  = -s -w -X main.version=$(VERSION)
-BINARY   = petalflow
+BIN_DIR  = bin
+BINARY   = $(BIN_DIR)/petalflow
 CMD      = ./cmd/petalflow
 
 .PHONY: build test lint vet coverage clean cross snapshot-update
 
 ## build: compile the CLI binary
 build:
+	mkdir -p $(BIN_DIR)
 	go build -ldflags='$(LDFLAGS)' -o $(BINARY) $(CMD)
 
 ## test: run all tests with race detector
@@ -28,6 +30,7 @@ coverage:
 
 ## cross: build release binaries for all platforms
 cross:
+	mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -ldflags='$(LDFLAGS)' -o $(BINARY)-linux-amd64     $(CMD)
 	CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64 go build -ldflags='$(LDFLAGS)' -o $(BINARY)-darwin-arm64     $(CMD)
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags='$(LDFLAGS)' -o $(BINARY)-windows-amd64.exe $(CMD)
@@ -38,5 +41,5 @@ snapshot-update:
 
 ## clean: remove build artifacts
 clean:
-	rm -f $(BINARY) $(BINARY)-linux-amd64 $(BINARY)-darwin-arm64 $(BINARY)-windows-amd64.exe
+	rm -rf $(BIN_DIR)
 	rm -f coverage.out coverage.html
