@@ -127,7 +127,7 @@ func (s *Server) handleCompletePendingAction(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid human response")
 		return
 	}
-	responseBytes := json.RawMessage{}
+	var responseBytes json.RawMessage
 	if nested, ok := raw["response"]; ok {
 		responseBytes = nested
 	} else {

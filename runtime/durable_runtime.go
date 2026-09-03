@@ -47,7 +47,7 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		if opts.IdempotencyKey == "" {
 			opts.IdempotencyKey = record.IdempotencyKey
 		}
-		if isTerminal(record.Status) && !(record.Status == RunStatusCanceled && !record.CancelRequested) {
+		if isTerminal(record.Status) && (record.Status != RunStatusCanceled || record.CancelRequested) {
 			return nil, ErrRunAlreadySettled
 		}
 		env = record.Checkpoint.Envelope.Clone()
