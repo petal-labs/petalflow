@@ -11,6 +11,12 @@ func newSeqGen() *seqGen {
 	return &seqGen{}
 }
 
+func newSeqGenFrom(value uint64) *seqGen {
+	seq := &seqGen{}
+	seq.counter.Store(value)
+	return seq
+}
+
 // Next returns the next sequence number (1-indexed).
 func (s *seqGen) Next() uint64 {
 	return s.counter.Add(1)

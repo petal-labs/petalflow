@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
@@ -20,6 +22,7 @@ type ServerConfig struct {
 	ClientFactory hydrate.ClientFactory
 	Bus           bus.EventBus
 	EventStore    bus.EventStore
+	RunStore      runtime.RunStore
 	RuntimeEvents runtime.EventHandler
 	EmitDecorator runtime.EventEmitterDecorator
 	CORSOrigin    string
@@ -36,11 +39,15 @@ type Server struct {
 	clientFactory hydrate.ClientFactory
 	bus           bus.EventBus
 	eventStore    bus.EventStore
+	runStore      runtime.RunStore
 	runtimeEvents runtime.EventHandler
 	emitDecorator runtime.EventEmitterDecorator
 	corsOrigin    string
 	maxBody       int64
 	logger        *slog.Logger
+	activeMu      sync.Mutex
+	activeRuns    map[string]context.CancelFunc
+	pendingMu     sync.Mutex
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -65,11 +72,13 @@ func NewServer(cfg ServerConfig) *Server {
 		clientFactory: cfg.ClientFactory,
 		bus:           cfg.Bus,
 		eventStore:    cfg.EventStore,
+		runStore:      cfg.RunStore,
 		runtimeEvents: cfg.RuntimeEvents,
 		emitDecorator: cfg.EmitDecorator,
 		corsOrigin:    corsOrigin,
 		maxBody:       maxBody,
 		logger:        logger,
+		activeRuns:    make(map[string]context.CancelFunc),
 	}
 }
 
@@ -98,6 +107,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
+	mux.HandleFunc("GET /api/runs/{run_id}", s.handleGetRun)
+	mux.HandleFunc("POST /api/runs/{run_id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("POST /api/runs/{run_id}/resume", s.handleResumeRun)
+	mux.HandleFunc("GET /api/runs/{run_id}/pending-actions", s.handleGetPendingAction)
+	mux.HandleFunc("POST /api/runs/{run_id}/pending-actions/{action_id}", s.handleCompletePendingAction)
 	mux.HandleFunc("/api/workflows/{id}/webhooks/{trigger_id}", s.handleWorkflowWebhook)
 	mux.HandleFunc("GET /api/workflows/{id}/schedules", s.handleListWorkflowSchedules)
 	mux.HandleFunc("POST /api/workflows/{id}/schedules", s.handleCreateWorkflowSchedule)

@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // HumanRequestType specifies what kind of human input is needed.
@@ -57,6 +58,7 @@ type HumanOption struct {
 // HumanRequest represents a request for human input.
 type HumanRequest struct {
 	ID          string           `json:"id"`
+	NodeID      string           `json:"node_id,omitempty"`
 	Type        HumanRequestType `json:"type"`
 	Prompt      string           `json:"prompt"`
 	Data        any              `json:"data,omitempty"`
@@ -78,6 +80,21 @@ type HumanResponse struct {
 	RespondedAt time.Time      `json:"responded_at"`
 	Meta        map[string]any `json:"meta,omitempty"`
 }
+
+// HumanPendingError tells the runtime that execution must pause until the
+// request is completed by an external approval service.
+type HumanPendingError struct {
+	Request *HumanRequest
+}
+
+func (e *HumanPendingError) Error() string {
+	if e == nil || e.Request == nil {
+		return "human request is pending"
+	}
+	return fmt.Sprintf("human request %q is pending", e.Request.ID)
+}
+
+func (e *HumanPendingError) Pending() bool { return true }
 
 // HumanHandler is the interface for human interaction backends.
 type HumanHandler interface {
@@ -157,8 +174,8 @@ func (n *HumanNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope
 		return nil, err
 	}
 
-	// Validate handler
-	if n.config.Handler == nil {
+	// Validate handler. A runtime bridge may provide the handler dynamically.
+	if n.config.Handler == nil && runtime.HumanRequestHandlerFromContext(ctx) == nil {
 		return nil, fmt.Errorf("human node %s: no handler configured", n.ID())
 	}
 
@@ -174,6 +191,7 @@ func (n *HumanNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope
 	// Create request
 	req := &HumanRequest{
 		ID:          uuid.New().String(),
+		NodeID:      n.ID(),
 		Type:        n.config.RequestType,
 		Prompt:      prompt,
 		Data:        data,
@@ -191,8 +209,24 @@ func (n *HumanNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope
 		defer cancel()
 	}
 
-	// Request human input
-	resp, err := n.config.Handler.Request(ctx, req)
+	// Request human input. A runtime-provided bridge can persist the request and
+	// either return a response or pause the run for an external response.
+	var resp *HumanResponse
+	var requestErr error
+	if handler := runtime.HumanRequestHandlerFromContext(ctx); handler != nil {
+		var value any
+		value, requestErr = handler(ctx, req)
+		if requestErr == nil {
+			var ok bool
+			resp, ok = value.(*HumanResponse)
+			if !ok || resp == nil {
+				requestErr = fmt.Errorf("human handler returned %T, want *HumanResponse", value)
+			}
+		}
+	} else {
+		resp, requestErr = n.config.Handler.Request(ctx, req)
+	}
+	err = requestErr
 
 	// Handle timeout
 	if err != nil && ctx.Err() == context.DeadlineExceeded {

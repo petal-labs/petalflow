@@ -275,9 +275,10 @@ type RunRequest struct {
 
 // RunReqOptions holds optional run configuration.
 type RunReqOptions struct {
-	Timeout string              `json:"timeout,omitempty"`
-	Stream  bool                `json:"stream,omitempty"`
-	Human   *RunReqHumanOptions `json:"human,omitempty"`
+	Timeout        string              `json:"timeout,omitempty"`
+	Stream         bool                `json:"stream,omitempty"`
+	IdempotencyKey string              `json:"idempotency_key,omitempty"`
+	Human          *RunReqHumanOptions `json:"human,omitempty"`
 }
 
 // RunReqHumanOptions controls how daemon run requests handle human node prompts.
@@ -297,13 +298,14 @@ type RunReqHumanOptions struct {
 
 // RunResponse is the JSON response for a completed run.
 type RunResponse struct {
-	ID          string       `json:"id"`
-	RunID       string       `json:"run_id"`
-	Status      string       `json:"status"`
-	StartedAt   time.Time    `json:"started_at"`
-	CompletedAt time.Time    `json:"completed_at"`
-	DurationMs  int64        `json:"duration_ms"`
-	Output      EnvelopeJSON `json:"output"`
+	ID          string                 `json:"id"`
+	RunID       string                 `json:"run_id"`
+	Status      string                 `json:"status"`
+	StartedAt   time.Time              `json:"started_at"`
+	CompletedAt time.Time              `json:"completed_at"`
+	DurationMs  int64                  `json:"duration_ms"`
+	Output      EnvelopeJSON           `json:"output"`
+	Pending     *runtime.PendingAction `json:"pending_action,omitempty"`
 }
 
 // handleRunWorkflow executes a workflow.
@@ -399,6 +401,11 @@ func (s *Server) handleRunSync(
 		timeout:   timeout,
 	}, nil)
 	if err != nil {
+		var apiErr *runAPIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusAccepted && resp.RunID != "" {
+			writeJSON(w, http.StatusAccepted, resp)
+			return
+		}
 		writeRunAPIError(w, err)
 		return
 	}
@@ -430,7 +437,7 @@ func (s *Server) handleRunStreaming(
 		defer sub.Close()
 	}
 
-	doneCh := s.startStreamingRuntime(ctx, execGraph, env, runID)
+	doneCh := s.startStreamingRuntime(ctx, id, execGraph, env, runID)
 	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
 
 	if sub == nil {
@@ -488,12 +495,19 @@ func (s *Server) subscribeRun(runID string) bus.Subscription {
 
 func (s *Server) startStreamingRuntime(
 	ctx context.Context,
+	workflowID string,
 	execGraph *graph.BasicGraph,
 	env *core.Envelope,
 	runID string,
 ) <-chan error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
+	opts.RunStore = s.runStore
+	opts.RunID = runID
+	opts.WorkflowID = workflowID
+	if s.runStore != nil {
+		opts.HumanRequestHandler = s.durableHumanRequestHandler
+	}
 	opts.EventEmitterDecorator = s.emitDecorator
 	if s.bus != nil {
 		opts.EventBus = s.bus
@@ -526,6 +540,10 @@ func (s *Server) streamWithoutSubscription(ctx context.Context, writer *sseWrite
 	for {
 		select {
 		case err := <-doneCh:
+			if errors.Is(err, runtime.ErrHumanPending) {
+				writer.writeEvent("run.paused", map[string]string{"run_id": runID, "status": string(runtime.RunStatusPaused)})
+				return
+			}
 			if err != nil {
 				writer.writeEvent("run.error", map[string]string{"error": err.Error()})
 				return
@@ -562,6 +580,10 @@ func (s *Server) streamWithSubscription(
 				return
 			}
 		case err := <-doneCh:
+			if errors.Is(err, runtime.ErrHumanPending) {
+				writer.writeEvent("run.paused", map[string]string{"run_id": runID, "status": string(runtime.RunStatusPaused)})
+				return
+			}
 			s.handleStreamingCompletionWithDrain(writer, sub, err, runID)
 			return
 		case <-heartbeat.C:

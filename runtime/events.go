@@ -33,6 +33,9 @@ const (
 	// EventRunFinished is emitted when a graph run completes.
 	EventRunFinished EventKind = "run.finished"
 
+	// EventRunResumed is emitted when a persisted run continues from a checkpoint.
+	EventRunResumed EventKind = "run.resumed"
+
 	// EventStepPaused is emitted when execution pauses at a step point.
 	EventStepPaused EventKind = "step.paused"
 
