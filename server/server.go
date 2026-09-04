@@ -127,7 +127,7 @@ func (s *Server) Handler() http.Handler {
 // Middleware applies the server's body, security, authentication, and request
 // concurrency controls to a composed handler.
 func (s *Server) Middleware(next http.Handler) http.Handler {
-	var handler http.Handler = next
+	handler := next
 	handler = s.corsMiddleware(handler)
 	handler = s.authMiddleware(handler)
 	handler = s.requestLimitMiddleware(handler)

@@ -301,31 +301,3 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 }
-
-func withCORS(next http.Handler, allowedOrigin string) http.Handler {
-	origin := strings.TrimSpace(allowedOrigin)
-	if origin == "" {
-		origin = "*"
-	}
-
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func maxBodyMiddleware(next http.Handler, maxBody int64) http.Handler {
-	if maxBody <= 0 {
-		maxBody = 1 << 20
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-		next.ServeHTTP(w, r)
-	})
-}
