@@ -54,7 +54,7 @@ func (a *HTTPAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeResp
 	}
 	if net.ParseIP(endpointURL.Hostname()) != nil {
 		if err := security.ValidateOutboundURL(ctx, endpoint, false); err != nil {
-			return InvokeResponse{}, newToolError(ToolErrorCodeInvalidRequest, "tool: outbound endpoint blocked", false, nil)
+			return InvokeResponse{}, newToolError(ToolErrorCodeTransportFailure, "tool: outbound endpoint blocked", false, nil)
 		}
 	}
 
