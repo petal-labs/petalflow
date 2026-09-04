@@ -37,7 +37,7 @@ func (m *mockProvider) Models() []core.ModelInfo {
 }
 
 func (m *mockProvider) Supports(feature core.Feature) bool {
-	return feature == core.FeatureChat
+	return feature == core.FeatureChat || feature == core.FeatureStructuredOutput || feature == core.FeatureToolCalling
 }
 
 func TestNewProviderAdapter(t *testing.T) {

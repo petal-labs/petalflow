@@ -170,44 +170,136 @@ type StreamChunk struct {
 	Accumulated string         // full text so far (optional)
 	Usage       *LLMTokenUsage // populated on final chunk
 	Error       error          // streaming error
+	ResponseID  string         // provider response ID (populated when available)
+	Model       string         // provider model (populated when available)
+	Provider    string         // provider ID (populated when available)
+	Status      string         // provider response status (populated when available)
+	ToolCalls   []LLMToolCall  // tool calls reported by the provider
+	Reasoning   *LLMReasoningOutput
+	Citations   []string       // source URLs reported by the provider
+	Meta        map[string]any // provider metadata
+	Response    *LLMResponse   // complete response semantics on the terminal chunk
+}
+
+// LLMResponseFormat identifies a requested native response format.
+type LLMResponseFormat string
+
+const (
+	LLMResponseFormatText       LLMResponseFormat = "text"
+	LLMResponseFormatJSON       LLMResponseFormat = "json_object"
+	LLMResponseFormatJSONSchema LLMResponseFormat = "json_schema"
+)
+
+// LLMStructuredOutput describes a native JSON Schema response constraint.
+// Strict is a pointer so callers can distinguish strict=false from an omitted
+// preference and providers can preserve the exact request semantics.
+type LLMStructuredOutput struct {
+	Name        string
+	Description string
+	Schema      map[string]any
+	Strict      *bool
+}
+
+// LLMContentPart is a provider-neutral multimodal input part. Type values
+// supported by the Iris adapter are text, input_text, image, input_image,
+// file, and input_file.
+type LLMContentPart struct {
+	Type     string
+	Text     string
+	URL      string
+	FileID   string
+	Data     string
+	Filename string
+	Detail   string
+}
+
+// LLMArtifactReference identifies a file/artifact that can be supplied as
+// multimodal model input. Exactly one of ID or URI should be set.
+type LLMArtifactReference struct {
+	ID        string
+	URI       string
+	MediaType string
+	Filename  string
+}
+
+// LLMToolDefinition describes a callable function tool exposed to a model.
+type LLMToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+	Strict      *bool
+}
+
+// LLMBuiltInTool identifies an Iris Responses API built-in tool.
+type LLMBuiltInTool struct {
+	Type string
+}
+
+// LLMToolResources contains provider-managed resources used by built-in tools.
+type LLMToolResources struct {
+	FileSearchVectorStoreIDs []string
+}
+
+// LLMSearchOptions configures search-grounded providers.
+type LLMSearchOptions struct {
+	DomainFilter []string
+	Recency      string
+	Mode         string
 }
 
 // LLMRequest is the request structure for LLM completion.
 // It is transport-agnostic and works across different providers.
 type LLMRequest struct {
-	Model        string         // model identifier (e.g., "gpt-4", "claude-3-opus")
-	System       string         // system prompt (Chat Completions API style)
-	Instructions string         // system instructions (Responses API style)
-	Messages     []LLMMessage   // conversation messages
-	InputText    string         // optional: simple prompt mode (converted to user message)
-	JSONSchema   map[string]any // optional: structured output constraints
-	Temperature  *float64       // optional: sampling temperature
-	MaxTokens    *int           // optional: maximum output tokens
-	Meta         map[string]any // trace/cost controls
+	Model                 string            // model identifier (e.g., "gpt-4", "claude-3-opus")
+	System                string            // system prompt (Chat Completions API style)
+	Instructions          string            // system instructions (Responses API style)
+	Messages              []LLMMessage      // conversation messages
+	InputText             string            // optional: simple prompt mode (converted to user message)
+	JSONSchema            map[string]any    // legacy shorthand for structured output
+	JSONSchemaName        string            // optional schema name for JSONSchema
+	JSONSchemaDescription string            // optional schema description
+	JSONSchemaStrict      *bool             // strict preference for JSONSchema
+	ResponseFormat        LLMResponseFormat // text, json_object, or json_schema
+	StructuredOutput      *LLMStructuredOutput
+	Tools                 []LLMToolDefinition
+	BuiltInTools          []LLMBuiltInTool
+	ToolResources         *LLMToolResources
+	ReasoningEffort       string
+	PreviousResponseID    string
+	Truncation            string
+	SearchOptions         *LLMSearchOptions
+	Temperature           *float64       // optional: sampling temperature
+	MaxTokens             *int           // optional: maximum output tokens
+	Meta                  map[string]any // trace/cost controls
 }
 
 // LLMMessage is a chat message in PetalFlow format.
 type LLMMessage struct {
-	Role        string          // "system", "user", "assistant", "tool"
-	Content     string          // message content
-	Name        string          // optional: tool name, agent role, etc.
-	ToolCalls   []LLMToolCall   // for assistant messages with pending tool calls
-	ToolResults []LLMToolResult // for tool result messages (Role="tool")
-	Meta        map[string]any  // optional metadata
+	Role         string                 // "system", "user", "assistant", "tool"
+	Content      string                 // message content
+	Parts        []LLMContentPart       // optional multimodal content parts
+	ArtifactRefs []LLMArtifactReference // optional artifact/file inputs
+	Name         string                 // optional: tool name, agent role, etc.
+	ToolCalls    []LLMToolCall          // for assistant messages with pending tool calls
+	ToolResults  []LLMToolResult        // for tool result messages (Role="tool")
+	Meta         map[string]any         // optional metadata
 }
 
 // LLMResponse captures the output from an LLM call.
 type LLMResponse struct {
-	Text      string              // raw text output
-	JSON      map[string]any      // parsed JSON if structured output was requested
-	Messages  []LLMMessage        // conversation messages including response
-	Usage     LLMTokenUsage       // token consumption
-	Provider  string              // provider ID that handled the request
-	Model     string              // model that generated the response
-	ToolCalls []LLMToolCall       // tool calls requested by the model
-	Reasoning *LLMReasoningOutput // reasoning output from the model (optional)
-	Status    string              // response status (optional)
-	Meta      map[string]any      // additional response metadata
+	Text       string              // raw text output
+	JSON       map[string]any      // object-shaped parsed JSON (legacy compatibility)
+	JSONValue  any                 // parsed JSON for any valid JSON root
+	Messages   []LLMMessage        // conversation messages including response
+	Usage      LLMTokenUsage       // token consumption
+	Provider   string              // provider ID that handled the request
+	Model      string              // model that generated the response
+	ToolCalls  []LLMToolCall       // tool calls requested by the model
+	Reasoning  *LLMReasoningOutput // reasoning output from the model (optional)
+	Status     string              // response status (optional)
+	ResponseID string              // provider response identifier
+	Citations  []string            // source URLs reported by the provider
+	Meta       map[string]any      // additional response metadata
 }
 
 // LLMTokenUsage tracks token consumption for LLM calls.

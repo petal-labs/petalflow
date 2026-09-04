@@ -47,6 +47,17 @@ func (a *irisAdapter) toRequest(req core.LLMRequest) *iriscore.ChatRequest {
 			Role:    toIrisRole(m.Role),
 			Content: m.Content,
 		}
+		for _, part := range m.Parts {
+			if mapped, ok := toIrisContentPart(part); ok {
+				msg.Parts = append(msg.Parts, mapped)
+			}
+		}
+		for _, artifact := range m.ArtifactRefs {
+			if (artifact.ID == "") == (artifact.URI == "") {
+				continue
+			}
+			msg.Parts = append(msg.Parts, iriscore.InputFile{FileID: artifact.ID, FileURL: artifact.URI, Filename: artifact.Filename})
+		}
 
 		if len(m.ToolCalls) > 0 {
 			msg.ToolCalls = make([]iriscore.ToolCall, len(m.ToolCalls))
@@ -82,9 +93,12 @@ func (a *irisAdapter) toRequest(req core.LLMRequest) *iriscore.ChatRequest {
 	}
 
 	chatReq := &iriscore.ChatRequest{
-		Model:        iriscore.ModelID(req.Model),
-		Messages:     messages,
-		Instructions: req.Instructions,
+		Model:              iriscore.ModelID(req.Model),
+		Messages:           messages,
+		Instructions:       req.Instructions,
+		ReasoningEffort:    iriscore.ReasoningEffort(req.ReasoningEffort),
+		PreviousResponseID: req.PreviousResponseID,
+		Truncation:         req.Truncation,
 	}
 
 	if req.Temperature != nil {
@@ -95,16 +109,96 @@ func (a *irisAdapter) toRequest(req core.LLMRequest) *iriscore.ChatRequest {
 		chatReq.MaxTokens = req.MaxTokens
 	}
 
+	if req.ResponseFormat == core.LLMResponseFormatJSON {
+		chatReq.ResponseFormat = iriscore.ResponseFormatJSON
+	}
+	if req.StructuredOutput != nil || req.JSONSchema != nil {
+		structured := req.StructuredOutput
+		if structured == nil {
+			structured = &core.LLMStructuredOutput{
+				Name: req.JSONSchemaName, Description: req.JSONSchemaDescription,
+				Schema: req.JSONSchema, Strict: req.JSONSchemaStrict,
+			}
+		}
+		name := structured.Name
+		if name == "" {
+			name = "petalflow_output"
+		}
+		strict := false
+		if structured.Strict != nil {
+			strict = *structured.Strict
+		}
+		schema, _ := json.Marshal(structured.Schema)
+		chatReq.ResponseFormat = iriscore.ResponseFormatJSONSchema
+		chatReq.JSONSchema = &iriscore.JSONSchemaDefinition{
+			Name: name, Description: structured.Description, Schema: schema, Strict: strict,
+		}
+	}
+	for _, tool := range req.Tools {
+		chatReq.Tools = append(chatReq.Tools, requestTool{definition: tool})
+	}
+	for _, tool := range req.BuiltInTools {
+		chatReq.BuiltInTools = append(chatReq.BuiltInTools, iriscore.BuiltInTool{Type: tool.Type})
+	}
+	if req.ToolResources != nil {
+		chatReq.ToolResources = &iriscore.ToolResources{FileSearch: &iriscore.FileSearchResources{
+			VectorStoreIDs: append([]string(nil), req.ToolResources.FileSearchVectorStoreIDs...),
+		}}
+	}
+	if req.SearchOptions != nil {
+		chatReq.SearchOptions = &iriscore.SearchOptions{
+			SearchDomainFilter: append([]string(nil), req.SearchOptions.DomainFilter...),
+			Recency:            iriscore.SearchRecencyFilter(req.SearchOptions.Recency),
+			Mode:               iriscore.SearchMode(req.SearchOptions.Mode),
+		}
+	}
+
 	return chatReq
+}
+
+func toIrisContentPart(part core.LLMContentPart) (iriscore.ContentPart, bool) {
+	switch part.Type {
+	case "text", "input_text":
+		return iriscore.InputText{Text: part.Text}, true
+	case "image", "input_image":
+		if (part.URL == "") == (part.FileID == "") {
+			return nil, false
+		}
+		return iriscore.InputImage{ImageURL: part.URL, FileID: part.FileID, Detail: iriscore.ImageDetail(part.Detail)}, true
+	case "file", "input_file":
+		sources := 0
+		for _, source := range []string{part.URL, part.FileID, part.Data} {
+			if source != "" {
+				sources++
+			}
+		}
+		if sources != 1 {
+			return nil, false
+		}
+		return iriscore.InputFile{FileURL: part.URL, FileID: part.FileID, FileData: part.Data, Filename: part.Filename}, true
+	default:
+		return nil, false
+	}
+}
+
+type requestTool struct{ definition core.LLMToolDefinition }
+
+func (t requestTool) Name() string        { return t.definition.Name }
+func (t requestTool) Description() string { return t.definition.Description }
+func (t requestTool) Schema() iriscore.ToolSchema {
+	data, _ := json.Marshal(t.definition.Parameters)
+	return iriscore.ToolSchema{JSONSchema: data}
 }
 
 // fromResponse converts an iris ChatResponse to a core.LLMResponse.
 func (a *irisAdapter) fromResponse(resp *iriscore.ChatResponse, req core.LLMRequest) core.LLMResponse {
 	result := core.LLMResponse{
-		Text:     resp.Output,
-		Provider: a.provider.ID(),
-		Model:    string(resp.Model),
-		Status:   resp.Status,
+		Text:       resp.Output,
+		Provider:   a.provider.ID(),
+		Model:      string(resp.Model),
+		Status:     resp.Status,
+		ResponseID: resp.ID,
+		Citations:  append([]string(nil), resp.Citations...),
 		Usage: core.LLMTokenUsage{
 			InputTokens:  resp.Usage.PromptTokens,
 			OutputTokens: resp.Usage.CompletionTokens,
@@ -115,6 +209,9 @@ func (a *irisAdapter) fromResponse(resp *iriscore.ChatResponse, req core.LLMRequ
 
 	if resp.ID != "" {
 		result.Meta["response_id"] = resp.ID
+	}
+	if len(resp.Citations) > 0 {
+		result.Meta["citations"] = append([]string(nil), resp.Citations...)
 	}
 
 	if resp.Reasoning != nil {
@@ -140,9 +237,23 @@ func (a *irisAdapter) fromResponse(resp *iriscore.ChatResponse, req core.LLMRequ
 	}
 
 	if req.JSONSchema != nil && resp.Output != "" {
-		var jsonOutput map[string]any
+		var jsonOutput any
 		if err := json.Unmarshal([]byte(resp.Output), &jsonOutput); err == nil {
-			result.JSON = jsonOutput
+			result.JSONValue = jsonOutput
+			if object, ok := jsonOutput.(map[string]any); ok {
+				result.JSON = object
+			}
+		}
+	}
+	if req.StructuredOutput != nil || req.ResponseFormat == core.LLMResponseFormatJSON || req.ResponseFormat == core.LLMResponseFormatJSONSchema {
+		if result.JSONValue == nil && resp.Output != "" {
+			var jsonOutput any
+			if err := json.Unmarshal([]byte(resp.Output), &jsonOutput); err == nil {
+				result.JSONValue = jsonOutput
+				if object, ok := jsonOutput.(map[string]any); ok {
+					result.JSON = object
+				}
+			}
 		}
 	}
 
@@ -184,6 +295,9 @@ func (a *irisAdapter) CompleteStream(ctx context.Context, req core.LLMRequest) (
 	if err != nil {
 		return nil, fmt.Errorf("provider stream chat failed: %w", err)
 	}
+	if stream == nil {
+		return nil, fmt.Errorf("provider stream chat returned a nil stream")
+	}
 
 	out := make(chan core.StreamChunk, 1)
 
@@ -220,40 +334,96 @@ func (a *irisAdapter) CompleteStream(ctx context.Context, req core.LLMRequest) (
 			return
 		}
 
-		select {
-		case err, ok := <-stream.Err:
-			if ok && err != nil {
-				out <- core.StreamChunk{
-					Error: err,
-					Done:  true,
-				}
-				return
-			}
-		default:
+		streamErr, finalResp := waitForMetadata(ctx, stream)
+		if streamErr != nil {
+			out <- core.StreamChunk{Error: streamErr, Done: true, Index: index, Accumulated: accumulated.String()}
+			return
 		}
 
-		var finalChunk core.StreamChunk
+		finalChunk := streamChunkFromResponse(finalResp, a.provider.ID(), req)
 		finalChunk.Done = true
 		finalChunk.Index = index
 		finalChunk.Accumulated = accumulated.String()
-
-		select {
-		case resp, ok := <-stream.Final:
-			if ok && resp != nil {
-				finalChunk.Usage = &core.LLMTokenUsage{
-					InputTokens:  resp.Usage.PromptTokens,
-					OutputTokens: resp.Usage.CompletionTokens,
-					TotalTokens:  resp.Usage.TotalTokens,
-				}
-			}
-		case <-ctx.Done():
-			finalChunk.Error = ctx.Err()
-		}
 
 		out <- finalChunk
 	}()
 
 	return out, nil
+}
+
+func waitForMetadata(ctx context.Context, stream *iriscore.ChatStream) (error, *iriscore.ChatResponse) {
+	errResolved := false
+	finalResolved := false
+	var streamErr error
+	var response *iriscore.ChatResponse
+	for !errResolved || !finalResolved {
+		var errCh <-chan error
+		if !errResolved {
+			errCh = stream.Err
+		}
+		var finalCh <-chan *iriscore.ChatResponse
+		if !finalResolved {
+			finalCh = stream.Final
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err(), nil
+		case err, ok := <-errCh:
+			errResolved = true
+			if ok && err != nil {
+				streamErr = err
+			}
+		case resp, ok := <-finalCh:
+			finalResolved = true
+			if ok {
+				response = resp
+			}
+		}
+	}
+	return streamErr, response
+}
+
+func streamChunkFromResponse(resp *iriscore.ChatResponse, provider string, req core.LLMRequest) core.StreamChunk {
+	chunk := core.StreamChunk{Provider: provider}
+	if resp == nil {
+		return chunk
+	}
+	converted := (&irisAdapter{provider: &responseProvider{response: resp, id: provider}}).fromResponse(resp, req)
+	chunk.Response = &converted
+	chunk.ResponseID = resp.ID
+	chunk.Model = string(resp.Model)
+	chunk.Status = resp.Status
+	chunk.Citations = append([]string(nil), resp.Citations...)
+	chunk.Reasoning = converted.Reasoning
+	chunk.ToolCalls = converted.ToolCalls
+	if resp.ID != "" || len(resp.Citations) > 0 {
+		chunk.Meta = make(map[string]any)
+		if resp.ID != "" {
+			chunk.Meta["response_id"] = resp.ID
+		}
+		if len(resp.Citations) > 0 {
+			chunk.Meta["citations"] = append([]string(nil), resp.Citations...)
+		}
+	}
+	if resp.Usage != (iriscore.TokenUsage{}) {
+		chunk.Usage = &core.LLMTokenUsage{InputTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens}
+	}
+	return chunk
+}
+
+type responseProvider struct {
+	response *iriscore.ChatResponse
+	id       string
+}
+
+func (p *responseProvider) ID() string                     { return p.id }
+func (p *responseProvider) Models() []iriscore.ModelInfo   { return nil }
+func (p *responseProvider) Supports(iriscore.Feature) bool { return true }
+func (p *responseProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
+	return p.response, nil
+}
+func (p *responseProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+	return nil, nil
 }
 
 // Compile-time interface check.

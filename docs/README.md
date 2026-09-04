@@ -8,3 +8,4 @@ This folder contains practical, repository-local documentation for developers.
 - [`tools-cli.md`](./tools-cli.md): Register, configure, inspect, and test tools from the CLI
 - [`mcp-overlay.md`](./mcp-overlay.md): Customize discovered MCP actions with overlays
 - [`operations.md`](./operations.md): Storage, security, retries, scheduling, and release checks
+- [`iris-compatibility.md`](./iris-compatibility.md): Iris 1.0 capability contract and provider matrix
