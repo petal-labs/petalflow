@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 )
@@ -22,6 +23,19 @@ func TestBearerTokenAuthenticatorUsesConstantTimeValidation(t *testing.T) {
 	if _, err := auth(req); err == nil {
 		t.Fatal("expected invalid token error")
 	}
+	for _, authorization := range []string{"", "Basic secret-token", "Bearer"} {
+		req.Header.Set("Authorization", authorization)
+		if _, err := auth(req); err == nil {
+			t.Errorf("authorization %q was accepted", authorization)
+		}
+	}
+	if _, err := BearerTokenAuthenticator("", Identity{Subject: "u", TenantID: "t"})(req); err == nil {
+		t.Fatal("empty configured token was accepted")
+	}
+	req.Header.Set("Authorization", "Bearer token")
+	if _, err := BearerTokenAuthenticator("token", Identity{})(req); err == nil {
+		t.Fatal("incomplete identity was accepted")
+	}
 }
 
 func TestIdentityContextClonesRoles(t *testing.T) {
@@ -32,5 +46,18 @@ func TestIdentityContextClonesRoles(t *testing.T) {
 	got, ok := IdentityFromContext(ctx)
 	if !ok || got.Roles[0] != "reader" {
 		t.Fatalf("identity from context = %#v, want isolated roles", got)
+	}
+}
+
+func TestIdentityHelpers(t *testing.T) {
+	identity := Identity{Subject: "user", TenantID: "tenant", Roles: []string{"reader"}}
+	if !identity.HasRole("reader") || identity.HasRole("admin") {
+		t.Fatal("HasRole returned an incorrect result")
+	}
+	if got := identity.String(); got != "tenant/user" {
+		t.Fatalf("String() = %q, want tenant/user", got)
+	}
+	if _, ok := IdentityFromContext(context.Background()); ok {
+		t.Fatal("IdentityFromContext found an identity in a plain context")
 	}
 }
