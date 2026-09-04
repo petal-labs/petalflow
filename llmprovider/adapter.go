@@ -192,9 +192,13 @@ func (t requestTool) Schema() iriscore.ToolSchema {
 
 // fromResponse converts an iris ChatResponse to a core.LLMResponse.
 func (a *irisAdapter) fromResponse(resp *iriscore.ChatResponse, req core.LLMRequest) core.LLMResponse {
+	return responseFromIris(resp, req, a.provider.ID())
+}
+
+func responseFromIris(resp *iriscore.ChatResponse, req core.LLMRequest, provider string) core.LLMResponse {
 	result := core.LLMResponse{
 		Text:       resp.Output,
-		Provider:   a.provider.ID(),
+		Provider:   provider,
 		Model:      string(resp.Model),
 		Status:     resp.Status,
 		ResponseID: resp.ID,
@@ -334,7 +338,7 @@ func (a *irisAdapter) CompleteStream(ctx context.Context, req core.LLMRequest) (
 			return
 		}
 
-		streamErr, finalResp := waitForMetadata(ctx, stream)
+		finalResp, streamErr := waitForMetadata(ctx, stream)
 		if streamErr != nil {
 			out <- core.StreamChunk{Error: streamErr, Done: true, Index: index, Accumulated: accumulated.String()}
 			return
@@ -351,7 +355,7 @@ func (a *irisAdapter) CompleteStream(ctx context.Context, req core.LLMRequest) (
 	return out, nil
 }
 
-func waitForMetadata(ctx context.Context, stream *iriscore.ChatStream) (error, *iriscore.ChatResponse) {
+func waitForMetadata(ctx context.Context, stream *iriscore.ChatStream) (*iriscore.ChatResponse, error) {
 	errResolved := false
 	finalResolved := false
 	var streamErr error
@@ -367,7 +371,7 @@ func waitForMetadata(ctx context.Context, stream *iriscore.ChatStream) (error, *
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err(), nil
+			return nil, ctx.Err()
 		case err, ok := <-errCh:
 			errResolved = true
 			if ok && err != nil {
@@ -380,7 +384,7 @@ func waitForMetadata(ctx context.Context, stream *iriscore.ChatStream) (error, *
 			}
 		}
 	}
-	return streamErr, response
+	return response, streamErr
 }
 
 func streamChunkFromResponse(resp *iriscore.ChatResponse, provider string, req core.LLMRequest) core.StreamChunk {
@@ -388,7 +392,7 @@ func streamChunkFromResponse(resp *iriscore.ChatResponse, provider string, req c
 	if resp == nil {
 		return chunk
 	}
-	converted := (&irisAdapter{provider: &responseProvider{response: resp, id: provider}}).fromResponse(resp, req)
+	converted := responseFromIris(resp, req, provider)
 	chunk.Response = &converted
 	chunk.ResponseID = resp.ID
 	chunk.Model = string(resp.Model)
@@ -409,21 +413,6 @@ func streamChunkFromResponse(resp *iriscore.ChatResponse, provider string, req c
 		chunk.Usage = &core.LLMTokenUsage{InputTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.CompletionTokens, TotalTokens: resp.Usage.TotalTokens}
 	}
 	return chunk
-}
-
-type responseProvider struct {
-	response *iriscore.ChatResponse
-	id       string
-}
-
-func (p *responseProvider) ID() string                     { return p.id }
-func (p *responseProvider) Models() []iriscore.ModelInfo   { return nil }
-func (p *responseProvider) Supports(iriscore.Feature) bool { return true }
-func (p *responseProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
-	return p.response, nil
-}
-func (p *responseProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
-	return nil, nil
 }
 
 // Compile-time interface check.
