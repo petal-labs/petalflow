@@ -65,6 +65,30 @@ type (
 	// StreamChunk is a partial response from the LLM.
 	StreamChunk = core.StreamChunk
 
+	// LLMResponseFormat identifies a native response format.
+	LLMResponseFormat = core.LLMResponseFormat
+
+	// LLMStructuredOutput describes a JSON Schema response constraint.
+	LLMStructuredOutput = core.LLMStructuredOutput
+
+	// LLMContentPart is a provider-neutral multimodal input part.
+	LLMContentPart = core.LLMContentPart
+
+	// LLMArtifactReference identifies a file/artifact model input.
+	LLMArtifactReference = core.LLMArtifactReference
+
+	// LLMToolDefinition describes a callable model tool.
+	LLMToolDefinition = core.LLMToolDefinition
+
+	// LLMBuiltInTool identifies a Responses API built-in tool.
+	LLMBuiltInTool = core.LLMBuiltInTool
+
+	// LLMToolResources contains built-in tool resources.
+	LLMToolResources = core.LLMToolResources
+
+	// LLMSearchOptions configures search-grounded providers.
+	LLMSearchOptions = core.LLMSearchOptions
+
 	// LLMRequest is the request structure for LLM completion.
 	LLMRequest = core.LLMRequest
 
@@ -122,6 +146,10 @@ type (
 
 // NodeKind constants
 const (
+	LLMResponseFormatText       = core.LLMResponseFormatText
+	LLMResponseFormatJSON       = core.LLMResponseFormatJSON
+	LLMResponseFormatJSONSchema = core.LLMResponseFormatJSONSchema
+
 	NodeKindLLM            = core.NodeKindLLM
 	NodeKindTool           = core.NodeKindTool
 	NodeKindRouter         = core.NodeKindRouter

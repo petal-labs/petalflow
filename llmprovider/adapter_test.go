@@ -259,6 +259,194 @@ func TestComplete_JSONSchema(t *testing.T) {
 	}
 }
 
+func TestComplete_CompatibilityFields(t *testing.T) {
+	strict := true
+	mock := &mockProvider{
+		id: "test",
+		chatResponse: &iriscore.ChatResponse{
+			ID: "resp-compat", Model: "model", Output: `{"ok":true}`,
+			Status: "completed", Citations: []string{"https://example.test/source"},
+			Reasoning: &iriscore.ReasoningOutput{ID: "reason-compat", Summary: []string{"summary"}},
+		},
+	}
+	adapter := &irisAdapter{provider: mock}
+
+	response, err := adapter.Complete(context.Background(), core.LLMRequest{
+		Model: "model", Instructions: "Be precise.",
+		ResponseFormat: core.LLMResponseFormatJSONSchema,
+		StructuredOutput: &core.LLMStructuredOutput{
+			Name: "result", Description: "A result", Schema: map[string]any{"type": "object"}, Strict: &strict,
+		},
+		Tools:           []core.LLMToolDefinition{{Name: "lookup", Description: "Look up a value", Parameters: map[string]any{"type": "object"}}},
+		BuiltInTools:    []core.LLMBuiltInTool{{Type: "web_search"}},
+		ToolResources:   &core.LLMToolResources{FileSearchVectorStoreIDs: []string{"vs-1"}},
+		ReasoningEffort: "high", PreviousResponseID: "resp-previous", Truncation: "auto",
+		SearchOptions: &core.LLMSearchOptions{DomainFilter: []string{"example.test"}, Recency: "day", Mode: "web"},
+		Messages: []core.LLMMessage{{
+			Role: "user", Parts: []core.LLMContentPart{{Type: "input_text", Text: "Find it"}},
+			ArtifactRefs: []core.LLMArtifactReference{{ID: "file-1", Filename: "source.txt"}},
+			ToolCalls:    []core.LLMToolCall{{ID: "call-1", Name: "lookup", Arguments: map[string]any{"q": "x"}}},
+			ToolResults:  []core.LLMToolResult{{CallID: "call-1", Content: "value"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	request := mock.capturedReq
+	if request == nil {
+		t.Fatal("provider did not receive a request")
+	}
+	if request.ResponseFormat != iriscore.ResponseFormatJSONSchema || request.JSONSchema == nil || !request.JSONSchema.Strict {
+		t.Fatalf("structured output was not mapped: %+v", request.JSONSchema)
+	}
+	if request.JSONSchema.Name != "result" || request.JSONSchema.Description != "A result" {
+		t.Fatalf("schema metadata was not mapped: %+v", request.JSONSchema)
+	}
+	if len(request.Tools) != 1 || request.Tools[0].Name() != "lookup" {
+		t.Fatalf("tools were not mapped: %#v", request.Tools)
+	}
+	if len(request.BuiltInTools) != 1 || request.BuiltInTools[0].Type != "web_search" || request.ToolResources == nil {
+		t.Fatalf("built-in tool fields were not mapped: %+v", request)
+	}
+	if request.PreviousResponseID != "resp-previous" || request.ReasoningEffort != iriscore.ReasoningEffortHigh || request.Truncation != "auto" {
+		t.Fatalf("Responses fields were not mapped: %+v", request)
+	}
+	if request.SearchOptions == nil || request.SearchOptions.Recency != iriscore.SearchRecencyDay || len(request.Messages[0].Parts) != 2 {
+		t.Fatalf("search/content fields were not mapped: %+v", request)
+	}
+	if len(request.Messages[0].ToolCalls) != 1 || len(request.Messages[0].ToolResults) != 1 || len(request.Messages[0].Parts) != 2 {
+		t.Fatalf("message tools and artifacts were not mapped: %+v", request.Messages[0])
+	}
+	if response.ResponseID != "resp-compat" || response.Status != "completed" || len(response.Citations) != 1 || response.Reasoning == nil {
+		t.Fatalf("response metadata was not preserved: %+v", response)
+	}
+	if response.JSONValue == nil || response.JSON["ok"] != true {
+		t.Fatalf("structured response was not parsed: JSON=%v value=%v", response.JSON, response.JSONValue)
+	}
+}
+
+func TestComplete_StructuredOutputSupportsAnyJSONRoot(t *testing.T) {
+	mock := &mockProvider{id: "test", chatResponse: &iriscore.ChatResponse{Output: `["a", 2, true]`}}
+	adapter := &irisAdapter{provider: mock}
+
+	response, err := adapter.Complete(context.Background(), core.LLMRequest{
+		Model: "model", JSONSchema: map[string]any{"type": "array"},
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	values, ok := response.JSONValue.([]any)
+	if !ok || len(values) != 3 || values[1] != float64(2) {
+		t.Fatalf("JSONValue = %#v, want decoded array", response.JSONValue)
+	}
+	if response.JSON != nil {
+		t.Fatalf("legacy JSON map should be nil for array output: %#v", response.JSON)
+	}
+}
+
+func TestComplete_JSONResponseFormatParsesObject(t *testing.T) {
+	mock := &mockProvider{id: "test", chatResponse: &iriscore.ChatResponse{Output: `{"ok":true}`}}
+	adapter := &irisAdapter{provider: mock}
+
+	response, err := adapter.Complete(context.Background(), core.LLMRequest{
+		Model: "model", ResponseFormat: core.LLMResponseFormatJSON,
+	})
+	if err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if response.JSONValue == nil || response.JSON["ok"] != true {
+		t.Fatalf("JSON response was not parsed: JSON=%v value=%v", response.JSON, response.JSONValue)
+	}
+	if mock.capturedReq.ResponseFormat != iriscore.ResponseFormatJSON {
+		t.Fatalf("response format = %q, want JSON", mock.capturedReq.ResponseFormat)
+	}
+}
+
+func TestResponseFromIris_InvalidJSONIsIgnored(t *testing.T) {
+	response := responseFromIris(&iriscore.ChatResponse{
+		Output:    "not-json",
+		ToolCalls: []iriscore.ToolCall{{ID: "call-1", Name: "lookup", Arguments: []byte("not-json")}},
+	}, core.LLMRequest{ResponseFormat: core.LLMResponseFormatJSON}, "test")
+	if response.JSONValue != nil || response.JSON != nil {
+		t.Fatalf("invalid JSON should not populate structured output: %+v", response)
+	}
+	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Arguments == nil {
+		t.Fatalf("tool call should still be represented: %+v", response.ToolCalls)
+	}
+}
+
+func TestCompleteStream_PreservesResponseMetadata(t *testing.T) {
+	streaming := &streamingMockProvider{
+		mockProvider: mockProvider{id: "test"},
+		streamFn: func(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+			return newMockStream([]string{"answer"}, &iriscore.ChatResponse{
+				ID: "resp-stream", Model: "model", Status: "completed",
+				Citations: []string{"https://example.test/source"},
+				Reasoning: &iriscore.ReasoningOutput{ID: "reason-stream", Summary: []string{"summary"}},
+				ToolCalls: []iriscore.ToolCall{{ID: "call-1", Name: "lookup", Arguments: []byte(`{"q":"x"}`)}},
+			}, nil), nil
+		},
+	}
+	adapter := &irisAdapter{provider: streaming}
+	chunks, err := adapter.CompleteStream(context.Background(), core.LLMRequest{Model: "model", InputText: "answer"})
+	if err != nil {
+		t.Fatalf("CompleteStream() error = %v", err)
+	}
+	var final core.StreamChunk
+	for chunk := range chunks {
+		if chunk.Done {
+			final = chunk
+		}
+	}
+	if final.ResponseID != "resp-stream" || final.Status != "completed" || final.Model != "model" || final.Provider != "test" {
+		t.Fatalf("stream metadata = %+v", final)
+	}
+	if final.Response == nil || final.Response.ResponseID != final.ResponseID || final.Reasoning == nil || len(final.ToolCalls) != 1 || len(final.Citations) != 1 {
+		t.Fatalf("stream response fields = %+v", final)
+	}
+}
+
+func TestToIrisContentPart(t *testing.T) {
+	tests := []struct {
+		name   string
+		part   core.LLMContentPart
+		valid  bool
+		typeID string
+	}{
+		{name: "text", part: core.LLMContentPart{Type: "text", Text: "hello"}, valid: true, typeID: "input_text"},
+		{name: "image url", part: core.LLMContentPart{Type: "image", URL: "https://example.test/a.png"}, valid: true, typeID: "input_image"},
+		{name: "image file", part: core.LLMContentPart{Type: "input_image", FileID: "file-1"}, valid: true, typeID: "input_image"},
+		{name: "file url", part: core.LLMContentPart{Type: "file", URL: "https://example.test/a.pdf"}, valid: true, typeID: "input_file"},
+		{name: "file id", part: core.LLMContentPart{Type: "input_file", FileID: "file-1"}, valid: true, typeID: "input_file"},
+		{name: "file data", part: core.LLMContentPart{Type: "file", Data: "base64", Filename: "a.txt"}, valid: true, typeID: "input_file"},
+		{name: "multiple sources", part: core.LLMContentPart{Type: "file", URL: "url", FileID: "id"}},
+		{name: "unknown", part: core.LLMContentPart{Type: "audio"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mapped, ok := toIrisContentPart(tt.part)
+			if ok != tt.valid {
+				t.Fatalf("valid = %v, want %v", ok, tt.valid)
+			}
+			if ok && mapped.ContentType() != tt.typeID {
+				t.Errorf("content type = %q, want %q", mapped.ContentType(), tt.typeID)
+			}
+		})
+	}
+}
+
+func TestRequestTool(t *testing.T) {
+	tool := requestTool{definition: core.LLMToolDefinition{
+		Name: "lookup", Description: "Look up a value", Parameters: map[string]any{"type": "object"},
+	}}
+	if tool.Description() != "Look up a value" {
+		t.Errorf("Description() = %q", tool.Description())
+	}
+	if string(tool.Schema().JSONSchema) != `{"type":"object"}` {
+		t.Errorf("Schema() = %s", tool.Schema().JSONSchema)
+	}
+}
+
 func TestComplete_MessagesPassthrough(t *testing.T) {
 	mock := &mockProvider{
 		id:           "test",
@@ -464,6 +652,21 @@ func TestCompleteStream_SetupError(t *testing.T) {
 	}
 	if !errors.Is(err, expectedErr) {
 		t.Errorf("expected wrapped error to contain %v, got %v", expectedErr, err)
+	}
+}
+
+func TestCompleteStream_NilStream(t *testing.T) {
+	mock := &streamingMockProvider{
+		mockProvider: mockProvider{id: "mock"},
+		streamFn: func(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+			return nil, nil
+		},
+	}
+	adapter := &irisAdapter{provider: mock}
+
+	_, err := adapter.CompleteStream(context.Background(), core.LLMRequest{Model: "mock-model"})
+	if err == nil || err.Error() != "provider stream chat returned a nil stream" {
+		t.Fatalf("CompleteStream() error = %v", err)
 	}
 }
 
