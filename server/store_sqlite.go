@@ -19,6 +19,7 @@ const workflowSQLiteSchema = `
 CREATE TABLE IF NOT EXISTS workflows (
 	seq INTEGER PRIMARY KEY AUTOINCREMENT,
 	id TEXT NOT NULL UNIQUE,
+	tenant_id TEXT NOT NULL DEFAULT '',
 	schema_kind TEXT NOT NULL,
 	name TEXT,
 	source BLOB NOT NULL,
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS workflows (
 CREATE TABLE IF NOT EXISTS workflow_schedules (
 	id TEXT PRIMARY KEY,
 	workflow_id TEXT NOT NULL,
+	tenant_id TEXT NOT NULL DEFAULT '',
 	cron_expr TEXT NOT NULL,
 	enabled INTEGER NOT NULL DEFAULT 1,
 	input_json BLOB NOT NULL,
@@ -113,6 +115,19 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	for table := range map[string]bool{"workflows": true, "workflow_schedules": true} {
+		columns, err := sqliteTableColumns(db, table)
+		if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		if !columns["tenant_id"] {
+			if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''"); err != nil {
+				_ = db.Close()
+				return nil, fmt.Errorf("workflow sqlite store add tenant column: %w", err)
+			}
+		}
+	}
 	workflowColumns, err := sqliteTableColumns(db, "workflows")
 	if err != nil {
 		_ = db.Close()
@@ -129,7 +144,7 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) List(ctx context.Context) ([]WorkflowRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at
+SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
 FROM workflows
 ORDER BY seq ASC`)
 	if err != nil {
@@ -155,7 +170,7 @@ ORDER BY seq ASC`)
 
 func (s *SQLiteStore) Get(ctx context.Context, id string) (WorkflowRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at
+SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
 FROM workflows
 WHERE id = ?`, id)
 
@@ -210,6 +225,9 @@ func (s *SQLiteStore) Create(ctx context.Context, rec WorkflowRecord) error {
 		}
 		return fmt.Errorf("workflow sqlite store create: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = ? WHERE id = ?", rec.TenantID, rec.ID); err != nil {
+		return fmt.Errorf("workflow sqlite store set tenant: %w", err)
+	}
 	return nil
 }
 
@@ -256,6 +274,9 @@ func (s *SQLiteStore) Update(ctx context.Context, rec WorkflowRecord) error {
 	if affected == 0 {
 		return ErrWorkflowNotFound
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = ? WHERE id = ?", rec.TenantID, rec.ID); err != nil {
+		return fmt.Errorf("workflow sqlite store set tenant: %w", err)
+	}
 	return nil
 }
 
@@ -277,7 +298,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 
 func (s *SQLiteStore) ListSchedules(ctx context.Context, workflowID string) ([]WorkflowSchedule, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at
+SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
 FROM workflow_schedules
 WHERE workflow_id = ?
 ORDER BY created_at ASC`, workflowID)
@@ -302,7 +323,7 @@ ORDER BY created_at ASC`, workflowID)
 
 func (s *SQLiteStore) GetSchedule(ctx context.Context, workflowID, scheduleID string) (WorkflowSchedule, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at
+SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
 FROM workflow_schedules
 WHERE workflow_id = ? AND id = ?`, workflowID, scheduleID)
 
@@ -364,6 +385,9 @@ VALUES
 		}
 		return fmt.Errorf("workflow sqlite store create schedule: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = ? WHERE id = ?", schedule.TenantID, schedule.ID); err != nil {
+		return fmt.Errorf("workflow sqlite store set schedule tenant: %w", err)
+	}
 	return nil
 }
 
@@ -424,6 +448,9 @@ WHERE workflow_id = ? AND id = ?`,
 	if affected == 0 {
 		return ErrWorkflowScheduleNotFound
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = ? WHERE workflow_id = ? AND id = ?", schedule.TenantID, schedule.WorkflowID, schedule.ID); err != nil {
+		return fmt.Errorf("workflow sqlite store set schedule tenant: %w", err)
+	}
 	return nil
 }
 
@@ -456,7 +483,7 @@ WHERE workflow_id = ?`, workflowID); err != nil {
 
 func (s *SQLiteStore) ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]WorkflowSchedule, error) {
 	query := `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at
+SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
 FROM workflow_schedules
 WHERE enabled = 1 AND next_run_at <= ?
 ORDER BY next_run_at ASC`
@@ -522,8 +549,9 @@ func scanWorkflowRecord(scanner workflowScanner) (WorkflowRecord, error) {
 		compRaw   []byte
 		createdAt string
 		updatedAt string
+		tenantID  string
 	)
-	if err := scanner.Scan(&id, &kind, &name, &sourceRaw, &compRaw, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&id, &kind, &name, &sourceRaw, &compRaw, &createdAt, &updatedAt, &tenantID); err != nil {
 		return WorkflowRecord{}, err
 	}
 
@@ -538,6 +566,7 @@ func scanWorkflowRecord(scanner workflowScanner) (WorkflowRecord, error) {
 
 	rec := WorkflowRecord{
 		ID:         id,
+		TenantID:   tenantID,
 		SchemaKind: loader.SchemaKind(kind),
 		Name:       name.String,
 		Source:     json.RawMessage(append([]byte(nil), sourceRaw...)),
@@ -571,6 +600,7 @@ func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
 		lastError  sql.NullString
 		createdAt  string
 		updatedAt  string
+		tenantID   string
 	)
 	if err := scanner.Scan(
 		&id,
@@ -586,6 +616,7 @@ func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
 		&lastError,
 		&createdAt,
 		&updatedAt,
+		&tenantID,
 	); err != nil {
 		return WorkflowSchedule{}, err
 	}
@@ -623,6 +654,7 @@ func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
 
 	return WorkflowSchedule{
 		ID:         id,
+		TenantID:   tenantID,
 		WorkflowID: workflowID,
 		Cron:       cronExpr,
 		Enabled:    enabledRaw == 1,

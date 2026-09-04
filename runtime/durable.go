@@ -41,6 +41,7 @@ var (
 	ErrPendingCompleted   = errors.New("pending action already completed")
 	ErrHumanPending       = errors.New("run is waiting for human input")
 	ErrWorkflowVersion    = errors.New("workflow version does not match run")
+	ErrTenantMismatch     = errors.New("tenant does not match run")
 	ErrInvalidResumeToken = errors.New("invalid resume token")
 )
 
@@ -90,6 +91,7 @@ type PendingAction struct {
 // by a late worker result.
 type RunRecord struct {
 	ID              string         `json:"id"`
+	TenantID        string         `json:"tenant_id,omitempty"`
 	WorkflowID      string         `json:"workflow_id,omitempty"`
 	WorkflowVersion string         `json:"workflow_version,omitempty"`
 	IdempotencyKey  string         `json:"idempotency_key,omitempty"`

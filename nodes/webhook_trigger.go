@@ -24,13 +24,17 @@ type WebhookAuthType string
 const (
 	WebhookAuthTypeNone        WebhookAuthType = "none"
 	WebhookAuthTypeHeaderToken WebhookAuthType = "header_token"
+	WebhookAuthTypeHMACSHA256  WebhookAuthType = "hmac_sha256"
 )
 
 // WebhookTriggerAuthConfig configures trigger authentication behavior.
 type WebhookTriggerAuthConfig struct {
-	Type   WebhookAuthType
-	Header string
-	Token  string
+	Type            WebhookAuthType
+	Header          string
+	Token           string
+	SignatureHeader string
+	TimestampHeader string
+	ReplayWindow    time.Duration
 }
 
 // WebhookTriggerNodeConfig configures a WebhookTriggerNode.
@@ -62,6 +66,9 @@ func ParseWebhookTriggerConfig(m map[string]any) (WebhookTriggerNodeConfig, erro
 			Header: strings.TrimSpace(webhookConfigMapString(authRaw, "header")),
 			Token:  strings.TrimSpace(webhookConfigMapString(authRaw, "token")),
 		}
+		cfg.Auth.SignatureHeader = strings.TrimSpace(webhookConfigMapString(authRaw, "signature_header"))
+		cfg.Auth.TimestampHeader = strings.TrimSpace(webhookConfigMapString(authRaw, "timestamp_header"))
+		cfg.Auth.ReplayWindow = webhookConfigDuration(authRaw, "replay_window")
 	}
 
 	cfg.RequestVar = strings.TrimSpace(webhookConfigString(m, "request_var"))
@@ -102,8 +109,21 @@ func normalizeWebhookTriggerConfig(cfg WebhookTriggerNodeConfig) (WebhookTrigger
 		if strings.TrimSpace(cfg.Auth.Token) == "" {
 			return WebhookTriggerNodeConfig{}, fmt.Errorf("auth.token is required when auth.type=header_token")
 		}
+	case WebhookAuthTypeHMACSHA256:
+		if strings.TrimSpace(cfg.Auth.Token) == "" {
+			return WebhookTriggerNodeConfig{}, fmt.Errorf("auth.token is required when auth.type=hmac_sha256")
+		}
+		if cfg.Auth.SignatureHeader == "" {
+			cfg.Auth.SignatureHeader = "X-PetalFlow-Signature"
+		}
+		if cfg.Auth.TimestampHeader == "" {
+			cfg.Auth.TimestampHeader = "X-PetalFlow-Timestamp"
+		}
+		if cfg.Auth.ReplayWindow <= 0 {
+			cfg.Auth.ReplayWindow = 5 * time.Minute
+		}
 	default:
-		return WebhookTriggerNodeConfig{}, fmt.Errorf("auth.type must be one of: none, header_token")
+		return WebhookTriggerNodeConfig{}, fmt.Errorf("auth.type must be one of: none, header_token, hmac_sha256")
 	}
 
 	if cfg.RequestVar == "" {

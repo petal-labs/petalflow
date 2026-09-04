@@ -21,6 +21,7 @@ const (
 // WorkflowSchedule represents a persisted cron schedule for a workflow.
 type WorkflowSchedule struct {
 	ID         string         `json:"id"`
+	TenantID   string         `json:"tenant_id,omitempty"`
 	WorkflowID string         `json:"workflow_id"`
 	Cron       string         `json:"cron"`
 	Enabled    bool           `json:"enabled"`

@@ -34,6 +34,7 @@ type ToolOverlay struct {
 // ToolRegistration is the persisted record for a tool instance in the registry.
 type ToolRegistration struct {
 	Name            string            `json:"name"`
+	TenantID        string            `json:"tenant_id,omitempty"`
 	Manifest        ToolManifest      `json:"manifest"`
 	Origin          ToolOrigin        `json:"origin,omitempty"`
 	Config          map[string]string `json:"config,omitempty"`

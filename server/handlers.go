@@ -40,6 +40,15 @@ func (s *Server) handleListWorkflows(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
 	}
+	if s.security.RequireAuth {
+		filtered := records[:0]
+		for _, record := range records {
+			if s.ownsTenant(r, record.TenantID) {
+				filtered = append(filtered, record)
+			}
+		}
+		records = filtered
+	}
 	writeJSON(w, http.StatusOK, records)
 }
 
@@ -53,6 +62,10 @@ func (s *Server) handleGetWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("workflow %q not found", id))
+		return
+	}
+	if !s.ownsTenant(r, rec.TenantID) {
+		writeHiddenResource(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)
@@ -104,6 +117,7 @@ func (s *Server) handleCreateAgentWorkflow(w http.ResponseWriter, r *http.Reques
 
 	rec := WorkflowRecord{
 		ID:         id,
+		TenantID:   s.tenantID(r),
 		SchemaKind: loader.SchemaKindAgent,
 		Name:       wf.Name,
 		Source:     json.RawMessage(body),
@@ -157,6 +171,7 @@ func (s *Server) handleCreateGraphWorkflow(w http.ResponseWriter, r *http.Reques
 
 	rec := WorkflowRecord{
 		ID:         id,
+		TenantID:   s.tenantID(r),
 		SchemaKind: loader.SchemaKindGraph,
 		Name:       id,
 		Source:     json.RawMessage(body),
@@ -188,6 +203,10 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("workflow %q not found", id))
+		return
+	}
+	if !s.ownsTenant(r, rec.TenantID) {
+		writeHiddenResource(w)
 		return
 	}
 
@@ -256,6 +275,15 @@ func (s *Server) handleUpdateWorkflow(w http.ResponseWriter, r *http.Request) {
 // handleDeleteWorkflow deletes a workflow by ID.
 func (s *Server) handleDeleteWorkflow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	rec, ok, err := s.store.Get(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+	if !ok || !s.ownsTenant(r, rec.TenantID) {
+		writeHiddenResource(w)
+		return
+	}
 	if err := s.store.Delete(r.Context(), id); err != nil {
 		if errors.Is(err, ErrWorkflowNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("workflow %q not found", id))
@@ -435,7 +463,7 @@ func (s *Server) handleRunStreaming(
 		defer sub.Close()
 	}
 
-	doneCh := s.startStreamingRuntime(ctx, id, plan.execGraph, plan.env, runID, plan.workflowVersion, plan.idempotencyKey)
+	doneCh := s.startStreamingRuntime(ctx, id, plan.execGraph, plan.env, runID, plan.workflowVersion, plan.idempotencyKey, plan.tenantID)
 	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
 
 	if sub == nil {
@@ -499,6 +527,7 @@ func (s *Server) startStreamingRuntime(
 	runID string,
 	workflowVersion string,
 	idempotencyKey string,
+	tenantID string,
 ) <-chan error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
@@ -506,6 +535,7 @@ func (s *Server) startStreamingRuntime(
 	opts.RunID = runID
 	opts.WorkflowID = workflowID
 	opts.WorkflowVersion = workflowVersion
+	opts.TenantID = tenantID
 	opts.IdempotencyKey = idempotencyKey
 	if s.runStore != nil {
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
@@ -529,6 +559,13 @@ func (s *Server) startStreamingRuntime(
 
 	doneCh := make(chan error, 1)
 	go func() {
+		select {
+		case s.runSlots <- struct{}{}:
+			defer func() { <-s.runSlots }()
+		default:
+			doneCh <- &runAPIError{Status: http.StatusTooManyRequests, Code: "RUN_LIMIT", Message: "too many concurrent runs"}
+			return
+		}
 		_, err := rt.Run(ctx, execGraph, env, opts)
 		doneCh <- err
 	}()
@@ -547,7 +584,7 @@ func (s *Server) streamWithoutSubscription(ctx context.Context, writer *sseWrite
 				return
 			}
 			if err != nil {
-				writer.writeEvent("run.error", map[string]string{"error": err.Error()})
+				writer.writeEvent("run.error", map[string]string{"error": "workflow execution failed"})
 				return
 			}
 			writer.writeEvent("run.finished", map[string]string{"run_id": runID, "status": "completed"})
@@ -604,7 +641,7 @@ func (s *Server) handleStreamingCompletionWithDrain(
 	runID string,
 ) {
 	if runErr != nil {
-		writer.writeEvent("run.error", map[string]string{"error": runErr.Error()})
+		writer.writeEvent("run.error", map[string]string{"error": "workflow execution failed"})
 	}
 
 	sawRunFinished := s.drainSubscriptionEvents(writer, sub)

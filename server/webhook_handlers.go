@@ -1,17 +1,22 @@
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/nodes"
+	"github.com/petal-labs/petalflow/security"
 )
 
 func (s *Server) handleWorkflowWebhook(w http.ResponseWriter, r *http.Request) {
@@ -48,18 +53,23 @@ func (s *Server) handleWorkflowWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := authorizeWebhookRequest(r, triggerCfg); err != nil {
-		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
-		return
-	}
-
-	requestBody, err := decodeWebhookBody(r)
+	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		if isMaxBytesError(err) {
 			writeError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", "request body exceeds size limit")
 			return
 		}
 		writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
+		return
+	}
+	if err := s.authorizeWebhookRequest(r, triggerCfg, rawBody); err != nil {
+		writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "webhook authentication failed")
+		return
+	}
+
+	requestBody, err := decodeWebhookBody(rawBody, r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid webhook body")
 		return
 	}
 
@@ -86,6 +96,7 @@ func (s *Server) handleWorkflowWebhook(w http.ResponseWriter, r *http.Request) {
 		writeRunAPIError(w, err)
 		return
 	}
+	plan.tenantID = rec.TenantID
 
 	resp, err := s.executeWorkflowRunSync(r.Context(), workflowID, plan, webhookRunMetadataDecorator(webhookRunMetadata{
 		WorkflowID: workflowID,
@@ -137,7 +148,7 @@ func methodAllowed(method string, allowed []string) bool {
 	return false
 }
 
-func authorizeWebhookRequest(r *http.Request, cfg nodes.WebhookTriggerNodeConfig) error {
+func (s *Server) authorizeWebhookRequest(r *http.Request, cfg nodes.WebhookTriggerNodeConfig, body []byte) error {
 	switch cfg.Auth.Type {
 	case nodes.WebhookAuthTypeNone:
 		return nil
@@ -150,6 +161,51 @@ func authorizeWebhookRequest(r *http.Request, cfg nodes.WebhookTriggerNodeConfig
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) != 1 {
 			return fmt.Errorf("invalid webhook token")
 		}
+		return nil
+	case nodes.WebhookAuthTypeHMACSHA256:
+		secret, err := resolveWebhookAuthToken(cfg.Auth.Token)
+		if err != nil {
+			return err
+		}
+		timestamp, err := strconv.ParseInt(strings.TrimSpace(r.Header.Get(cfg.Auth.TimestampHeader)), 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid webhook timestamp")
+		}
+		window := cfg.Auth.ReplayWindow
+		if window <= 0 {
+			window = s.security.WebhookReplayWindow
+		}
+		if window <= 0 {
+			window = 5 * time.Minute
+		}
+		if delta := time.Since(time.Unix(timestamp, 0)); delta < -window || delta > window {
+			return fmt.Errorf("webhook timestamp outside replay window")
+		}
+		provided := strings.TrimSpace(r.Header.Get(cfg.Auth.SignatureHeader))
+		provided = strings.TrimPrefix(strings.TrimPrefix(provided, "sha256="), "SHA256=")
+		providedBytes, err := hex.DecodeString(provided)
+		if err != nil || len(providedBytes) != sha256.Size {
+			return fmt.Errorf("invalid webhook signature")
+		}
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write([]byte(strconv.FormatInt(timestamp, 10) + "."))
+		_, _ = mac.Write(body)
+		if subtle.ConstantTimeCompare(providedBytes, mac.Sum(nil)) != 1 {
+			return fmt.Errorf("invalid webhook signature")
+		}
+		replayKey := provided + ":" + strconv.FormatInt(timestamp, 10)
+		s.replayMu.Lock()
+		defer s.replayMu.Unlock()
+		now := time.Now()
+		for key, seenAt := range s.replayedHooks {
+			if now.Sub(seenAt) > window {
+				delete(s.replayedHooks, key)
+			}
+		}
+		if _, exists := s.replayedHooks[replayKey]; exists {
+			return fmt.Errorf("webhook request replayed")
+		}
+		s.replayedHooks[replayKey] = now
 		return nil
 	default:
 		return fmt.Errorf("unsupported auth type %q", cfg.Auth.Type)
@@ -180,11 +236,7 @@ func getEnv(key string) string {
 	return os.Getenv(key)
 }
 
-func decodeWebhookBody(r *http.Request) (any, error) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		return nil, err
-	}
+func decodeWebhookBody(bodyBytes []byte, r *http.Request) (any, error) {
 	if len(bodyBytes) == 0 {
 		return nil, nil
 	}
@@ -211,10 +263,15 @@ func normalizeWebhookRequestPayload(workflowID string, triggerID string, r *http
 
 	headers := make(map[string]any, len(r.Header))
 	for key, values := range r.Header {
-		headers[strings.ToLower(key)] = strings.Join(values, ", ")
+		lowerKey := strings.ToLower(key)
+		if lowerKey == "authorization" || lowerKey == "cookie" || lowerKey == "x-petalflow-webhook-token" {
+			headers[lowerKey] = "[REDACTED]"
+			continue
+		}
+		headers[lowerKey] = strings.Join(values, ", ")
 	}
 
-	return map[string]any{
+	payload := map[string]any{
 		"workflow_id": workflowID,
 		"trigger_id":  triggerID,
 		"method":      strings.ToUpper(r.Method),
@@ -225,4 +282,11 @@ func normalizeWebhookRequestPayload(workflowID string, triggerID string, r *http
 		"received_at": time.Now().UTC().Format(time.RFC3339Nano),
 		"body":        body,
 	}
+	if identity, ok := security.IdentityFromContext(r.Context()); ok {
+		payload["identity"] = map[string]any{
+			"subject":   identity.Subject,
+			"tenant_id": identity.TenantID,
+		}
+	}
+	return payload
 }

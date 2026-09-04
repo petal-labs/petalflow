@@ -23,6 +23,7 @@ import (
 	"github.com/petal-labs/petalflow/llmprovider"
 	petalotel "github.com/petal-labs/petalflow/otel"
 	petalruntime "github.com/petal-labs/petalflow/runtime"
+	"github.com/petal-labs/petalflow/security"
 	"github.com/petal-labs/petalflow/server"
 	"github.com/petal-labs/petalflow/tool"
 )
@@ -37,7 +38,7 @@ func NewServeCmd() *cobra.Command {
 
 	cmd.Flags().IntP("port", "p", 8080, "Listen port")
 	cmd.Flags().String("host", "0.0.0.0", "Listen host")
-	cmd.Flags().String("cors-origin", "*", "Allowed CORS origin")
+	cmd.Flags().String("cors-origin", "", "Allowed CORS origin (comma-separated; empty disables CORS)")
 	cmd.Flags().String("sqlite-path", "", "Path to SQLite database (default: ~/.petalflow/petalflow.db)")
 	cmd.Flags().String("database-dsn", "", "Database DSN. Only URL-form DSNs (postgres:// or postgresql://) are detected as PostgreSQL; anything else, including libpq keyword DSNs like \"host=... dbname=...\", is treated as a SQLite path/DSN (default: SQLite at ~/.petalflow/petalflow.db)")
 	cmd.Flags().String("config", "", "Path to petalflow.yaml tool config")
@@ -91,6 +92,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	workflowSchedulePoll, _ := cmd.Flags().GetDuration("workflow-schedule-poll")
 	tlsCert, _ := cmd.Flags().GetString("tls-cert")
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
+	apiToken := strings.TrimSpace(os.Getenv("PETALFLOW_API_TOKEN"))
+	if apiToken == "" {
+		return errors.New("PETALFLOW_API_TOKEN must be set for network authentication")
+	}
+	tenantID := strings.TrimSpace(os.Getenv("PETALFLOW_TENANT_ID"))
+	if tenantID == "" {
+		tenantID = "default"
+	}
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
 
 	dsn, backend, scope, err := resolveDatabaseDSN(cmd)
@@ -109,6 +118,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{
 		Store: toolStore,
+		Security: daemon.SecurityConfig{
+			RequireAuth:   true,
+			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("creating daemon server: %w", err)
@@ -214,7 +227,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		RunStore:   runStore,
 		CORSOrigin: corsOrigin,
 		MaxBody:    maxBody,
-		Logger:     logger,
+		Security: server.SecurityConfig{
+			RequireAuth:   true,
+			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),
+		},
+		Logger: logger,
 	})
 
 	workflowScheduler, err := server.NewWorkflowScheduler(server.WorkflowSchedulerConfig{
@@ -242,8 +259,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	mux.Handle("/api/tools/", daemonHandler)
 	mux.Handle("/api/tools", daemonHandler)
 
-	handler := withCORS(mux, corsOrigin)
-	handler = maxBodyMiddleware(handler, maxBody)
+	handler := workflowServer.Middleware(mux)
 
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	httpServer := buildHTTPServer(addr, handler, httpServerTimeouts{

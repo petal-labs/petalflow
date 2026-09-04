@@ -7,6 +7,11 @@ func webhookConfigString(m map[string]any, key string) string {
 	return v
 }
 
+func webhookConfigBool(m map[string]any, key string) bool {
+	v, _ := m[key].(bool)
+	return v
+}
+
 func webhookConfigMapString(m map[string]any, key string) string {
 	return webhookConfigString(m, key)
 }

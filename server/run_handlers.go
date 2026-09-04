@@ -30,7 +30,7 @@ type RunStatusResponse struct {
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
-	record, err := s.getRun(r.Context(), r.PathValue("run_id"))
+	record, err := s.getOwnedRun(r)
 	if err != nil {
 		s.writeRunStoreError(w, err)
 		return
@@ -44,6 +44,10 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	runID := r.PathValue("run_id")
+	if _, err := s.getOwnedRun(r); err != nil {
+		s.writeRunStoreError(w, err)
+		return
+	}
 	if err := s.runStore.Cancel(r.Context(), runID); err != nil {
 		s.writeRunStoreError(w, err)
 		return
@@ -67,7 +71,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "durable run store not configured")
 		return
 	}
-	record, err := s.getRun(r.Context(), r.PathValue("run_id"))
+	record, err := s.getOwnedRun(r)
 	if err != nil {
 		s.writeRunStoreError(w, err)
 		return
@@ -105,7 +109,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetPendingAction(w http.ResponseWriter, r *http.Request) {
-	record, err := s.getRun(r.Context(), r.PathValue("run_id"))
+	record, err := s.getOwnedRun(r)
 	if err != nil {
 		s.writeRunStoreError(w, err)
 		return
@@ -120,7 +124,7 @@ func (s *Server) handleGetPendingAction(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleCompletePendingAction(w http.ResponseWriter, r *http.Request) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
-	record, err := s.getRun(r.Context(), r.PathValue("run_id"))
+	record, err := s.getOwnedRun(r)
 	if err != nil {
 		s.writeRunStoreError(w, err)
 		return
@@ -207,6 +211,17 @@ func (s *Server) getRun(ctx context.Context, runID string) (*runtime.RunRecord, 
 	return s.runStore.Get(ctx, runID)
 }
 
+func (s *Server) getOwnedRun(r *http.Request) (*runtime.RunRecord, error) {
+	record, err := s.getRun(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		return nil, err
+	}
+	if !s.ownsRun(r, record) {
+		return nil, runtime.ErrRunNotFound
+	}
+	return record, nil
+}
+
 func runStatusResponse(record *runtime.RunRecord) RunStatusResponse {
 	var checkpointID string
 	var nodeStatuses map[string]runtime.NodeStatus
@@ -217,10 +232,14 @@ func runStatusResponse(record *runtime.RunRecord) RunStatusResponse {
 			nodeStatuses[nodeID] = status
 		}
 	}
+	errorMessage := ""
+	if record.Error != "" {
+		errorMessage = "workflow execution failed"
+	}
 	return RunStatusResponse{
 		ID: record.ID, WorkflowID: record.WorkflowID, Status: record.Status,
 		StartedAt: record.StartedAt, UpdatedAt: record.UpdatedAt,
-		CompletedAt: record.CompletedAt, Error: record.Error,
+		CompletedAt: record.CompletedAt, Error: errorMessage,
 		CancelRequested: record.CancelRequested, CheckpointID: checkpointID,
 		NodeStatuses:  nodeStatuses,
 		PendingAction: record.PendingAction,

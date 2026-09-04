@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/security"
 )
 
 // HTTPClient abstracts outbound HTTP execution.
@@ -30,29 +31,31 @@ const defaultWebhookMaxResponseBytes int64 = 10 << 20 // 10 MiB
 
 // WebhookCallNodeConfig configures a WebhookCallNode.
 type WebhookCallNodeConfig struct {
-	URL              string
-	Method           string
-	Headers          map[string]string
-	Timeout          time.Duration
-	MaxResponseBytes int64
-	InputVars        []string
-	IncludeArtifacts bool
-	IncludeMessages  bool
-	IncludeTrace     bool
-	Template         string
-	ResultVar        string
-	HTTPClient       HTTPClient
+	URL                 string
+	Method              string
+	Headers             map[string]string
+	Timeout             time.Duration
+	MaxResponseBytes    int64
+	InputVars           []string
+	IncludeArtifacts    bool
+	IncludeMessages     bool
+	IncludeTrace        bool
+	Template            string
+	ResultVar           string
+	HTTPClient          HTTPClient
+	AllowPrivateNetwork bool
 }
 
 // ParseWebhookCallConfig normalizes webhook_call config from graph JSON.
 func ParseWebhookCallConfig(m map[string]any) (WebhookCallNodeConfig, error) {
 	cfg := WebhookCallNodeConfig{
-		URL:              strings.TrimSpace(webhookConfigString(m, "url")),
-		Method:           strings.TrimSpace(webhookConfigString(m, "method")),
-		Template:         webhookConfigString(m, "template"),
-		ResultVar:        strings.TrimSpace(webhookConfigString(m, "result_var")),
-		Timeout:          webhookConfigDuration(m, "timeout"),
-		MaxResponseBytes: webhookConfigInt64(m, "max_response_bytes"),
+		URL:                 strings.TrimSpace(webhookConfigString(m, "url")),
+		Method:              strings.TrimSpace(webhookConfigString(m, "method")),
+		Template:            webhookConfigString(m, "template"),
+		ResultVar:           strings.TrimSpace(webhookConfigString(m, "result_var")),
+		Timeout:             webhookConfigDuration(m, "timeout"),
+		MaxResponseBytes:    webhookConfigInt64(m, "max_response_bytes"),
+		AllowPrivateNetwork: webhookConfigBool(m, "allow_private_network"),
 	}
 	if inputVars, ok := webhookConfigStringSlice(m, "input_vars"); ok {
 		cfg.InputVars = inputVars
@@ -158,6 +161,11 @@ func (n *WebhookCallNode) Run(ctx context.Context, env *core.Envelope) (*core.En
 		requestCtx, cancel = context.WithTimeout(ctx, n.config.Timeout)
 	}
 	defer cancel()
+	if n.config.HTTPClient == http.DefaultClient {
+		if err := security.ValidateOutboundURL(requestCtx, n.config.URL, n.config.AllowPrivateNetwork); err != nil {
+			return nil, n.fail(err)
+		}
+	}
 
 	req, err := http.NewRequestWithContext(requestCtx, n.config.Method, n.config.URL, bytes.NewReader(body))
 	if err != nil {

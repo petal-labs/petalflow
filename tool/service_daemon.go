@@ -42,6 +42,7 @@ type DaemonToolServiceConfig struct {
 // RegisterToolInput defines a registration request consumed by daemon services.
 type RegisterToolInput struct {
 	Name         string
+	TenantID     string
 	Origin       ToolOrigin
 	Manifest     *ToolManifest
 	Config       map[string]string
@@ -490,6 +491,7 @@ func (s *DaemonToolService) registrationFromRegisterInput(ctx context.Context, i
 	if err != nil {
 		return ToolRegistration{}, err
 	}
+	reg.TenantID = strings.TrimSpace(input.TenantID)
 
 	return finalizeRegistrationEnabledState(reg, input.Enabled), nil
 }

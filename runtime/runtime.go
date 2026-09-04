@@ -107,6 +107,8 @@ type Runtime interface {
 
 // RunOptions controls execution behavior.
 type RunOptions struct {
+	// TenantID scopes durable state to the authenticated caller's tenant.
+	TenantID string
 	// RunStore enables durable run records and checkpoints. When set, execution
 	// uses the sequential durable executor so a worker can resume safely.
 	RunStore RunStore

@@ -19,6 +19,7 @@ var (
 // WorkflowRecord represents a stored workflow.
 type WorkflowRecord struct {
 	ID         string                 `json:"id"`
+	TenantID   string                 `json:"tenant_id,omitempty"`
 	SchemaKind loader.SchemaKind      `json:"kind"`
 	Name       string                 `json:"name,omitempty"`
 	Source     json.RawMessage        `json:"source"`

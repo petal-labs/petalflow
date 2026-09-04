@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +24,7 @@ func (s *Server) handleListWorkflowSchedules(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "workflow schedules are not configured")
 		return
 	}
-	if !s.workflowExists(r.Context(), workflowID, w) {
+	if !s.workflowExists(r, workflowID, w) {
 		return
 	}
 
@@ -33,6 +32,15 @@ func (s *Server) handleListWorkflowSchedules(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return
+	}
+	if s.security.RequireAuth {
+		filtered := schedules[:0]
+		for _, schedule := range schedules {
+			if s.ownsTenant(r, schedule.TenantID) {
+				filtered = append(filtered, schedule)
+			}
+		}
+		schedules = filtered
 	}
 	writeJSON(w, http.StatusOK, schedules)
 }
@@ -43,7 +51,7 @@ func (s *Server) handleCreateWorkflowSchedule(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "workflow schedules are not configured")
 		return
 	}
-	if !s.workflowExists(r.Context(), workflowID, w) {
+	if !s.workflowExists(r, workflowID, w) {
 		return
 	}
 
@@ -56,6 +64,7 @@ func (s *Server) handleCreateWorkflowSchedule(w http.ResponseWriter, r *http.Req
 	now := time.Now().UTC()
 	schedule := WorkflowSchedule{
 		ID:         uuid.NewString(),
+		TenantID:   s.tenantID(r),
 		WorkflowID: workflowID,
 		Enabled:    true,
 		CreatedAt:  now,
@@ -85,7 +94,7 @@ func (s *Server) handleGetWorkflowSchedule(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "workflow schedules are not configured")
 		return
 	}
-	if !s.workflowExists(r.Context(), workflowID, w) {
+	if !s.workflowExists(r, workflowID, w) {
 		return
 	}
 
@@ -98,6 +107,10 @@ func (s *Server) handleGetWorkflowSchedule(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("schedule %q not found", scheduleID))
 		return
 	}
+	if !s.ownsTenant(r, schedule.TenantID) {
+		writeHiddenResource(w)
+		return
+	}
 	writeJSON(w, http.StatusOK, schedule)
 }
 
@@ -108,7 +121,7 @@ func (s *Server) handleUpdateWorkflowSchedule(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "workflow schedules are not configured")
 		return
 	}
-	if !s.workflowExists(r.Context(), workflowID, w) {
+	if !s.workflowExists(r, workflowID, w) {
 		return
 	}
 
@@ -119,6 +132,10 @@ func (s *Server) handleUpdateWorkflowSchedule(w http.ResponseWriter, r *http.Req
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("schedule %q not found", scheduleID))
+		return
+	}
+	if !s.ownsTenant(r, existing.TenantID) {
+		writeHiddenResource(w)
 		return
 	}
 
@@ -154,7 +171,16 @@ func (s *Server) handleDeleteWorkflowSchedule(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "workflow schedules are not configured")
 		return
 	}
-	if !s.workflowExists(r.Context(), workflowID, w) {
+	if !s.workflowExists(r, workflowID, w) {
+		return
+	}
+	existing, found, err := s.scheduleStore.GetSchedule(r.Context(), workflowID, scheduleID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+	if !found || !s.ownsTenant(r, existing.TenantID) {
+		writeHiddenResource(w)
 		return
 	}
 
@@ -169,14 +195,18 @@ func (s *Server) handleDeleteWorkflowSchedule(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) workflowExists(ctx context.Context, workflowID string, w http.ResponseWriter) bool {
-	_, found, err := s.store.Get(ctx, workflowID)
+func (s *Server) workflowExists(r *http.Request, workflowID string, w http.ResponseWriter) bool {
+	record, found, err := s.store.Get(r.Context(), workflowID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		return false
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("workflow %q not found", workflowID))
+		return false
+	}
+	if !s.ownsTenant(r, record.TenantID) {
+		writeHiddenResource(w)
 		return false
 	}
 	return true

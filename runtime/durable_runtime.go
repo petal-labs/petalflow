@@ -38,6 +38,9 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		return nil, fmt.Errorf("load run %s: %w", runID, loadErr)
 	}
 	if resuming {
+		if opts.TenantID != "" && record.TenantID != "" && opts.TenantID != record.TenantID {
+			return nil, fmt.Errorf("%w: run %s", ErrTenantMismatch, runID)
+		}
 		if env != nil && !opts.Resume {
 			return nil, fmt.Errorf("run %s already exists; use Resume", runID)
 		}
@@ -88,6 +91,7 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		env.Trace.Started = opts.Now()
 		record = &RunRecord{
 			ID:              runID,
+			TenantID:        opts.TenantID,
 			GraphName:       g.Name(),
 			WorkflowID:      opts.WorkflowID,
 			WorkflowVersion: opts.WorkflowVersion,

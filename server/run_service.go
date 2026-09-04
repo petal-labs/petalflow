@@ -39,6 +39,7 @@ type workflowRunPlan struct {
 	resume          bool
 	resumeToken     string
 	idempotencyKey  string
+	tenantID        string
 }
 
 type scheduledRunMetadata struct {
@@ -65,7 +66,11 @@ func (s *Server) planWorkflowRun(ctx context.Context, workflowID string, req Run
 		return nil, &runAPIError{Status: http.StatusBadRequest, Code: "NOT_COMPILED", Message: "workflow has no compiled graph"}
 	}
 
-	return s.planWorkflowRunWithDefinition(ctx, workflowID, rec.Compiled, req)
+	plan, err := s.planWorkflowRunWithDefinition(ctx, workflowID, rec.Compiled, req)
+	if err == nil {
+		plan.tenantID = rec.TenantID
+	}
+	return plan, err
 }
 
 func (s *Server) planWorkflowRunWithDefinition(
@@ -121,6 +126,12 @@ func (s *Server) executeWorkflowRunSync(
 	plan *workflowRunPlan,
 	extraDecorator runtime.EventEmitterDecorator,
 ) (RunResponse, error) {
+	select {
+	case s.runSlots <- struct{}{}:
+		defer func() { <-s.runSlots }()
+	default:
+		return RunResponse{}, &runAPIError{Status: http.StatusTooManyRequests, Code: "RUN_LIMIT", Message: "too many concurrent runs"}
+	}
 	runCtx, cancel := context.WithTimeout(ctx, plan.timeout)
 	defer cancel()
 
@@ -128,6 +139,7 @@ func (s *Server) executeWorkflowRunSync(
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
 	opts.WorkflowID = workflowID
+	opts.TenantID = plan.tenantID
 	opts.WorkflowVersion = plan.workflowVersion
 	if plan.env.Trace.RunID == "" && s.runStore != nil {
 		plan.env.Trace.RunID = uuid.New().String()
