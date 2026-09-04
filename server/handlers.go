@@ -329,11 +329,11 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 
 	// Handle streaming vs non-streaming
 	if req.Options.Stream {
-		s.handleRunStreaming(w, r, id, plan.execGraph, plan.env, plan.timeout)
+		s.handleRunStreaming(w, r, id, plan)
 		return
 	}
 
-	s.handleRunSync(w, r, id, plan.execGraph, plan.env, plan.timeout)
+	s.handleRunSync(w, r, id, plan)
 }
 
 type strictRunHumanHandler struct{}
@@ -391,15 +391,9 @@ func (s *Server) handleRunSync(
 	w http.ResponseWriter,
 	r *http.Request,
 	id string,
-	execGraph *graph.BasicGraph,
-	env *core.Envelope,
-	timeout time.Duration,
+	plan *workflowRunPlan,
 ) {
-	resp, err := s.executeWorkflowRunSync(r.Context(), id, &workflowRunPlan{
-		execGraph: execGraph,
-		env:       env,
-		timeout:   timeout,
-	}, nil)
+	resp, err := s.executeWorkflowRunSync(r.Context(), id, plan, nil)
 	if err != nil {
 		var apiErr *runAPIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusAccepted && resp.RunID != "" {
@@ -417,9 +411,7 @@ func (s *Server) handleRunStreaming(
 	w http.ResponseWriter,
 	r *http.Request,
 	id string,
-	execGraph *graph.BasicGraph,
-	env *core.Envelope,
-	timeout time.Duration,
+	plan *workflowRunPlan,
 ) {
 	writer, ok := newSSEWriter(w)
 	if !ok {
@@ -427,7 +419,7 @@ func (s *Server) handleRunStreaming(
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	ctx, cancel := context.WithTimeout(r.Context(), plan.timeout)
 	defer cancel()
 	writer.startResponse()
 
@@ -437,7 +429,7 @@ func (s *Server) handleRunStreaming(
 		defer sub.Close()
 	}
 
-	doneCh := s.startStreamingRuntime(ctx, id, execGraph, env, runID)
+	doneCh := s.startStreamingRuntime(ctx, id, plan.execGraph, plan.env, runID, plan.workflowVersion, plan.idempotencyKey)
 	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
 
 	if sub == nil {
@@ -499,12 +491,16 @@ func (s *Server) startStreamingRuntime(
 	execGraph *graph.BasicGraph,
 	env *core.Envelope,
 	runID string,
+	workflowVersion string,
+	idempotencyKey string,
 ) <-chan error {
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
 	opts.RunID = runID
 	opts.WorkflowID = workflowID
+	opts.WorkflowVersion = workflowVersion
+	opts.IdempotencyKey = idempotencyKey
 	if s.runStore != nil {
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
 	}

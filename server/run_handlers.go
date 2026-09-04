@@ -15,14 +15,17 @@ import (
 // RunStatusResponse is the public, non-sensitive subset of a durable run
 // record. Checkpoint envelopes are intentionally not returned by status APIs.
 type RunStatusResponse struct {
-	ID            string                 `json:"id"`
-	WorkflowID    string                 `json:"workflow_id,omitempty"`
-	Status        runtime.RunStatus      `json:"status"`
-	StartedAt     time.Time              `json:"started_at"`
-	UpdatedAt     time.Time              `json:"updated_at"`
-	CompletedAt   time.Time              `json:"completed_at,omitempty"`
-	Error         string                 `json:"error,omitempty"`
-	PendingAction *runtime.PendingAction `json:"pending_action,omitempty"`
+	ID              string                        `json:"id"`
+	WorkflowID      string                        `json:"workflow_id,omitempty"`
+	Status          runtime.RunStatus             `json:"status"`
+	StartedAt       time.Time                     `json:"started_at"`
+	UpdatedAt       time.Time                     `json:"updated_at"`
+	CompletedAt     time.Time                     `json:"completed_at,omitempty"`
+	Error           string                        `json:"error,omitempty"`
+	CancelRequested bool                          `json:"cancel_requested,omitempty"`
+	CheckpointID    string                        `json:"checkpoint_id,omitempty"`
+	NodeStatuses    map[string]runtime.NodeStatus `json:"node_statuses,omitempty"`
+	PendingAction   *runtime.PendingAction        `json:"pending_action,omitempty"`
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
@@ -118,7 +121,7 @@ func (s *Server) handleCompletePendingAction(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "PENDING_ACTION_NOT_FOUND", "pending action not found")
 		return
 	}
-	if pending.Response != nil {
+	if pending.Completed || pending.Response != nil {
 		writeError(w, http.StatusConflict, "ALREADY_COMPLETED", "pending action was already completed")
 		return
 	}
@@ -137,6 +140,11 @@ func (s *Server) handleCompletePendingAction(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		responseBytes = encoded
+	}
+	var responseObject map[string]json.RawMessage
+	if err := json.Unmarshal(responseBytes, &responseObject); err != nil || responseObject == nil {
+		writeError(w, http.StatusBadRequest, "PARSE_ERROR", "human response must be a JSON object")
+		return
 	}
 	var response nodes.HumanResponse
 	if err := json.Unmarshal(responseBytes, &response); err != nil {
@@ -191,10 +199,21 @@ func (s *Server) getRun(ctx context.Context, runID string) (*runtime.RunRecord, 
 }
 
 func runStatusResponse(record *runtime.RunRecord) RunStatusResponse {
+	var checkpointID string
+	var nodeStatuses map[string]runtime.NodeStatus
+	if record.Checkpoint != nil {
+		checkpointID = record.Checkpoint.ID
+		nodeStatuses = make(map[string]runtime.NodeStatus, len(record.Checkpoint.NodeStatuses))
+		for nodeID, status := range record.Checkpoint.NodeStatuses {
+			nodeStatuses[nodeID] = status
+		}
+	}
 	return RunStatusResponse{
 		ID: record.ID, WorkflowID: record.WorkflowID, Status: record.Status,
 		StartedAt: record.StartedAt, UpdatedAt: record.UpdatedAt,
 		CompletedAt: record.CompletedAt, Error: record.Error,
+		CancelRequested: record.CancelRequested, CheckpointID: checkpointID,
+		NodeStatuses:  nodeStatuses,
 		PendingAction: record.PendingAction,
 	}
 }

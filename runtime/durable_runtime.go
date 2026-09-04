@@ -47,10 +47,33 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		if opts.IdempotencyKey == "" {
 			opts.IdempotencyKey = record.IdempotencyKey
 		}
-		if isTerminal(record.Status) && (record.Status != RunStatusCanceled || record.CancelRequested) {
-			return nil, ErrRunAlreadySettled
+		if record.WorkflowVersion != "" && opts.WorkflowVersion != "" && record.WorkflowVersion != opts.WorkflowVersion {
+			return nil, fmt.Errorf("%w: run %s belongs to %q, got %q", ErrWorkflowVersion, runID, record.WorkflowVersion, opts.WorkflowVersion)
+		}
+		if record.MaxHops > 0 {
+			opts.MaxHops = record.MaxHops
+		}
+		if record.ContinueOnError {
+			opts.ContinueOnError = true
+		}
+		if record.NodeTimeout > 0 && opts.NodeTimeout <= 0 {
+			opts.NodeTimeout = record.NodeTimeout
+		}
+		if isTerminal(record.Status) {
+			// Failed runs and context-canceled runs may be retried from their
+			// pre-node checkpoint. Explicit API cancellation and completed runs
+			// are terminal and must not be replayed.
+			recoverable := (record.Status == RunStatusFailed ||
+				record.Status == RunStatusCanceled && !record.CancelRequested) &&
+				record.Checkpoint != nil && len(record.Checkpoint.Queue) > 0
+			if !recoverable {
+				return nil, ErrRunAlreadySettled
+			}
 		}
 		env = record.Checkpoint.Envelope.Clone()
+		record.Status = RunStatusRunning
+		record.Error = ""
+		record.CompletedAt = time.Time{}
 	} else {
 		if env == nil {
 			env = core.NewEnvelope()
@@ -61,14 +84,18 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		env.Trace.RunID = runID
 		env.Trace.Started = opts.Now()
 		record = &RunRecord{
-			ID:             runID,
-			GraphName:      g.Name(),
-			WorkflowID:     opts.WorkflowID,
-			IdempotencyKey: opts.IdempotencyKey,
-			Status:         RunStatusRunning,
-			StartedAt:      env.Trace.Started,
-			UpdatedAt:      env.Trace.Started,
-			Checkpoint:     newCheckpoint(runID, env, []string{g.Entry()}, nil, nil),
+			ID:              runID,
+			GraphName:       g.Name(),
+			WorkflowID:      opts.WorkflowID,
+			WorkflowVersion: opts.WorkflowVersion,
+			IdempotencyKey:  opts.IdempotencyKey,
+			Status:          RunStatusRunning,
+			MaxHops:         opts.MaxHops,
+			ContinueOnError: opts.ContinueOnError,
+			NodeTimeout:     opts.NodeTimeout,
+			StartedAt:       env.Trace.Started,
+			UpdatedAt:       env.Trace.Started,
+			Checkpoint:      newCheckpoint(runID, env, []string{g.Entry()}, nil, nil),
 		}
 		if err := opts.RunStore.Create(ctx, record); err != nil {
 			return nil, fmt.Errorf("create run %s: %w", runID, err)
@@ -154,7 +181,11 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 	status := RunStatusCompleted
 	if runErr != nil {
 		status = RunStatus(runStatusForError(runErr))
-		record.Error = runErr.Error()
+		if status == RunStatusPaused {
+			record.Error = ""
+		} else {
+			record.Error = runErr.Error()
+		}
 	}
 	if cancelErr := r.cancellationError(ctx, opts.RunStore, runID); cancelErr != nil {
 		status = RunStatusCanceled
@@ -162,8 +193,13 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		record.Error = cancelErr.Error()
 	}
 	record.Status = status
-	record.CompletedAt = opts.Now()
-	record.UpdatedAt = record.CompletedAt
+	if isTerminal(status) {
+		record.CompletedAt = opts.Now()
+		record.UpdatedAt = record.CompletedAt
+	} else {
+		record.CompletedAt = time.Time{}
+		record.UpdatedAt = opts.Now()
+	}
 	if status == RunStatusCompleted {
 		record.Checkpoint = newCheckpoint(runID, result, nil, checkpoint.Visited, checkpoint.HopCount)
 	} else {
@@ -234,6 +270,11 @@ func (r *BasicRuntime) executeDurableSequential(
 		checkpoint.Queue = append([]string{nodeID}, queue...)
 		checkpoint.Visited = cloneBoolMap(visited)
 		checkpoint.HopCount = cloneIntMap(hops)
+		checkpoint.NodeStatuses = cloneNodeStatusMap(checkpoint.NodeStatuses)
+		if checkpoint.NodeStatuses == nil {
+			checkpoint.NodeStatuses = make(map[string]NodeStatus)
+		}
+		checkpoint.NodeStatuses[nodeID] = NodeStatusRunning
 		checkpoint.Envelope = current.Clone()
 		checkpoint.ID = generateRunID()
 		checkpoint.CreatedAt = opts.Now()
@@ -256,6 +297,17 @@ func (r *BasicRuntime) executeDurableSequential(
 		}
 		if !skip {
 			result, nodeErr := r.executeNode(ctx, node, current, opts, emit, runStart)
+			if nodeErr != nil {
+				checkpoint.NodeStatuses[nodeID] = NodeStatusFailed
+				if pendingNodeError(nodeErr) {
+					checkpoint.NodeStatuses[nodeID] = NodeStatusPending
+				}
+				record.Checkpoint = checkpoint
+				record.UpdatedAt = opts.Now()
+				if err := opts.RunStore.Update(context.Background(), record); err != nil {
+					return current, fmt.Errorf("persist node status: %w", err)
+				}
+			}
 			// A cancellation that arrives while a node is running must leave the
 			// pre-node checkpoint intact. Its result is never committed.
 			if err := checkRunContext(ctx); err != nil {
@@ -271,6 +323,11 @@ func (r *BasicRuntime) executeDurableSequential(
 			if err != nil {
 				return current, err
 			}
+		}
+		if skip {
+			checkpoint.NodeStatuses[nodeID] = NodeStatusSkipped
+		} else {
+			checkpoint.NodeStatuses[nodeID] = NodeStatusCompleted
 		}
 		visited[nodeID] = true
 		next := r.determineSuccessors(g, node, current, emit, runStart, opts)

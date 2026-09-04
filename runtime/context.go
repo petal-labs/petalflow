@@ -8,6 +8,8 @@ type emitterKey struct{}
 
 type humanRequestHandlerKey struct{}
 
+type idempotencyKeyContext struct{}
+
 // HumanRequestHandler bridges a node's human interaction to a durable owner.
 // The request and response are intentionally any to keep runtime independent
 // from the nodes package and avoid an import cycle.
@@ -38,4 +40,17 @@ func HumanRequestHandlerFromContext(ctx context.Context) HumanRequestHandler {
 		return handler
 	}
 	return nil
+}
+
+// ContextWithIdempotencyKey attaches the caller's stable idempotency key to a
+// node execution. Side-effecting nodes should pass this value to their
+// provider so a replay after a worker failure is safe.
+func ContextWithIdempotencyKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, idempotencyKeyContext{}, key)
+}
+
+// IdempotencyKeyFromContext retrieves the caller's stable idempotency key.
+func IdempotencyKeyFromContext(ctx context.Context) string {
+	key, _ := ctx.Value(idempotencyKeyContext{}).(string)
+	return key
 }

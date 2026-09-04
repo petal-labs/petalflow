@@ -20,6 +20,19 @@ const (
 	RunStatusCanceled  RunStatus = "canceled"
 )
 
+// NodeStatus is the durable lifecycle state of one node attempt. A failed or
+// pending node remains at the front of the checkpoint queue and is eligible
+// for replay when the run is resumed.
+type NodeStatus string
+
+const (
+	NodeStatusPending   NodeStatus = "pending"
+	NodeStatusRunning   NodeStatus = "running"
+	NodeStatusCompleted NodeStatus = "completed"
+	NodeStatusFailed    NodeStatus = "failed"
+	NodeStatusSkipped   NodeStatus = "skipped"
+)
+
 var (
 	ErrRunNotFound       = errors.New("run not found")
 	ErrRunExists         = errors.New("run already exists")
@@ -27,6 +40,7 @@ var (
 	ErrPendingNotFound   = errors.New("pending action not found")
 	ErrPendingCompleted  = errors.New("pending action already completed")
 	ErrHumanPending      = errors.New("run is waiting for human input")
+	ErrWorkflowVersion   = errors.New("workflow version does not match run")
 )
 
 // PendingError marks an error that pauses a run instead of failing it. Human
@@ -41,14 +55,15 @@ type PendingError interface {
 // contains the node to execute next and is persisted before a node starts, so
 // a worker crash never causes the runtime to skip an uncommitted node.
 type Checkpoint struct {
-	ID        string            `json:"id"`
-	RunID     string            `json:"run_id"`
-	CreatedAt time.Time         `json:"created_at"`
-	Envelope  *core.Envelope    `json:"envelope,omitempty"`
-	Queue     []string          `json:"queue"`
-	Visited   map[string]bool   `json:"visited,omitempty"`
-	HopCount  map[string]int    `json:"hop_count,omitempty"`
-	NodeKeys  map[string]string `json:"node_keys,omitempty"`
+	ID           string                `json:"id"`
+	RunID        string                `json:"run_id"`
+	CreatedAt    time.Time             `json:"created_at"`
+	Envelope     *core.Envelope        `json:"envelope,omitempty"`
+	Queue        []string              `json:"queue"`
+	Visited      map[string]bool       `json:"visited,omitempty"`
+	HopCount     map[string]int        `json:"hop_count,omitempty"`
+	NodeKeys     map[string]string     `json:"node_keys,omitempty"`
+	NodeStatuses map[string]NodeStatus `json:"node_statuses,omitempty"`
 }
 
 // PendingAction is a durable human interaction. Data and Response are kept as
@@ -66,6 +81,7 @@ type PendingAction struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	Response    any            `json:"response,omitempty"`
 	RespondedAt time.Time      `json:"responded_at,omitempty"`
+	Completed   bool           `json:"completed,omitempty"`
 }
 
 // RunRecord is the durable state of a run. Records are updated with
@@ -74,9 +90,13 @@ type PendingAction struct {
 type RunRecord struct {
 	ID              string         `json:"id"`
 	WorkflowID      string         `json:"workflow_id,omitempty"`
+	WorkflowVersion string         `json:"workflow_version,omitempty"`
 	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
 	GraphName       string         `json:"graph_name,omitempty"`
 	Status          RunStatus      `json:"status"`
+	MaxHops         int            `json:"max_hops,omitempty"`
+	ContinueOnError bool           `json:"continue_on_error,omitempty"`
+	NodeTimeout     time.Duration  `json:"node_timeout,omitempty"`
 	StartedAt       time.Time      `json:"started_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	CompletedAt     time.Time      `json:"completed_at,omitempty"`
@@ -186,11 +206,12 @@ func (s *MemoryRunStore) CompletePendingAction(_ context.Context, runID, actionI
 	if record.PendingAction == nil || record.PendingAction.ID != actionID {
 		return nil, ErrPendingNotFound
 	}
-	if record.PendingAction.Response != nil {
+	if record.PendingAction.Completed || record.PendingAction.Response != nil {
 		return nil, ErrPendingCompleted
 	}
 	pending := *record.PendingAction
 	pending.Response = response
+	pending.Completed = true
 	pending.RespondedAt = time.Now().UTC()
 	record.PendingAction = &pending
 	record.UpdatedAt = pending.RespondedAt
@@ -223,6 +244,7 @@ func cloneRunRecord(record *RunRecord) *RunRecord {
 		checkpoint.Visited = cloneBoolMap(record.Checkpoint.Visited)
 		checkpoint.HopCount = cloneIntMap(record.Checkpoint.HopCount)
 		checkpoint.NodeKeys = cloneStringMap(record.Checkpoint.NodeKeys)
+		checkpoint.NodeStatuses = cloneNodeStatusMap(record.Checkpoint.NodeStatuses)
 		checkpoint.Envelope = record.Checkpoint.Envelope.Clone()
 		clone.Checkpoint = &checkpoint
 	}
@@ -232,6 +254,17 @@ func cloneRunRecord(record *RunRecord) *RunRecord {
 		clone.PendingAction = &pending
 	}
 	return &clone
+}
+
+func cloneNodeStatusMap(source map[string]NodeStatus) map[string]NodeStatus {
+	if source == nil {
+		return nil
+	}
+	result := make(map[string]NodeStatus, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
 }
 
 func cloneBoolMap(source map[string]bool) map[string]bool {
