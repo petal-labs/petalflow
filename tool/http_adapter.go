@@ -9,8 +9,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"github.com/petal-labs/petalflow/security"
 )
 
 // HTTPAdapter is the runtime adapter for HTTP-backed tools.
@@ -44,6 +47,15 @@ func (a *HTTPAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeResp
 			false,
 			fmt.Errorf("%w: empty action", ErrActionNotFound),
 		)
+	}
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return InvokeResponse{}, newToolError(ToolErrorCodeInvalidRequest, "tool: invalid HTTP endpoint", false, nil)
+	}
+	if net.ParseIP(endpointURL.Hostname()) != nil {
+		if err := security.ValidateOutboundURL(ctx, endpoint, false); err != nil {
+			return InvokeResponse{}, newToolError(ToolErrorCodeTransportFailure, "tool: outbound endpoint blocked", false, nil)
+		}
 	}
 
 	payload := map[string]any{

@@ -2,6 +2,7 @@
 CREATE TABLE IF NOT EXISTS workflows (
     seq         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id          TEXT NOT NULL UNIQUE,
+    tenant_id   TEXT NOT NULL DEFAULT '',
     schema_kind TEXT NOT NULL,
     name        TEXT,
     source      BYTEA NOT NULL,
@@ -13,6 +14,7 @@ CREATE TABLE IF NOT EXISTS workflows (
 CREATE TABLE IF NOT EXISTS workflow_schedules (
     id           TEXT PRIMARY KEY,
     workflow_id  TEXT NOT NULL,
+    tenant_id    TEXT NOT NULL DEFAULT '',
     cron_expr    TEXT NOT NULL,
     enabled      SMALLINT NOT NULL DEFAULT 1,
     input_json   BYTEA NOT NULL,

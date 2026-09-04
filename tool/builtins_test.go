@@ -72,6 +72,7 @@ func TestHTTPFetchBuiltinInvoke(t *testing.T) {
 		Inputs: map[string]any{
 			"url": srv.URL + "/ok",
 		},
+		Config: map[string]any{"allow_private_network": true},
 	})
 	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)

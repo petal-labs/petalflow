@@ -44,13 +44,21 @@ func NewPostgresStore(cfg PostgresStoreConfig) (*PostgresStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("workflow postgres store: create schema: %w", err)
 	}
+	if _, err := db.Exec("ALTER TABLE workflows ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("workflow postgres store: add tenant column: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE workflow_schedules ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("workflow postgres store: add schedule tenant column: %w", err)
+	}
 
 	return &PostgresStore{db: db}, nil
 }
 
 func (s *PostgresStore) List(ctx context.Context) ([]WorkflowRecord, error) {
 	rows, err := s.db.QueryContext(ctx, sqldialect.Rebind(`
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at
+SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
 FROM workflows
 ORDER BY seq ASC`))
 	if err != nil {
@@ -76,7 +84,7 @@ ORDER BY seq ASC`))
 
 func (s *PostgresStore) Get(ctx context.Context, id string) (WorkflowRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, sqldialect.Rebind(`
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at
+SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
 FROM workflows
 WHERE id = ?`), id)
 
@@ -121,6 +129,9 @@ func (s *PostgresStore) Create(ctx context.Context, rec WorkflowRecord) error {
 		}
 		return fmt.Errorf("workflow postgres store: create: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = $1 WHERE id = $2", rec.TenantID, rec.ID); err != nil {
+		return fmt.Errorf("workflow postgres store: set tenant: %w", err)
+	}
 	return nil
 }
 
@@ -156,6 +167,9 @@ func (s *PostgresStore) Update(ctx context.Context, rec WorkflowRecord) error {
 	if affected == 0 {
 		return ErrWorkflowNotFound
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = $1 WHERE id = $2", rec.TenantID, rec.ID); err != nil {
+		return fmt.Errorf("workflow postgres store: set tenant: %w", err)
+	}
 	return nil
 }
 
@@ -177,7 +191,7 @@ func (s *PostgresStore) Delete(ctx context.Context, id string) error {
 
 func (s *PostgresStore) ListSchedules(ctx context.Context, workflowID string) ([]WorkflowSchedule, error) {
 	rows, err := s.db.QueryContext(ctx, sqldialect.Rebind(`
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at
+SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
 FROM workflow_schedules
 WHERE workflow_id = ?
 ORDER BY created_at ASC`), workflowID)
@@ -202,7 +216,7 @@ ORDER BY created_at ASC`), workflowID)
 
 func (s *PostgresStore) GetSchedule(ctx context.Context, workflowID, scheduleID string) (WorkflowSchedule, bool, error) {
 	row := s.db.QueryRowContext(ctx, sqldialect.Rebind(`
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at
+SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
 FROM workflow_schedules
 WHERE workflow_id = ? AND id = ?`), workflowID, scheduleID)
 
@@ -270,6 +284,9 @@ VALUES
 		}
 		return fmt.Errorf("workflow postgres store: create schedule: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = $1 WHERE id = $2", schedule.TenantID, schedule.ID); err != nil {
+		return fmt.Errorf("workflow postgres store: set schedule tenant: %w", err)
+	}
 	return nil
 }
 
@@ -330,6 +347,9 @@ WHERE workflow_id = ? AND id = ?`),
 	if affected == 0 {
 		return ErrWorkflowScheduleNotFound
 	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = $1 WHERE workflow_id = $2 AND id = $3", schedule.TenantID, schedule.WorkflowID, schedule.ID); err != nil {
+		return fmt.Errorf("workflow postgres store: set schedule tenant: %w", err)
+	}
 	return nil
 }
 
@@ -362,7 +382,7 @@ WHERE workflow_id = ?`), workflowID); err != nil {
 
 func (s *PostgresStore) ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]WorkflowSchedule, error) {
 	query := `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at
+SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
 FROM workflow_schedules
 WHERE enabled = 1 AND next_run_at <= ?
 ORDER BY next_run_at ASC`

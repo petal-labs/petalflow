@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/petal-labs/petalflow/security"
 )
 
 var builtinNativeTools = map[string]NativeTool{
@@ -172,6 +174,13 @@ func (httpFetchTool) Invoke(ctx context.Context, action string, inputs map[strin
 	urlValue, _ := inputs["url"].(string)
 	if strings.TrimSpace(urlValue) == "" {
 		return nil, fmt.Errorf("http_fetch: url input is required")
+	}
+	allowPrivate := false
+	if raw, ok := config["allow_private_network"].(bool); ok {
+		allowPrivate = raw
+	}
+	if err := security.ValidateOutboundURL(ctx, urlValue, allowPrivate); err != nil {
+		return nil, fmt.Errorf("http_fetch: outbound URL blocked")
 	}
 
 	method := http.MethodGet

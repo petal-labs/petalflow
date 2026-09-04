@@ -444,10 +444,11 @@ func TestWorkflowNodeTypesE2E_DaemonAPI_RunCoverage(t *testing.T) {
 				"id":   "send_webhook",
 				"type": "webhook_call",
 				"config": map[string]any{
-					"url":        webhookTarget.URL,
-					"method":     "POST",
-					"result_var": "webhook_result",
-					"input_vars": []any{"topic"},
+					"url":                   webhookTarget.URL,
+					"allow_private_network": true,
+					"method":                "POST",
+					"result_var":            "webhook_result",
+					"input_vars":            []any{"topic"},
 				},
 			},
 			input: map[string]any{

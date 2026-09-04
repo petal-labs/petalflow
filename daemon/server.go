@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/petal-labs/petalflow/registry"
+	"github.com/petal-labs/petalflow/security"
 	"github.com/petal-labs/petalflow/tool"
 )
 
@@ -20,12 +21,19 @@ type ServerConfig struct {
 	Store    tool.Store
 	Service  *tool.DaemonToolService
 	Registry *registry.Registry
+	Security SecurityConfig
+}
+
+type SecurityConfig struct {
+	RequireAuth   bool
+	Authenticator security.Authenticator
 }
 
 // Server exposes tool daemon APIs and node-type catalog endpoints.
 type Server struct {
-	service *tool.DaemonToolService
-	reg     *registry.Registry
+	service  *tool.DaemonToolService
+	reg      *registry.Registry
+	security SecurityConfig
 
 	mu           sync.Mutex
 	dynamicTypes map[string]struct{}
@@ -65,6 +73,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	s := &Server{
 		service:      service,
 		reg:          reg,
+		security:     cfg.Security,
 		dynamicTypes: make(map[string]struct{}),
 	}
 	if err := s.syncRegistry(context.Background()); err != nil {
@@ -103,7 +112,29 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/node-types", s.handleNodeTypes)
 
-	return mux
+	return s.middleware(mux)
+}
+
+func (s *Server) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		if !s.security.RequireAuth || r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.security.Authenticator == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "AUTH_NOT_CONFIGURED", "authentication is not configured", nil)
+			return
+		}
+		identity, err := s.security.Authenticator(r)
+		if err != nil || identity.Subject == "" || identity.TenantID == "" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="petalflow"`)
+			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", nil)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(security.ContextWithIdentity(r.Context(), identity)))
+	})
 }
 
 type registerToolRequest struct {
@@ -135,6 +166,45 @@ type updateToolConfigRequest struct {
 type testToolRequest struct {
 	Action string         `json:"action"`
 	Inputs map[string]any `json:"inputs,omitempty"`
+}
+
+func (s *Server) requestTenant(r *http.Request) string {
+	if !s.security.RequireAuth {
+		return ""
+	}
+	identity, ok := security.IdentityFromContext(r.Context())
+	if !ok {
+		return ""
+	}
+	return identity.TenantID
+}
+
+func (s *Server) toolOwned(r *http.Request, name string) bool {
+	if !s.security.RequireAuth {
+		return true
+	}
+	reg, found, err := s.service.Get(r.Context(), name, true)
+	if err != nil || !found {
+		return false
+	}
+	if reg.TenantID == "" {
+		return reg.Origin == tool.OriginNative
+	}
+	return reg.TenantID == s.requestTenant(r)
+}
+
+func (s *Server) filterOwnedTools(r *http.Request, regs []tool.ToolRegistration) []tool.ToolRegistration {
+	if !s.security.RequireAuth {
+		return regs
+	}
+	tenant := s.requestTenant(r)
+	filtered := make([]tool.ToolRegistration, 0, len(regs))
+	for _, reg := range regs {
+		if reg.Origin == tool.OriginNative && reg.TenantID == "" || reg.TenantID == tenant {
+			filtered = append(filtered, reg)
+		}
+	}
+	return filtered
 }
 
 type overlayToolRequest struct {
@@ -179,6 +249,7 @@ func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, err)
 		return
 	}
+	regs = s.filterOwnedTools(r, regs)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"tools": tool.RedactRegistrations(regs),
 	})
@@ -186,6 +257,10 @@ func (s *Server) handleListTools(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetTool(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("name"))
+	if !s.toolOwned(r, name) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	includeBuiltins := true
 	if raw, ok := queryParam(r, "include_builtins"); ok {
 		parsed, err := strconv.ParseBool(raw)
@@ -223,6 +298,7 @@ func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
 
 	input := tool.RegisterToolInput{
 		Name:         req.Name,
+		TenantID:     s.requestTenant(r),
 		Origin:       origin,
 		Manifest:     req.Manifest,
 		Config:       cloneStringMap(req.Config),
@@ -244,6 +320,10 @@ func (s *Server) handleRegisterTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	var req updateToolRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_JSON", err.Error(), nil)
@@ -277,6 +357,10 @@ func (s *Server) handleUpdateTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	if err := s.service.Delete(r.Context(), r.PathValue("name")); err != nil {
 		s.writeServiceError(w, err)
 		return
@@ -289,6 +373,10 @@ func (s *Server) handleDeleteTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateToolConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	var req updateToolConfigRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_JSON", err.Error(), nil)
@@ -311,6 +399,10 @@ func (s *Server) handleUpdateToolConfig(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleTestTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	var req testToolRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_JSON", err.Error(), nil)
@@ -326,6 +418,10 @@ func (s *Server) handleTestTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleToolHealth(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	reg, report, err := s.service.Health(r.Context(), r.PathValue("name"))
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -338,6 +434,10 @@ func (s *Server) handleToolHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRefreshTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	reg, err := s.service.Refresh(r.Context(), r.PathValue("name"))
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -351,6 +451,10 @@ func (s *Server) handleRefreshTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleOverlayTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	var req overlayToolRequest
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_JSON", err.Error(), nil)
@@ -374,6 +478,10 @@ func (s *Server) handleOverlayTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDisableTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	reg, err := s.service.SetEnabled(r.Context(), r.PathValue("name"), false)
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -387,6 +495,10 @@ func (s *Server) handleDisableTool(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleEnableTool(w http.ResponseWriter, r *http.Request) {
+	if !s.toolOwned(r, r.PathValue("name")) {
+		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "tool not found", nil)
+		return
+	}
 	reg, err := s.service.SetEnabled(r.Context(), r.PathValue("name"), true)
 	if err != nil {
 		s.writeServiceError(w, err)
@@ -675,6 +787,10 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string, details any) {
+	if code == "INTERNAL" || code == "REGISTRY_SYNC_FAILED" {
+		message = "internal server error"
+		details = nil
+	}
 	writeJSON(w, status, apiErrorResponse{
 		Error: apiErrorDetail{
 			Code:    code,
