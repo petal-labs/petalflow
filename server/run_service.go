@@ -32,11 +32,12 @@ func (e *runAPIError) Error() string {
 }
 
 type workflowRunPlan struct {
-	execGraph      *graph.BasicGraph
-	env            *core.Envelope
-	timeout        time.Duration
-	resume         bool
-	idempotencyKey string
+	execGraph       *graph.BasicGraph
+	env             *core.Envelope
+	timeout         time.Duration
+	workflowVersion string
+	resume          bool
+	idempotencyKey  string
 }
 
 type scheduledRunMetadata struct {
@@ -105,10 +106,11 @@ func (s *Server) planWorkflowRunWithDefinition(
 	}
 
 	return &workflowRunPlan{
-		execGraph:      execGraph,
-		env:            EnvelopeFromJSON(req.Input),
-		timeout:        timeout,
-		idempotencyKey: req.Options.IdempotencyKey,
+		execGraph:       execGraph,
+		env:             EnvelopeFromJSON(req.Input),
+		timeout:         timeout,
+		workflowVersion: compiled.Version,
+		idempotencyKey:  req.Options.IdempotencyKey,
 	}, nil
 }
 
@@ -125,6 +127,7 @@ func (s *Server) executeWorkflowRunSync(
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
 	opts.WorkflowID = workflowID
+	opts.WorkflowVersion = plan.workflowVersion
 	if plan.env.Trace.RunID == "" && s.runStore != nil {
 		plan.env.Trace.RunID = uuid.New().String()
 	}
@@ -176,6 +179,9 @@ func (s *Server) executeWorkflowRunSync(
 		if errors.Is(err, runtime.ErrRunAlreadySettled) {
 			return RunResponse{}, &runAPIError{Status: http.StatusConflict, Code: "RUN_SETTLED", Message: "run is already settled"}
 		}
+		if errors.Is(err, runtime.ErrWorkflowVersion) {
+			return RunResponse{}, &runAPIError{Status: http.StatusConflict, Code: "WORKFLOW_VERSION_MISMATCH", Message: "run belongs to a different workflow version"}
+		}
 		if runCtx.Err() == context.DeadlineExceeded {
 			return RunResponse{}, &runAPIError{Status: http.StatusGatewayTimeout, Code: "TIMEOUT", Message: err.Error()}
 		}
@@ -214,7 +220,7 @@ func (s *Server) durableHumanRequestHandler(ctx context.Context, value any) (any
 		if pending.NodeID != req.NodeID {
 			return nil, fmt.Errorf("run already has a pending action for node %q", pending.NodeID)
 		}
-		if pending.Response == nil {
+		if !pending.Completed && pending.Response == nil {
 			return nil, &nodes.HumanPendingError{Request: req}
 		}
 		var response nodes.HumanResponse

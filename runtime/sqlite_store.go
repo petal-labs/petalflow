@@ -196,15 +196,19 @@ func (s *SQLiteRunStore) CompletePendingAction(ctx context.Context, runID, actio
 	if err := json.Unmarshal(payload, &record); err != nil {
 		return nil, fmt.Errorf("run sqlite store complete decode: %w", err)
 	}
+	if isTerminal(record.Status) {
+		return nil, ErrRunAlreadySettled
+	}
 	if record.PendingAction == nil || record.PendingAction.ID != actionID {
 		return nil, ErrPendingNotFound
 	}
-	if record.PendingAction.Response != nil {
+	if record.PendingAction.Completed || record.PendingAction.Response != nil {
 		return nil, ErrPendingCompleted
 	}
 	now := time.Now().UTC()
 	pending := *record.PendingAction
 	pending.Response, pending.RespondedAt = response, now
+	pending.Completed = true
 	record.PendingAction, record.UpdatedAt = &pending, now
 	payload, err = json.Marshal(&record)
 	if err != nil {

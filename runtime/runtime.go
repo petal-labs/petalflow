@@ -1149,6 +1149,7 @@ func (r *BasicRuntime) executeNode(
 
 	// Inject emitter into context for node use
 	nodeCtx := ContextWithEmitter(ctx, emit)
+	nodeCtx = ContextWithIdempotencyKey(nodeCtx, opts.IdempotencyKey)
 	if opts.HumanRequestHandler != nil {
 		nodeCtx = ContextWithHumanRequestHandler(nodeCtx, opts.HumanRequestHandler)
 	}

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
@@ -73,6 +75,37 @@ func TestSQLiteRunStore_PersistsCheckpointAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestSQLiteRunStore_PersistsPendingCompletionAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runs.sqlite")
+	store, err := NewSQLiteRunStore(SQLiteRunStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Create(context.Background(), &RunRecord{
+		ID: "run-1", Status: RunStatusPaused,
+		PendingAction: &PendingAction{ID: "action-1", RunID: "run-1", NodeID: "review"},
+	}); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if _, err := store.CompletePendingAction(context.Background(), "run-1", "action-1", nil); err != nil {
+		_ = store.Close()
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewSQLiteRunStore(SQLiteRunStoreConfig{DSN: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if _, err := reopened.CompletePendingAction(context.Background(), "run-1", "action-1", map[string]any{"approved": true}); !errors.Is(err, ErrPendingCompleted) {
+		t.Fatalf("second completion error = %v, want ErrPendingCompleted", err)
+	}
+}
+
 func TestMemoryRunStore_CancelIsTerminal(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryRunStore()
@@ -100,6 +133,29 @@ func TestMemoryRunStore_CancelIsTerminal(t *testing.T) {
 	}
 	if got.Status != RunStatusCanceled {
 		t.Fatalf("late update overwrote cancellation: %s", got.Status)
+	}
+}
+
+func TestMemoryRunStore_CompletePendingActionIsExactlyOnce(t *testing.T) {
+	store := NewMemoryRunStore()
+	pending := &PendingAction{ID: "action-1", RunID: "run-1", NodeID: "review"}
+	if err := store.Create(context.Background(), &RunRecord{
+		ID: "run-1", Status: RunStatusPaused, PendingAction: pending,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompletePendingAction(context.Background(), "run-1", "action-1", nil); err != nil {
+		t.Fatalf("first completion error = %v", err)
+	}
+	if _, err := store.CompletePendingAction(context.Background(), "run-1", "action-1", map[string]any{"approved": true}); !errors.Is(err, ErrPendingCompleted) {
+		t.Fatalf("second completion error = %v, want ErrPendingCompleted", err)
+	}
+	record, err := store.Get(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.PendingAction == nil || !record.PendingAction.Completed {
+		t.Fatalf("pending action = %#v, want completed", record.PendingAction)
 	}
 }
 
@@ -168,6 +224,103 @@ func TestRuntime_ResumeFromDurableCheckpoint(t *testing.T) {
 	}
 	if firstRuns != 1 || secondRuns != 2 {
 		t.Fatalf("node runs = first:%d second:%d, want 1:2 (replayed from pre-node checkpoint)", firstRuns, secondRuns)
+	}
+}
+
+func TestRuntime_ResumeFailedRunAfterPanic(t *testing.T) {
+	store := NewMemoryRunStore()
+	var attempts atomic.Int32
+	g := graph.NewGraph("panic-recovery")
+	if err := g.AddNode(core.NewFuncNode("panic-node", func(_ context.Context, env *core.Envelope) (*core.Envelope, error) {
+		if attempts.Add(1) == 1 {
+			panic("transient worker failure")
+		}
+		return env.Clone(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetEntry("panic-node"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewRuntime().Run(context.Background(), g, core.NewEnvelope(), RunOptions{RunStore: store})
+	if !errors.Is(err, ErrNodePanic) {
+		t.Fatalf("first run error = %v, want node panic", err)
+	}
+	runID := findRunID(t, store)
+	record, err := store.Get(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Status != RunStatusFailed || len(record.Checkpoint.Queue) != 1 {
+		t.Fatalf("failed record = %#v", record)
+	}
+	if record.Checkpoint.NodeStatuses["panic-node"] != NodeStatusFailed {
+		t.Fatalf("node status = %q, want failed", record.Checkpoint.NodeStatuses["panic-node"])
+	}
+
+	if _, err := NewRuntime().Resume(context.Background(), g, runID, RunOptions{RunStore: store}); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+}
+
+func TestRuntime_ResumeFailedRunAfterTimeout(t *testing.T) {
+	store := NewMemoryRunStore()
+	var attempts atomic.Int32
+	g := graph.NewGraph("timeout-recovery")
+	if err := g.AddNode(core.NewFuncNode("timeout-node", func(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
+		if attempts.Add(1) == 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return env.Clone(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetEntry("timeout-node"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := NewRuntime().Run(context.Background(), g, core.NewEnvelope(), RunOptions{
+		RunStore:    store,
+		NodeTimeout: 10 * time.Millisecond,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first run error = %v, want deadline exceeded", err)
+	}
+	runID := findRunID(t, store)
+	if _, err := NewRuntime().Resume(context.Background(), g, runID, RunOptions{RunStore: store}); err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts.Load())
+	}
+}
+
+func TestRuntime_NodeReceivesStableIdempotencyKeyOnResume(t *testing.T) {
+	store := NewMemoryRunStore()
+	var seen atomic.Value
+	g := graph.NewGraph("idempotency-context")
+	if err := g.AddNode(core.NewFuncNode("side-effect", func(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
+		seen.Store(IdempotencyKeyFromContext(ctx))
+		return env.Clone(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetEntry("side-effect"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRuntime().Run(context.Background(), g, core.NewEnvelope(), RunOptions{
+		RunStore:       store,
+		IdempotencyKey: "request-123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := seen.Load(); got != "request-123" {
+		t.Fatalf("idempotency key = %v, want request-123", got)
 	}
 }
 

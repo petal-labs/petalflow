@@ -45,11 +45,28 @@ func TestDurableRun_HumanApprovalSurvivesPauseAndResume(t *testing.T) {
 	if status.Code != http.StatusOK || !contains(status.Body.String(), "paused") {
 		t.Fatalf("status response = %d %s", status.Code, status.Body.String())
 	}
+	var pausedStatus RunStatusResponse
+	if err := json.Unmarshal(status.Body.Bytes(), &pausedStatus); err != nil {
+		t.Fatal(err)
+	}
+	if !pausedStatus.CompletedAt.IsZero() {
+		t.Fatalf("paused completed_at = %v, want zero", pausedStatus.CompletedAt)
+	}
+	invalid := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/pending-actions/"+paused.Pending.ID, json.RawMessage("null"))
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid completion status = %d, want 400; body=%s", invalid.Code, invalid.Body.String())
+	}
 	complete := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/pending-actions/"+paused.Pending.ID, map[string]any{
 		"response": map[string]any{"approved": true, "choice": "approve", "responded_by": "reviewer"},
 	})
 	if complete.Code != http.StatusOK {
 		t.Fatalf("complete status = %d; body=%s", complete.Code, complete.Body.String())
+	}
+	secondComplete := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/pending-actions/"+paused.Pending.ID, map[string]any{
+		"response": map[string]any{"approved": false},
+	})
+	if secondComplete.Code != http.StatusConflict {
+		t.Fatalf("second complete status = %d, want 409; body=%s", secondComplete.Code, secondComplete.Body.String())
 	}
 
 	resumed := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/resume", map[string]any{})
