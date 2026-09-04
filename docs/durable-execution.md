@@ -15,6 +15,10 @@ result, err := runtime.NewRuntime().Resume(ctx, graph, runID, runtime.RunOptions
 })
 ```
 
+New runs receive an opaque `resume_token`, returned with the run response. A
+resume request may include that token to prevent an accidental or unauthorized
+replay. Existing callers may omit it while migrating older records.
+
 If a worker stops after a side effect begins but before its checkpoint is
 advanced, the node may run again. Side-effecting nodes can read the stable
 caller idempotency key with `runtime.IdempotencyKeyFromContext(ctx)` and must

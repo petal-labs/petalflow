@@ -34,13 +34,14 @@ const (
 )
 
 var (
-	ErrRunNotFound       = errors.New("run not found")
-	ErrRunExists         = errors.New("run already exists")
-	ErrRunAlreadySettled = errors.New("run is already settled")
-	ErrPendingNotFound   = errors.New("pending action not found")
-	ErrPendingCompleted  = errors.New("pending action already completed")
-	ErrHumanPending      = errors.New("run is waiting for human input")
-	ErrWorkflowVersion   = errors.New("workflow version does not match run")
+	ErrRunNotFound        = errors.New("run not found")
+	ErrRunExists          = errors.New("run already exists")
+	ErrRunAlreadySettled  = errors.New("run is already settled")
+	ErrPendingNotFound    = errors.New("pending action not found")
+	ErrPendingCompleted   = errors.New("pending action already completed")
+	ErrHumanPending       = errors.New("run is waiting for human input")
+	ErrWorkflowVersion    = errors.New("workflow version does not match run")
+	ErrInvalidResumeToken = errors.New("invalid resume token")
 )
 
 // PendingError marks an error that pauses a run instead of failing it. Human
@@ -92,6 +93,7 @@ type RunRecord struct {
 	WorkflowID      string         `json:"workflow_id,omitempty"`
 	WorkflowVersion string         `json:"workflow_version,omitempty"`
 	IdempotencyKey  string         `json:"idempotency_key,omitempty"`
+	ResumeToken     string         `json:"resume_token,omitempty"`
 	GraphName       string         `json:"graph_name,omitempty"`
 	Status          RunStatus      `json:"status"`
 	MaxHops         int            `json:"max_hops,omitempty"`
@@ -251,9 +253,33 @@ func cloneRunRecord(record *RunRecord) *RunRecord {
 	if record.PendingAction != nil {
 		pending := *record.PendingAction
 		pending.Schema = cloneAnyMap(record.PendingAction.Schema)
+		pending.Data = cloneDurableValue(record.PendingAction.Data)
+		pending.Options = cloneDurableValue(record.PendingAction.Options)
+		pending.Response = cloneDurableValue(record.PendingAction.Response)
 		clone.PendingAction = &pending
 	}
 	return &clone
+}
+
+func cloneDurableValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		clone := make(map[string]any, len(typed))
+		for key, item := range typed {
+			clone[key] = cloneDurableValue(item)
+		}
+		return clone
+	case []any:
+		clone := make([]any, len(typed))
+		for i, item := range typed {
+			clone[i] = cloneDurableValue(item)
+		}
+		return clone
+	case []byte:
+		return append([]byte(nil), typed...)
+	default:
+		return value
+	}
 }
 
 func cloneNodeStatusMap(source map[string]NodeStatus) map[string]NodeStatus {

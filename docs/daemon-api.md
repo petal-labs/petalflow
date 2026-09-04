@@ -93,6 +93,11 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| `GET` | `/api/runs/{run_id}` | Read non-sensitive run status |
+| `POST` | `/api/runs/{run_id}/cancel` | Cancel a run terminally |
+| `POST` | `/api/runs/{run_id}/resume` | Resume a durable run; optional `{"resume_token":"..."}` body |
+| `GET` | `/api/runs/{run_id}/pending-actions` | List the pending human action |
+| `POST` | `/api/runs/{run_id}/pending-actions/{action_id}` | Complete a pending human action once |
 | `GET` | `/api/runs/{run_id}/events` | Read persisted run events |
 
 ### Tools

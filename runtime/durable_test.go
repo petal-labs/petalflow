@@ -159,6 +159,67 @@ func TestMemoryRunStore_CompletePendingActionIsExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestRuntime_PersistsAndValidatesResumeToken(t *testing.T) {
+	store := NewMemoryRunStore()
+	g := graph.NewGraph("resume-token")
+	if err := g.AddNode(core.NewFuncNode("done", func(_ context.Context, env *core.Envelope) (*core.Envelope, error) {
+		return env.Clone(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetEntry("done"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewRuntime().Run(context.Background(), g, core.NewEnvelope(), RunOptions{
+		RunStore: store,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runID := findRunID(t, store)
+	record, err := store.Get(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ResumeToken == "" {
+		t.Fatal("resume token is empty")
+	}
+
+	paused := &RunRecord{ID: "paused", Status: RunStatusFailed, ResumeToken: "token-1", Checkpoint: &Checkpoint{
+		ID: "checkpoint", RunID: "paused", Queue: []string{"done"}, Envelope: core.NewEnvelope(),
+	}}
+	if err := store.Create(context.Background(), paused); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewRuntime().Resume(context.Background(), g, "paused", RunOptions{
+		RunStore:    store,
+		ResumeToken: "wrong-token",
+	}); !errors.Is(err, ErrInvalidResumeToken) {
+		t.Fatalf("Resume() error = %v, want ErrInvalidResumeToken", err)
+	}
+}
+
+func TestMemoryRunStore_ClonesPendingActionPayloads(t *testing.T) {
+	store := NewMemoryRunStore()
+	data := map[string]any{"nested": map[string]any{"value": "original"}}
+	if err := store.Create(context.Background(), &RunRecord{
+		ID: "run-1", Status: RunStatusPaused,
+		PendingAction: &PendingAction{ID: "action-1", RunID: "run-1", Data: data},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data["nested"].(map[string]any)["value"] = "changed"
+
+	record, err := store.Get(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := record.PendingAction.Data.(map[string]any)["nested"].(map[string]any)
+	if nested["value"] != "original" {
+		t.Fatalf("pending action data was aliased: %#v", nested)
+	}
+}
+
 func TestRuntime_ResumeFromDurableCheckpoint(t *testing.T) {
 	store := NewMemoryRunStore()
 	firstRuns := 0

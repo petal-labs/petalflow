@@ -301,11 +301,17 @@ type RunResponse struct {
 	ID          string                 `json:"id"`
 	RunID       string                 `json:"run_id"`
 	Status      string                 `json:"status"`
+	ResumeToken string                 `json:"resume_token,omitempty"`
 	StartedAt   time.Time              `json:"started_at"`
 	CompletedAt time.Time              `json:"completed_at"`
 	DurationMs  int64                  `json:"duration_ms"`
 	Output      EnvelopeJSON           `json:"output"`
 	Pending     *runtime.PendingAction `json:"pending_action,omitempty"`
+}
+
+// RunResumeRequest is the optional body for POST /api/runs/{run_id}/resume.
+type RunResumeRequest struct {
+	ResumeToken string `json:"resume_token,omitempty"`
 }
 
 // handleRunWorkflow executes a workflow.

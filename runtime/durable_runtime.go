@@ -47,6 +47,9 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		if opts.IdempotencyKey == "" {
 			opts.IdempotencyKey = record.IdempotencyKey
 		}
+		if opts.ResumeToken != "" && opts.ResumeToken != record.ResumeToken {
+			return nil, fmt.Errorf("%w for run %s", ErrInvalidResumeToken, runID)
+		}
 		if record.WorkflowVersion != "" && opts.WorkflowVersion != "" && record.WorkflowVersion != opts.WorkflowVersion {
 			return nil, fmt.Errorf("%w: run %s belongs to %q, got %q", ErrWorkflowVersion, runID, record.WorkflowVersion, opts.WorkflowVersion)
 		}
@@ -89,6 +92,7 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 			WorkflowID:      opts.WorkflowID,
 			WorkflowVersion: opts.WorkflowVersion,
 			IdempotencyKey:  opts.IdempotencyKey,
+			ResumeToken:     generateRunID(),
 			Status:          RunStatusRunning,
 			MaxHops:         opts.MaxHops,
 			ContinueOnError: opts.ContinueOnError,

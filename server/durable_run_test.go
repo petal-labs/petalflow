@@ -2,12 +2,17 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/petal-labs/petalflow/bus"
+	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -40,6 +45,9 @@ func TestDurableRun_HumanApprovalSurvivesPauseAndResume(t *testing.T) {
 	if paused.RunID == "" || paused.Pending == nil {
 		t.Fatalf("paused response = %#v", paused)
 	}
+	if paused.ResumeToken == "" {
+		t.Fatal("paused response has no resume token")
+	}
 
 	status := durableJSONRequest(t, handler, http.MethodGet, "/api/runs/"+paused.RunID, nil)
 	if status.Code != http.StatusOK || !contains(status.Body.String(), "paused") {
@@ -51,6 +59,12 @@ func TestDurableRun_HumanApprovalSurvivesPauseAndResume(t *testing.T) {
 	}
 	if !pausedStatus.CompletedAt.IsZero() {
 		t.Fatalf("paused completed_at = %v, want zero", pausedStatus.CompletedAt)
+	}
+	wrongToken := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/resume", map[string]any{
+		"resume_token": "wrong-token",
+	})
+	if wrongToken.Code != http.StatusForbidden {
+		t.Fatalf("wrong token status = %d, want 403; body=%s", wrongToken.Code, wrongToken.Body.String())
 	}
 	invalid := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/pending-actions/"+paused.Pending.ID, json.RawMessage("null"))
 	if invalid.Code != http.StatusBadRequest {
@@ -69,7 +83,9 @@ func TestDurableRun_HumanApprovalSurvivesPauseAndResume(t *testing.T) {
 		t.Fatalf("second complete status = %d, want 409; body=%s", secondComplete.Code, secondComplete.Body.String())
 	}
 
-	resumed := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/resume", map[string]any{})
+	resumed := durableJSONRequest(t, handler, http.MethodPost, "/api/runs/"+paused.RunID+"/resume", map[string]any{
+		"resume_token": paused.ResumeToken,
+	})
 	if resumed.Code != http.StatusOK {
 		t.Fatalf("resume status = %d; body=%s", resumed.Code, resumed.Body.String())
 	}
@@ -82,6 +98,27 @@ func TestDurableRun_HumanApprovalSurvivesPauseAndResume(t *testing.T) {
 	}
 	if approved, ok := result.Output.Vars["approval_approved"].(bool); !ok || !approved {
 		t.Fatalf("approval output = %#v", result.Output.Vars)
+	}
+}
+
+func TestDurableRun_RejectsConcurrentResume(t *testing.T) {
+	store := runtime.NewMemoryRunStore()
+	srv := NewServer(ServerConfig{RunStore: store})
+	activeCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.activeRuns["run-1"] = cancel
+
+	plan := &workflowRunPlan{
+		execGraph: graph.NewGraph("concurrent"),
+		env:       core.NewEnvelope(),
+		timeout:   time.Second,
+		resume:    true,
+	}
+	plan.env.Trace.RunID = "run-1"
+	_, err := srv.executeWorkflowRunSync(activeCtx, "workflow-1", plan, nil)
+	var apiErr *runAPIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusConflict || apiErr.Code != "RUN_IN_PROGRESS" {
+		t.Fatalf("executeWorkflowRunSync() error = %v, want RUN_IN_PROGRESS conflict", err)
 	}
 }
 
