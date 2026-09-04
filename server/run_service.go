@@ -37,6 +37,7 @@ type workflowRunPlan struct {
 	timeout         time.Duration
 	workflowVersion string
 	resume          bool
+	resumeToken     string
 	idempotencyKey  string
 }
 
@@ -133,6 +134,7 @@ func (s *Server) executeWorkflowRunSync(
 	}
 	opts.RunID = plan.env.Trace.RunID
 	opts.Resume = plan.resume
+	opts.ResumeToken = plan.resumeToken
 	opts.IdempotencyKey = plan.idempotencyKey
 	if s.runStore != nil {
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
@@ -153,13 +155,14 @@ func (s *Server) executeWorkflowRunSync(
 
 	startedAt := time.Now().UTC()
 	if opts.RunID != "" {
-		s.activeMu.Lock()
-		s.activeRuns[opts.RunID] = cancel
-		s.activeMu.Unlock()
+		if !s.reserveActiveRun(opts.RunID, cancel) {
+			return RunResponse{}, &runAPIError{
+				Status: http.StatusConflict, Code: "RUN_IN_PROGRESS",
+				Message: "run is already being executed",
+			}
+		}
 		defer func() {
-			s.activeMu.Lock()
-			delete(s.activeRuns, opts.RunID)
-			s.activeMu.Unlock()
+			s.releaseActiveRun(opts.RunID, cancel)
 		}()
 	}
 	result, err := rt.Run(runCtx, plan.execGraph, plan.env, opts)
@@ -171,6 +174,7 @@ func (s *Server) executeWorkflowRunSync(
 			if s.runStore != nil {
 				if record, getErr := s.runStore.Get(context.Background(), plan.env.Trace.RunID); getErr == nil {
 					response.StartedAt = record.StartedAt
+					response.ResumeToken = record.ResumeToken
 					response.Pending = record.PendingAction
 				}
 			}
@@ -181,6 +185,9 @@ func (s *Server) executeWorkflowRunSync(
 		}
 		if errors.Is(err, runtime.ErrWorkflowVersion) {
 			return RunResponse{}, &runAPIError{Status: http.StatusConflict, Code: "WORKFLOW_VERSION_MISMATCH", Message: "run belongs to a different workflow version"}
+		}
+		if errors.Is(err, runtime.ErrInvalidResumeToken) {
+			return RunResponse{}, &runAPIError{Status: http.StatusForbidden, Code: "INVALID_RESUME_TOKEN", Message: "resume token is invalid"}
 		}
 		if runCtx.Err() == context.DeadlineExceeded {
 			return RunResponse{}, &runAPIError{Status: http.StatusGatewayTimeout, Code: "TIMEOUT", Message: err.Error()}
@@ -193,7 +200,7 @@ func (s *Server) executeWorkflowRunSync(
 		runID = result.Trace.RunID
 	}
 
-	return RunResponse{
+	response := RunResponse{
 		ID:          workflowID,
 		RunID:       runID,
 		Status:      "completed",
@@ -201,7 +208,29 @@ func (s *Server) executeWorkflowRunSync(
 		CompletedAt: completedAt,
 		DurationMs:  completedAt.Sub(startedAt).Milliseconds(),
 		Output:      EnvelopeToJSON(result),
-	}, nil
+	}
+	if s.runStore != nil && runID != "" {
+		if record, getErr := s.runStore.Get(context.Background(), runID); getErr == nil {
+			response.ResumeToken = record.ResumeToken
+		}
+	}
+	return response, nil
+}
+
+func (s *Server) reserveActiveRun(runID string, cancel context.CancelFunc) bool {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	if _, exists := s.activeRuns[runID]; exists {
+		return false
+	}
+	s.activeRuns[runID] = cancel
+	return true
+}
+
+func (s *Server) releaseActiveRun(runID string, _ context.CancelFunc) {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	delete(s.activeRuns, runID)
 }
 
 func (s *Server) durableHumanRequestHandler(ctx context.Context, value any) (any, error) {

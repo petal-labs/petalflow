@@ -123,6 +123,11 @@ type RunOptions struct {
 	// make repeated execution safe.
 	IdempotencyKey string
 
+	// ResumeToken optionally authenticates a resume request. New durable runs
+	// receive a token automatically; callers may leave this empty for backwards
+	// compatibility with stores created before token validation was introduced.
+	ResumeToken string
+
 	// HumanRequestHandler optionally routes human interactions through a
 	// durable approval service. It is called before a node's configured handler.
 	HumanRequestHandler HumanRequestHandler

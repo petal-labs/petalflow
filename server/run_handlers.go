@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -71,6 +72,13 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 		s.writeRunStoreError(w, err)
 		return
 	}
+	var req RunResumeRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid resume request")
+			return
+		}
+	}
 	if record.WorkflowID == "" {
 		writeError(w, http.StatusBadRequest, "INVALID_RUN", "run has no workflow identity and cannot be resumed")
 		return
@@ -82,6 +90,7 @@ func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {
 	}
 	plan.env.Trace.RunID = record.ID
 	plan.resume = true
+	plan.resumeToken = req.ResumeToken
 	resp, runErr := s.executeWorkflowRunSync(r.Context(), record.WorkflowID, plan, nil)
 	if runErr != nil {
 		var apiErr *runAPIError
