@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/memory"
 )
 
 // RunStatus is the durable lifecycle state of a workflow run.
@@ -43,6 +44,7 @@ var (
 	ErrWorkflowVersion    = errors.New("workflow version does not match run")
 	ErrTenantMismatch     = errors.New("tenant does not match run")
 	ErrInvalidResumeToken = errors.New("invalid resume token")
+	ErrScopeMismatch      = errors.New("memory scope does not match run")
 )
 
 // PendingError marks an error that pauses a run instead of failing it. Human
@@ -109,6 +111,9 @@ type RunRecord struct {
 	LastSeq         uint64         `json:"last_seq,omitempty"`
 	Checkpoint      *Checkpoint    `json:"checkpoint,omitempty"`
 	PendingAction   *PendingAction `json:"pending_action,omitempty"`
+	// Scope is the memory/context scope the run was started with. It is
+	// restored on Resume so a recovered run reads and writes the same session.
+	Scope *memory.Scope `json:"scope,omitempty"`
 }
 
 // RunStore persists run records and checkpoints.
@@ -259,6 +264,10 @@ func cloneRunRecord(record *RunRecord) *RunRecord {
 		pending.Options = cloneDurableValue(record.PendingAction.Options)
 		pending.Response = cloneDurableValue(record.PendingAction.Response)
 		clone.PendingAction = &pending
+	}
+	if record.Scope != nil {
+		scope := *record.Scope
+		clone.Scope = &scope
 	}
 	return &clone
 }

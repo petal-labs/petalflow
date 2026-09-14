@@ -12,6 +12,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/runtime"
 )
 
@@ -55,6 +56,23 @@ type LLMNodeConfig struct {
 
 	// RecordMessages appends the conversation to envelope.Messages.
 	RecordMessages bool
+
+	// IncludeMessages sends envelope.Messages (for example history loaded by a
+	// MemoryRecallNode) to the model as prior conversation turns, before the
+	// prompt built from PromptTemplate/InputVars. History is fitted to
+	// ContextBudget and a context.assembled event reports the result.
+	IncludeMessages bool
+
+	// ContextBudget bounds system prompt + history + prompt when
+	// IncludeMessages is set. Nil or zero keeps all history.
+	ContextBudget *memory.Budget
+
+	// TokenCounter estimates tokens for ContextBudget; nil uses the default
+	// heuristic.
+	TokenCounter memory.TokenCounter
+
+	// Compactor reduces over-budget history; nil truncates the oldest turns.
+	Compactor memory.Compactor
 }
 
 // LLMNode executes an LLM call as a workflow step.
@@ -111,30 +129,70 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 		return nil, fmt.Errorf("failed to build prompt: %w", err)
 	}
 
+	req, err := n.buildRequest(ctx, env, emit, prompt)
+	if err != nil {
+		return nil, err
+	}
+
 	// If the client supports streaming, use the streaming path
 	if streamClient, ok := n.client.(core.StreamingLLMClient); ok {
-		return n.runStreaming(ctx, env, streamClient, emit, prompt)
+		return n.runStreaming(ctx, env, streamClient, emit, prompt, req)
 	}
-	return n.runSync(ctx, env, emit, prompt)
+	return n.runSync(ctx, env, emit, prompt, req)
 }
 
-// runSync executes a synchronous (non-streaming) LLM call.
-func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
-	// Build the LLM request
+// buildRequest assembles the LLM request. When IncludeMessages is set, the
+// envelope's messages are fitted to ContextBudget and sent as prior turns;
+// the prompt remains the final user turn (InputText). The stable request
+// prefix hash is passed to the provider as Meta["prompt_cache_key"].
+func (n *LLMNode) buildRequest(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (core.LLMRequest, error) {
 	req := core.LLMRequest{
 		Model:      n.config.Model,
 		System:     n.config.System,
 		InputText:  prompt,
 		JSONSchema: n.config.JSONSchema,
 	}
-
 	if n.config.Temperature != nil {
 		req.Temperature = n.config.Temperature
 	}
 	if n.config.MaxTokens != nil {
 		req.MaxTokens = n.config.MaxTokens
 	}
+	if !n.config.IncludeMessages {
+		return req, nil
+	}
 
+	var budget memory.Budget
+	if n.config.ContextBudget != nil {
+		budget = *n.config.ContextBudget
+	}
+	assembly, err := memory.Assemble(ctx, memory.AssembleInput{
+		System:    n.config.System,
+		Prompt:    prompt,
+		History:   env.Messages,
+		Budget:    budget,
+		Counter:   n.config.TokenCounter,
+		Compactor: n.config.Compactor,
+	})
+	if err != nil {
+		return core.LLMRequest{}, fmt.Errorf("context assembly for node %q: %w", n.ID(), err)
+	}
+	emitAssembly(emit, env, n.ID(), n.Kind(), assembly.Stats)
+
+	req.Messages = make([]core.LLMMessage, 0, len(assembly.Messages))
+	for _, m := range assembly.Messages {
+		req.Messages = append(req.Messages, core.LLMMessage{
+			Role:    m.Role,
+			Content: m.Content,
+			Name:    m.Name,
+		})
+	}
+	req.Meta = map[string]any{"prompt_cache_key": assembly.Stats.PromptCacheKey}
+	return req, nil
+}
+
+// runSync executes a synchronous (non-streaming) LLM call.
+func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string, req core.LLMRequest) (*core.Envelope, error) {
 	// Execute with retries
 	var resp core.LLMResponse
 	var lastErr error
@@ -213,22 +271,7 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 }
 
 // runStreaming executes a streaming LLM call, emitting delta events for each chunk.
-func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamClient core.StreamingLLMClient, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
-	// Build the LLM request
-	req := core.LLMRequest{
-		Model:      n.config.Model,
-		System:     n.config.System,
-		InputText:  prompt,
-		JSONSchema: n.config.JSONSchema,
-	}
-
-	if n.config.Temperature != nil {
-		req.Temperature = n.config.Temperature
-	}
-	if n.config.MaxTokens != nil {
-		req.MaxTokens = n.config.MaxTokens
-	}
-
+func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamClient core.StreamingLLMClient, emit runtime.EventEmitter, prompt string, req core.LLMRequest) (*core.Envelope, error) {
 	// Start streaming
 	ch, err := streamClient.CompleteStream(ctx, req)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/security"
 	"github.com/petal-labs/petalflow/tool"
@@ -28,10 +29,26 @@ type ServerConfig struct {
 	RunStore      runtime.RunStore
 	RuntimeEvents runtime.EventHandler
 	EmitDecorator runtime.EventEmitterDecorator
+	Memory        MemoryConfig
 	CORSOrigin    string
 	MaxBody       int64
 	Security      SecurityConfig
 	Logger        *slog.Logger
+}
+
+// MemoryConfig wires the pluggable memory/knowledge backend used by
+// memory_recall and memory_store nodes and by llm_prompt context budgets.
+// Without a Provider, workflows containing memory nodes fail at hydration.
+type MemoryConfig struct {
+	// Provider stores and recalls conversation memory. If it also implements
+	// memory.KnowledgeProvider it serves retrieval unless Knowledge is set.
+	Provider memory.MemoryProvider
+	// Knowledge optionally serves retrieval from a separate backend.
+	Knowledge memory.KnowledgeProvider
+	// TokenCounter estimates tokens for context budgets (nil = heuristic).
+	TokenCounter memory.TokenCounter
+	// Compactor reduces over-budget history (nil = truncate oldest turns).
+	Compactor memory.Compactor
 }
 
 // SecurityConfig controls authentication, CORS, and request concurrency.
@@ -59,6 +76,7 @@ type Server struct {
 	runStore      runtime.RunStore
 	runtimeEvents runtime.EventHandler
 	emitDecorator runtime.EventEmitterDecorator
+	memory        MemoryConfig
 	corsOrigin    string
 	security      SecurityConfig
 	requestSlots  chan struct{}
@@ -104,6 +122,7 @@ func NewServer(cfg ServerConfig) *Server {
 		runStore:      cfg.RunStore,
 		runtimeEvents: cfg.RuntimeEvents,
 		emitDecorator: cfg.EmitDecorator,
+		memory:        cfg.Memory,
 		corsOrigin:    corsOrigin,
 		security:      securityConfig,
 		requestSlots:  make(chan struct{}, securityConfig.MaxConcurrentRequests),

@@ -9,3 +9,5 @@ This folder contains practical, repository-local documentation for developers.
 - [`mcp-overlay.md`](./mcp-overlay.md): Customize discovered MCP actions with overlays
 - [`operations.md`](./operations.md): Storage, security, retries, scheduling, and release checks
 - [`iris-compatibility.md`](./iris-compatibility.md): Iris 1.0 capability contract and provider matrix
+- [`durable-execution.md`](./durable-execution.md): Checkpoints, resume, cancellation, and human approval persistence
+- [`memory-context.md`](./memory-context.md): Memory/knowledge provider contract, scope propagation, context budgets, and failure semantics

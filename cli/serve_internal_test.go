@@ -49,3 +49,19 @@ func TestNewServeCmd_TimeoutFlagDefaults(t *testing.T) {
 		t.Errorf("read-header-timeout default = %v, want 10s", readHeader)
 	}
 }
+
+func TestResolveMemoryBackend(t *testing.T) {
+	for _, name := range []string{"", "none", " None "} {
+		cfg, err := resolveMemoryBackend(name)
+		if err != nil || cfg.Provider != nil {
+			t.Fatalf("resolveMemoryBackend(%q) = %+v, %v", name, cfg, err)
+		}
+	}
+	cfg, err := resolveMemoryBackend("inmemory")
+	if err != nil || cfg.Provider == nil {
+		t.Fatalf("inmemory = %+v, %v", cfg, err)
+	}
+	if _, err := resolveMemoryBackend("cortex"); err == nil {
+		t.Fatal("unknown backend should be rejected")
+	}
+}

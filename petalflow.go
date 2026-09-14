@@ -164,6 +164,7 @@ const (
 	NodeKindWebhookCall    = core.NodeKindWebhookCall
 	NodeKindWebhookTrigger = core.NodeKindWebhookTrigger
 	NodeKindHuman          = core.NodeKindHuman
+	NodeKindMemory         = core.NodeKindMemory
 )
 
 // Core package constructors
@@ -307,6 +308,11 @@ const (
 	EventStepResumed   = runtime.EventStepResumed
 	EventStepSkipped   = runtime.EventStepSkipped
 	EventStepAborted   = runtime.EventStepAborted
+
+	EventMemoryRecall     = runtime.EventMemoryRecall
+	EventMemoryStore      = runtime.EventMemoryStore
+	EventContextAssembled = runtime.EventContextAssembled
+	EventContextCompacted = runtime.EventContextCompacted
 )
 
 // StepAction constants
@@ -529,6 +535,21 @@ type (
 	// HumanTimeoutAction defines what happens on timeout.
 	HumanTimeoutAction = nodes.HumanTimeoutAction
 
+	// MemoryRecallNode loads scoped conversation history and knowledge.
+	MemoryRecallNode = nodes.MemoryRecallNode
+
+	// MemoryRecallNodeConfig configures a MemoryRecallNode.
+	MemoryRecallNodeConfig = nodes.MemoryRecallNodeConfig
+
+	// MemoryStoreNode persists conversation turns to scoped memory.
+	MemoryStoreNode = nodes.MemoryStoreNode
+
+	// MemoryStoreNodeConfig configures a MemoryStoreNode.
+	MemoryStoreNodeConfig = nodes.MemoryStoreNodeConfig
+
+	// MemoryStoreEntry names an envelope variable to persist as a message.
+	MemoryStoreEntry = nodes.MemoryStoreEntry
+
 	// HumanOption represents a choice option.
 	HumanOption = nodes.HumanOption
 
@@ -696,6 +717,8 @@ var (
 	NewMockNode               = nodes.NewMockNode
 	NewGuardianNode           = nodes.NewGuardianNode
 	NewHumanNode              = nodes.NewHumanNode
+	NewMemoryRecallNode       = nodes.NewMemoryRecallNode
+	NewMemoryStoreNode        = nodes.NewMemoryStoreNode
 	NewChannelHumanHandler    = nodes.NewChannelHumanHandler
 	NewCallbackHumanHandler   = nodes.NewCallbackHumanHandler
 	NewAutoApproveHandler     = nodes.NewAutoApproveHandler

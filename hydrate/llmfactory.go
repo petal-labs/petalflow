@@ -8,6 +8,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/nodes/conditional"
 	"github.com/petal-labs/petalflow/nodes/conditional/expr"
@@ -27,6 +28,10 @@ type ClientFactory func(providerName string, cfg ProviderConfig) (core.LLMClient
 type liveFactoryOptions struct {
 	toolRegistry *core.ToolRegistry
 	humanHandler nodes.HumanHandler
+	memory       memory.MemoryProvider
+	knowledge    memory.KnowledgeProvider
+	tokenCounter memory.TokenCounter
+	compactor    memory.Compactor
 }
 
 type liveFactoryRuntime struct {
@@ -47,6 +52,37 @@ func WithToolRegistry(r *core.ToolRegistry) LiveNodeOption {
 // real HumanNode instances instead of FuncNode placeholders.
 func WithHumanHandler(h nodes.HumanHandler) LiveNodeOption {
 	return func(o *liveFactoryOptions) { o.humanHandler = h }
+}
+
+// WithMemoryProvider provides the conversation-memory backend used by
+// memory_recall and memory_store nodes. If the value also implements
+// memory.KnowledgeProvider it is used for retrieval unless
+// WithKnowledgeProvider overrides it.
+func WithMemoryProvider(p memory.MemoryProvider) LiveNodeOption {
+	return func(o *liveFactoryOptions) {
+		o.memory = p
+		if kp, ok := p.(memory.KnowledgeProvider); ok && o.knowledge == nil {
+			o.knowledge = kp
+		}
+	}
+}
+
+// WithKnowledgeProvider provides the retrieval backend used by memory_recall
+// nodes, independently of the conversation-memory backend.
+func WithKnowledgeProvider(p memory.KnowledgeProvider) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.knowledge = p }
+}
+
+// WithTokenCounter provides the token estimator used for context budgets on
+// memory_recall and llm_prompt nodes. Nil selects the default heuristic.
+func WithTokenCounter(c memory.TokenCounter) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.tokenCounter = c }
+}
+
+// WithCompactor provides the history compaction hook used when assembled
+// context exceeds its budget. Nil truncates the oldest turns.
+func WithCompactor(c memory.Compactor) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.compactor = c }
 }
 
 // NewLiveNodeFactory returns a NodeFactory that creates executable nodes for
@@ -91,7 +127,11 @@ func newLiveFactoryClientGetter(providers ProviderMap, clientFactory ClientFacto
 func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 	switch nd.Type {
 	case "llm_prompt":
-		return buildLLMNode(nd, r.getClient)
+		return buildLLMNode(nd, r.getClient, r.options)
+	case "memory_recall":
+		return buildMemoryRecallNode(nd, r.options)
+	case "memory_store":
+		return buildMemoryStoreNode(nd, r.options)
 	case "llm_router":
 		return buildLLMRouter(nd, r.getClient)
 	case "rule_router":
@@ -280,7 +320,7 @@ func buildConfiguredToolNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node,
 }
 
 // buildLLMNode extracts config from a NodeDef and returns an LLMNode.
-func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, error)) (core.Node, error) {
+func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, error), opts liveFactoryOptions) (core.Node, error) {
 	providerName, _ := nd.Config["provider"].(string)
 	if providerName == "" {
 		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
@@ -296,6 +336,8 @@ func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, erro
 		System:         configString(nd.Config, "system_prompt"),
 		PromptTemplate: configString(nd.Config, "prompt_template"),
 		OutputKey:      configString(nd.Config, "output_key"),
+		TokenCounter:   opts.tokenCounter,
+		Compactor:      opts.compactor,
 	}
 
 	if v, ok := configFloat64(nd.Config, "temperature"); ok {
@@ -304,8 +346,140 @@ func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, erro
 	if v, ok := configInt(nd.Config, "max_tokens"); ok {
 		cfg.MaxTokens = &v
 	}
+	if v, ok := nd.Config["include_messages"].(bool); ok {
+		cfg.IncludeMessages = v
+	}
+	if v, ok := nd.Config["record_messages"].(bool); ok {
+		cfg.RecordMessages = v
+	}
+	if budget := configBudget(nd.Config, "context_budget"); !budget.IsZero() {
+		cfg.ContextBudget = &budget
+	}
 
 	return nodes.NewLLMNode(nd.ID, client, cfg), nil
+}
+
+// configBudget reads a nested {max_tokens, max_messages, max_artifacts} object.
+func configBudget(m map[string]any, key string) memory.Budget {
+	obj := configMapAnyMap(m, key)
+	if obj == nil {
+		return memory.Budget{}
+	}
+	var b memory.Budget
+	if v, ok := configMapInt(obj, "max_tokens"); ok {
+		b.MaxTokens = v
+	}
+	if v, ok := configMapInt(obj, "max_messages"); ok {
+		b.MaxMessages = v
+	}
+	if v, ok := configMapInt(obj, "max_artifacts"); ok {
+		b.MaxArtifacts = v
+	}
+	return b
+}
+
+// buildMemoryRecallNode creates a MemoryRecallNode from a NodeDef. It fails
+// fast when no provider was supplied so a misconfigured daemon surfaces the
+// problem at hydration rather than at run time.
+func buildMemoryRecallNode(nd graph.NodeDef, opts liveFactoryOptions) (core.Node, error) {
+	if opts.memory == nil && opts.knowledge == nil {
+		return nil, fmt.Errorf("node %q: memory_recall node requires a memory or knowledge provider (use WithMemoryProvider)", nd.ID)
+	}
+	policy, err := memory.ParseFailurePolicy(configString(nd.Config, "on_unavailable"))
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", nd.ID, err)
+	}
+
+	cfg := nodes.MemoryRecallNodeConfig{
+		Memory:             opts.memory,
+		Knowledge:          opts.knowledge,
+		Namespace:          configString(nd.Config, "namespace"),
+		KnowledgeNamespace: configString(nd.Config, "knowledge_namespace"),
+		QueryVar:           configString(nd.Config, "query_var"),
+		OutputVar:          configString(nd.Config, "output_var"),
+		Budget:             configBudget(nd.Config, "budget"),
+		TokenCounter:       opts.tokenCounter,
+		Compactor:          opts.compactor,
+		OnUnavailable:      policy,
+		Timeout:            configDuration(nd.Config, "timeout"),
+	}
+	if v, ok := configInt(nd.Config, "history_limit"); ok {
+		cfg.HistoryLimit = v
+	}
+	if v, ok := configInt(nd.Config, "top_k"); ok {
+		cfg.TopK = v
+	}
+	if v, ok := configFloat64(nd.Config, "min_score"); ok {
+		cfg.MinScore = v
+	}
+	if v, ok := configStringSlice(nd.Config, "roles"); ok {
+		cfg.Roles = v
+	}
+	if v, ok := configStringSlice(nd.Config, "collections"); ok {
+		cfg.Collections = v
+	}
+	if v, ok := nd.Config["record_messages"].(bool); ok {
+		cfg.RecordMessages = v
+	}
+	if v, ok := nd.Config["record_content"].(bool); ok {
+		cfg.RecordContent = v
+	}
+	// A recall node that only reads knowledge must not require a session.
+	if v, ok := nd.Config["use_memory"].(bool); ok && !v {
+		cfg.Memory = nil
+	}
+	if v, ok := nd.Config["use_knowledge"].(bool); ok && !v {
+		cfg.Knowledge = nil
+	}
+	if cfg.Memory == nil && cfg.Knowledge == nil {
+		return nil, fmt.Errorf("node %q: memory_recall disables both memory and knowledge", nd.ID)
+	}
+
+	return nodes.NewMemoryRecallNode(nd.ID, cfg), nil
+}
+
+// buildMemoryStoreNode creates a MemoryStoreNode from a NodeDef.
+func buildMemoryStoreNode(nd graph.NodeDef, opts liveFactoryOptions) (core.Node, error) {
+	if opts.memory == nil {
+		return nil, fmt.Errorf("node %q: memory_store node requires a memory provider (use WithMemoryProvider)", nd.ID)
+	}
+	policy, err := memory.ParseFailurePolicy(configString(nd.Config, "on_unavailable"))
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", nd.ID, err)
+	}
+
+	cfg := nodes.MemoryStoreNodeConfig{
+		Memory:        opts.memory,
+		Namespace:     configString(nd.Config, "namespace"),
+		OutputVar:     configString(nd.Config, "output_var"),
+		Metadata:      configStringMap(nd.Config, "metadata"),
+		OnUnavailable: policy,
+		Timeout:       configDuration(nd.Config, "timeout"),
+	}
+	if v, ok := nd.Config["include_new_messages"].(bool); ok {
+		cfg.IncludeNewMessages = v
+	}
+	entriesRaw, _ := nd.Config["entries"].([]any)
+	for i, raw := range entriesRaw {
+		entryMap, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("node %q: config.entries[%d] must be an object", nd.ID, i)
+		}
+		entry := nodes.MemoryStoreEntry{
+			Role: configMapString(entryMap, "role"),
+			Var:  configMapString(entryMap, "var"),
+			Name: configMapString(entryMap, "name"),
+		}
+		if entry.Var == "" {
+			return nil, fmt.Errorf("node %q: config.entries[%d].var is required", nd.ID, i)
+		}
+		cfg.Entries = append(cfg.Entries, entry)
+	}
+	if len(cfg.Entries) == 0 && !cfg.IncludeNewMessages {
+		return nil, fmt.Errorf("node %q: memory_store requires config.entries or include_new_messages", nd.ID)
+	}
+
+	return nodes.NewMemoryStoreNode(nd.ID, cfg), nil
 }
 
 // buildLLMRouter extracts config from a NodeDef and returns an LLMRouter.

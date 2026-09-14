@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/memory"
 )
 
 // EventKind identifies the type of event emitted by the runtime.
@@ -80,6 +81,30 @@ const (
 	// Payload includes: source_node, source_port, target_node, target_port,
 	// data_size_bytes, data_preview.
 	EventEdgeTransfer EventKind = "edge.transfer"
+
+	// EventMemoryRecall is emitted when a node reads conversation memory and/or
+	// knowledge from a memory provider. Payload includes: provider, namespace,
+	// session_id, thread_id, status (ok|unavailable), history_count,
+	// retrieved_count, latency_ms, error_class. Content is never included unless
+	// the node explicitly opts in.
+	EventMemoryRecall EventKind = "memory.recall"
+
+	// EventMemoryStore is emitted when a node writes to a memory provider.
+	// Payload includes: provider, namespace, session_id, thread_id, status,
+	// message_count, stored_count, latency_ms, error_class.
+	EventMemoryStore EventKind = "memory.store"
+
+	// EventContextAssembled is emitted when recalled history and retrieved
+	// artifacts are fitted to a token/artifact budget before a model call.
+	// Payload is memory.AssemblyStats: token estimates, included/dropped
+	// counts, compacted flag, and prompt_cache_key (a hash of the stable
+	// request prefix, never the prefix itself).
+	EventContextAssembled EventKind = "context.assembled"
+
+	// EventContextCompacted is emitted in addition to context.assembled when
+	// history had to be truncated or summarized to fit the budget. Payload
+	// includes: history_dropped, summarized, max_tokens.
+	EventContextCompacted EventKind = "context.compacted"
 )
 
 // String returns the string representation of the EventKind.
@@ -162,6 +187,22 @@ func (e Event) WithPayload(key string, value any) Event {
 		e.Payload = make(map[string]any)
 	}
 	e.Payload[key] = value
+	return e
+}
+
+// WithScope records the memory scope's namespace, session_id, and thread_id
+// on the event payload. The run ID is already the event's RunID and the tenant
+// is deliberately not written to events; content is never included.
+func (e Event) WithScope(scope memory.Scope) Event {
+	if scope.Namespace != "" {
+		e = e.WithPayload("namespace", scope.Namespace)
+	}
+	if scope.SessionID != "" {
+		e = e.WithPayload("session_id", scope.SessionID)
+	}
+	if scope.ThreadID != "" {
+		e = e.WithPayload("thread_id", scope.ThreadID)
+	}
 	return e
 }
 

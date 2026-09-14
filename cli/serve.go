@@ -21,6 +21,7 @@ import (
 	"github.com/petal-labs/petalflow/daemon"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/llmprovider"
+	"github.com/petal-labs/petalflow/memory"
 	petalotel "github.com/petal-labs/petalflow/otel"
 	petalruntime "github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/security"
@@ -51,6 +52,7 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().Duration("idle-timeout", 120*time.Second, "HTTP idle (keep-alive) timeout")
 	cmd.Flags().Int64("max-body", 1<<20, "Max request body size in bytes")
 	cmd.Flags().Duration("workflow-schedule-poll", 5*time.Second, "Workflow schedule poll interval")
+	cmd.Flags().String("memory-backend", "none", "Memory/knowledge backend for memory_recall and memory_store nodes: none or inmemory (process-local, for development)")
 
 	return cmd
 }
@@ -101,6 +103,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		tenantID = "default"
 	}
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
+	memoryBackend, _ := cmd.Flags().GetString("memory-backend")
+	memoryConfig, err := resolveMemoryBackend(memoryBackend)
+	if err != nil {
+		return err
+	}
 
 	dsn, backend, scope, err := resolveDatabaseDSN(cmd)
 	if err != nil {
@@ -225,6 +232,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Bus:        eb,
 		EventStore: es,
 		RunStore:   runStore,
+		Memory:     memoryConfig,
 		CORSOrigin: corsOrigin,
 		MaxBody:    maxBody,
 		Security: server.SecurityConfig{
@@ -299,5 +307,19 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return exitError(exitRuntime, "server error: %v", err)
 		}
 		return nil
+	}
+}
+
+// resolveMemoryBackend maps the --memory-backend flag to a server memory
+// configuration. Durable backends (for example Cortex) are wired by embedding
+// the server in Go and setting server.MemoryConfig directly.
+func resolveMemoryBackend(name string) (server.MemoryConfig, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "none":
+		return server.MemoryConfig{}, nil
+	case "inmemory":
+		return server.MemoryConfig{Provider: memory.NewInMemoryProvider()}, nil
+	default:
+		return server.MemoryConfig{}, fmt.Errorf("unsupported --memory-backend %q: want none or inmemory", name)
 	}
 }

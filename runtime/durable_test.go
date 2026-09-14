@@ -10,6 +10,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 )
 
 func TestMemoryRunStore_PersistsRunAcrossInstances(t *testing.T) {
@@ -53,7 +54,7 @@ func TestSQLiteRunStore_PersistsCheckpointAcrossReopen(t *testing.T) {
 	}
 	record := &RunRecord{ID: "run-1", Status: RunStatusPaused, Checkpoint: &Checkpoint{
 		ID: "checkpoint-1", RunID: "run-1", Queue: []string{"approval"}, Envelope: core.NewEnvelope(),
-	}}
+	}, Scope: &memory.Scope{TenantID: "acme", Namespace: "support", SessionID: "sess-1", RunID: "run-1"}}
 	if err := store.Create(ctx, record); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +73,9 @@ func TestSQLiteRunStore_PersistsCheckpointAcrossReopen(t *testing.T) {
 	}
 	if got.Status != RunStatusPaused || got.Checkpoint.Queue[0] != "approval" {
 		t.Fatalf("reopened record = %#v", got)
+	}
+	if got.Scope == nil || *got.Scope != *record.Scope {
+		t.Fatalf("reopened scope = %+v, want %+v", got.Scope, record.Scope)
 	}
 }
 

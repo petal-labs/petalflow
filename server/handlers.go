@@ -14,7 +14,6 @@ import (
 
 	"github.com/petal-labs/petalflow/agent"
 	"github.com/petal-labs/petalflow/bus"
-	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/loader"
 	"github.com/petal-labs/petalflow/nodes"
@@ -307,6 +306,14 @@ type RunReqOptions struct {
 	Stream         bool                `json:"stream,omitempty"`
 	IdempotencyKey string              `json:"idempotency_key,omitempty"`
 	Human          *RunReqHumanOptions `json:"human,omitempty"`
+
+	// Memory scope. Namespace and SessionID address the conversation memory
+	// this run may read and write; ThreadID optionally selects a branch. The
+	// tenant is always taken from the authenticated identity, never from the
+	// request body.
+	Namespace string `json:"namespace,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	ThreadID  string `json:"thread_id,omitempty"`
 }
 
 // RunReqHumanOptions controls how daemon run requests handle human node prompts.
@@ -463,7 +470,7 @@ func (s *Server) handleRunStreaming(
 		defer sub.Close()
 	}
 
-	doneCh := s.startStreamingRuntime(ctx, id, plan.execGraph, plan.env, runID, plan.workflowVersion, plan.idempotencyKey, plan.tenantID)
+	doneCh := s.startStreamingRuntime(ctx, id, plan, runID)
 	writer.writeEvent("run.started", map[string]string{"run_id": runID, "workflow_id": id})
 
 	if sub == nil {
@@ -522,21 +529,19 @@ func (s *Server) subscribeRun(runID string) bus.Subscription {
 func (s *Server) startStreamingRuntime(
 	ctx context.Context,
 	workflowID string,
-	execGraph *graph.BasicGraph,
-	env *core.Envelope,
+	plan *workflowRunPlan,
 	runID string,
-	workflowVersion string,
-	idempotencyKey string,
-	tenantID string,
 ) <-chan error {
+	execGraph, env := plan.execGraph, plan.env
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
 	opts.RunID = runID
 	opts.WorkflowID = workflowID
-	opts.WorkflowVersion = workflowVersion
-	opts.TenantID = tenantID
-	opts.IdempotencyKey = idempotencyKey
+	opts.WorkflowVersion = plan.workflowVersion
+	opts.TenantID = plan.tenantID
+	opts.Scope = plan.scope
+	opts.IdempotencyKey = plan.idempotencyKey
 	if s.runStore != nil {
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
 	}

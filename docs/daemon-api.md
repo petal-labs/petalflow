@@ -125,6 +125,10 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 - `options.timeout` (`duration`, default `5m`)
 - `options.stream` (`bool`): stream run events via SSE
 - `options.human` (`object`): human node handling
+- `options.namespace`, `options.session_id`, `options.thread_id` (`string`):
+  memory scope for `memory_recall` / `memory_store` nodes. The tenant always
+  comes from the authenticated identity. A malformed scope returns
+  `400 INVALID_SCOPE`; see [`memory-context.md`](./memory-context.md).
 
 `options.human.mode` values:
 

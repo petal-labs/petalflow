@@ -280,6 +280,20 @@ PetalFlow supports both directions of webhook automation:
 
 See full walk-through: [`examples/08_webhooks`](./examples/08_webhooks)
 
+## Memory and context
+
+Workflows can recall conversation history and retrieved knowledge by stable
+session and namespace identifiers, keep it within token/artifact budgets, and
+persist new turns:
+
+- `memory_recall`: load scoped history and knowledge, fitted to a budget
+- `memory_store`: persist conversation turns to the run's scope
+- `llm_prompt` with `include_messages`: send recalled history as prior turns
+
+Backends implement the small `memory.MemoryProvider` / `memory.KnowledgeProvider`
+contract and can verify themselves with the `memory/memorytest` conformance
+suite. See [`docs/memory-context.md`](./docs/memory-context.md).
+
 ## Tools and MCP
 
 PetalFlow includes a tool registry and MCP integration for attaching external capabilities to workflows.

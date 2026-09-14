@@ -31,6 +31,7 @@ const (
 	NodeKindWebhookTrigger NodeKind = "webhook_trigger"
 	NodeKindHuman          NodeKind = "human"
 	NodeKindConditional    NodeKind = "conditional"
+	NodeKindMemory         NodeKind = "memory"
 )
 
 // String returns the string representation of the NodeKind.

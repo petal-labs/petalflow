@@ -14,6 +14,7 @@ import (
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/hydrate"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -40,6 +41,7 @@ type workflowRunPlan struct {
 	resumeToken     string
 	idempotencyKey  string
 	tenantID        string
+	scope           memory.Scope
 }
 
 type scheduledRunMetadata struct {
@@ -102,10 +104,18 @@ func (s *Server) planWorkflowRunWithDefinition(
 		return nil, &runAPIError{Status: http.StatusInternalServerError, Code: "TOOL_REGISTRY_ERROR", Message: err.Error()}
 	}
 
-	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory,
-		hydrate.WithToolRegistry(toolRegistry),
-		hydrate.WithHumanHandler(humanHandler),
-	)
+	scope := memory.Scope{
+		Namespace: req.Options.Namespace,
+		SessionID: req.Options.SessionID,
+		ThreadID:  req.Options.ThreadID,
+	}.Normalized()
+	if !scope.IsZero() {
+		if err := scope.Validate(); err != nil {
+			return nil, &runAPIError{Status: http.StatusBadRequest, Code: "INVALID_SCOPE", Message: err.Error()}
+		}
+	}
+
+	factory := hydrate.NewLiveNodeFactory(s.providers, s.clientFactory, s.liveNodeOptions(toolRegistry, humanHandler)...)
 	execGraph, err := hydrate.HydrateGraph(compiled, s.providers, factory)
 	if err != nil {
 		return nil, &runAPIError{Status: http.StatusUnprocessableEntity, Code: "HYDRATE_ERROR", Message: err.Error()}
@@ -117,7 +127,29 @@ func (s *Server) planWorkflowRunWithDefinition(
 		timeout:         timeout,
 		workflowVersion: compiled.Version,
 		idempotencyKey:  req.Options.IdempotencyKey,
+		scope:           scope,
 	}, nil
+}
+
+// liveNodeOptions assembles the hydration dependencies shared by every run.
+func (s *Server) liveNodeOptions(toolRegistry *core.ToolRegistry, humanHandler nodes.HumanHandler) []hydrate.LiveNodeOption {
+	opts := []hydrate.LiveNodeOption{
+		hydrate.WithToolRegistry(toolRegistry),
+		hydrate.WithHumanHandler(humanHandler),
+	}
+	if s.memory.Provider != nil {
+		opts = append(opts, hydrate.WithMemoryProvider(s.memory.Provider))
+	}
+	if s.memory.Knowledge != nil {
+		opts = append(opts, hydrate.WithKnowledgeProvider(s.memory.Knowledge))
+	}
+	if s.memory.TokenCounter != nil {
+		opts = append(opts, hydrate.WithTokenCounter(s.memory.TokenCounter))
+	}
+	if s.memory.Compactor != nil {
+		opts = append(opts, hydrate.WithCompactor(s.memory.Compactor))
+	}
+	return opts
 }
 
 func (s *Server) executeWorkflowRunSync(
@@ -140,6 +172,7 @@ func (s *Server) executeWorkflowRunSync(
 	opts.RunStore = s.runStore
 	opts.WorkflowID = workflowID
 	opts.TenantID = plan.tenantID
+	opts.Scope = plan.scope
 	opts.WorkflowVersion = plan.workflowVersion
 	if plan.env.Trace.RunID == "" && s.runStore != nil {
 		plan.env.Trace.RunID = uuid.New().String()
@@ -200,6 +233,12 @@ func (s *Server) executeWorkflowRunSync(
 		}
 		if errors.Is(err, runtime.ErrInvalidResumeToken) {
 			return RunResponse{}, &runAPIError{Status: http.StatusForbidden, Code: "INVALID_RESUME_TOKEN", Message: "resume token is invalid"}
+		}
+		if errors.Is(err, runtime.ErrScopeMismatch) {
+			return RunResponse{}, &runAPIError{Status: http.StatusConflict, Code: "SCOPE_MISMATCH", Message: "run belongs to a different memory scope"}
+		}
+		if errors.Is(err, memory.ErrInvalidScope) {
+			return RunResponse{}, &runAPIError{Status: http.StatusBadRequest, Code: "INVALID_SCOPE", Message: err.Error()}
 		}
 		if runCtx.Err() == context.DeadlineExceeded {
 			return RunResponse{}, &runAPIError{Status: http.StatusGatewayTimeout, Code: "TIMEOUT", Message: err.Error()}

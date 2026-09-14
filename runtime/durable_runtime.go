@@ -65,6 +65,11 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		if record.NodeTimeout > 0 && opts.NodeTimeout <= 0 {
 			opts.NodeTimeout = record.NodeTimeout
 		}
+		scope, scopeErr := restoreScope(opts, record, runID)
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		opts.Scope = scope
 		if isTerminal(record.Status) {
 			// Failed runs and context-canceled runs may be retried from their
 			// pre-node checkpoint. Explicit API cancellation and completed runs
@@ -89,6 +94,11 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		}
 		env.Trace.RunID = runID
 		env.Trace.Started = opts.Now()
+		scope, scopeErr := resolveScope(opts, runID)
+		if scopeErr != nil {
+			return nil, scopeErr
+		}
+		opts.Scope = scope
 		record = &RunRecord{
 			ID:              runID,
 			TenantID:        opts.TenantID,
@@ -104,6 +114,10 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 			StartedAt:       env.Trace.Started,
 			UpdatedAt:       env.Trace.Started,
 			Checkpoint:      newCheckpoint(runID, env, []string{g.Entry()}, nil, nil),
+		}
+		if !opts.Scope.IsZero() {
+			scope := opts.Scope
+			record.Scope = &scope
 		}
 		if err := opts.RunStore.Create(ctx, record); err != nil {
 			return nil, fmt.Errorf("create run %s: %w", runID, err)
@@ -168,6 +182,7 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		if opts.WorkflowID != "" {
 			event = event.WithPayload("workflow_id", opts.WorkflowID)
 		}
+		event = event.WithScope(opts.Scope)
 		emit(event)
 	}
 

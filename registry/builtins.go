@@ -253,6 +253,37 @@ func registerBuiltins(r *Registry) {
 	})
 
 	r.Register(NodeTypeDef{
+		Type:        "memory_recall",
+		Category:    "data",
+		DisplayName: "Memory Recall",
+		Description: "Load scoped conversation history and relevant knowledge, fitted to a context budget",
+		Ports: PortSchema{
+			Inputs: []PortDef{
+				{Name: "input", Type: "any", Required: false},
+			},
+			Outputs: []PortDef{
+				{Name: "output", Type: "any"},
+				{Name: "context", Type: "string"},
+			},
+		},
+	})
+
+	r.Register(NodeTypeDef{
+		Type:        "memory_store",
+		Category:    "data",
+		DisplayName: "Memory Store",
+		Description: "Persist conversation turns to the run's scoped memory",
+		Ports: PortSchema{
+			Inputs: []PortDef{
+				{Name: "input", Type: "any", Required: false},
+			},
+			Outputs: []PortDef{
+				{Name: "output", Type: "any"},
+			},
+		},
+	})
+
+	r.Register(NodeTypeDef{
 		Type:        "conditional",
 		Category:    "control",
 		DisplayName: "Conditional",
@@ -276,7 +307,9 @@ func registerBuiltins(r *Registry) {
 // warning at load time. Types absent from this map (e.g. noop, func) accept no
 // config and are not checked. Keep in sync with hydrate/llmfactory.go.
 var builtinConfigKeys = map[string][]string{
-	"llm_prompt":      {"provider", "model", "system_prompt", "prompt_template", "output_key", "temperature", "max_tokens"},
+	"llm_prompt":      {"provider", "model", "system_prompt", "prompt_template", "output_key", "temperature", "max_tokens", "include_messages", "record_messages", "context_budget"},
+	"memory_recall":   {"namespace", "knowledge_namespace", "query_var", "output_var", "history_limit", "roles", "top_k", "collections", "min_score", "budget", "record_messages", "record_content", "on_unavailable", "timeout", "use_memory", "use_knowledge"},
+	"memory_store":    {"namespace", "entries", "include_new_messages", "metadata", "output_var", "on_unavailable", "timeout"},
 	"llm_router":      {"provider", "model", "system_prompt", "decision_key", "temperature", "allowed_targets"},
 	"rule_router":     {"default_target", "decision_key", "allow_multiple", "rules"},
 	"filter":          {"target", "input_var", "output_var", "stats_var", "filters"},

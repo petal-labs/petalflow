@@ -9,6 +9,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	condnode "github.com/petal-labs/petalflow/nodes/conditional"
 	"github.com/petal-labs/petalflow/registry"
@@ -1078,6 +1079,7 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 		factory,
 		WithToolRegistry(toolRegistry),
 		WithHumanHandler(handler),
+		WithMemoryProvider(memory.NewInMemoryProvider()),
 	)
 
 	type caseDef struct {
@@ -1234,6 +1236,26 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 							"name":       "ok",
 							"expression": "input.score > 0.5",
 						},
+					},
+				},
+			},
+		},
+		"memory_recall": {
+			node: graph.NodeDef{
+				ID:   "n-memory-recall",
+				Type: "memory_recall",
+				Config: map[string]any{
+					"query_var": "question",
+				},
+			},
+		},
+		"memory_store": {
+			node: graph.NodeDef{
+				ID:   "n-memory-store",
+				Type: "memory_store",
+				Config: map[string]any{
+					"entries": []any{
+						map[string]any{"role": "user", "var": "question"},
 					},
 				},
 			},

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Memory and context management** (`memory` package, issue #172). Workflows
+  can now request conversation memory and knowledge by stable identifiers and
+  keep model context within explicit budgets:
+  - `memory.Scope` (`tenant_id`, `namespace`, `session_id`, `thread_id`,
+    `run_id`) is set through `runtime.RunOptions.Scope` (HTTP:
+    `options.namespace` / `session_id` / `thread_id`), validated before any
+    node runs, attached to every node context, recorded as identifiers on
+    `run.started`, and persisted on durable `RunRecord`s so `Resume` keeps the
+    same session. A resume that names a different scope fails with
+    `runtime.ErrScopeMismatch` (`409 SCOPE_MISMATCH`).
+  - `memory.MemoryProvider` / `memory.KnowledgeProvider` define the pluggable
+    contract a durable backend such as Cortex implements. Outage-class
+    failures are classified with `memory.Unavailable` / `memory.IsUnavailable`.
+    `memory.InMemoryProvider` is a process-local reference implementation, and
+    `memory/memorytest` is a conformance suite any adapter can run from its
+    own module without PetalFlow importing backend internals.
+  - `memory.Budget`, `memory.TokenCounter`, `memory.Compactor`, and
+    `memory.Assemble` fit history and retrieved artifacts to token, message,
+    and artifact limits deterministically; `AssemblyStats.PromptCacheKey`
+    hashes the stable request prefix for prompt-cache correlation.
+  - New `memory_recall` and `memory_store` node types (`core.NodeKindMemory`),
+    hydrated via `hydrate.WithMemoryProvider` / `WithKnowledgeProvider` /
+    `WithTokenCounter` / `WithCompactor`, `server.ServerConfig.Memory`, or
+    `petalflow serve --memory-backend inmemory`. `on_unavailable: continue`
+    degrades gracefully while recording a `core.NodeError` on the envelope;
+    the default fails the node.
+  - `llm_prompt` gained `include_messages` and `context_budget`
+    (`LLMNodeConfig.IncludeMessages` / `ContextBudget`): envelope messages are
+    sent as prior turns, fitted to the budget, and the prefix hash is passed
+    as `LLMRequest.Meta["prompt_cache_key"]`. `record_messages` is now also
+    configurable from graph definitions.
+  - New events `memory.recall`, `memory.store`, `context.assembled`, and
+    `context.compacted` carry identifiers, counts, latencies, and error
+    classes only; content is never recorded unless a node opts in with
+    `record_content`.
+  See [`docs/memory-context.md`](docs/memory-context.md).
+
 ### Changed
 
 - **Upgraded Iris to v1.0.0** (from v0.17.0), the first stable Iris release.

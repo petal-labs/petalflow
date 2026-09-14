@@ -13,6 +13,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 )
 
 // Runtime errors
@@ -109,6 +110,15 @@ type Runtime interface {
 type RunOptions struct {
 	// TenantID scopes durable state to the authenticated caller's tenant.
 	TenantID string
+
+	// Scope identifies the memory/context partition (namespace, session,
+	// thread) this run may read and write. The runtime fills Scope.RunID and,
+	// when Scope.TenantID is empty, Scope.TenantID from TenantID, then attaches
+	// the scope to every node context (memory.ScopeFromContext). Identifiers
+	// are recorded on the run.started event and persisted with durable runs so
+	// a resumed run keeps the same scope.
+	Scope memory.Scope
+
 	// RunStore enables durable run records and checkpoints. When set, execution
 	// uses the sequential durable executor so a worker can resume safely.
 	RunStore RunStore
@@ -270,6 +280,11 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	env.Trace.RunID = runID
 	env.Trace.Started = opts.Now()
 
+	var err error
+	if opts.Scope, err = resolveScope(opts, runID); err != nil {
+		return nil, err
+	}
+
 	// Create event emitter
 	seq := newSeqGen()
 	// emit is serialized so that sequence assignment and delivery are atomic:
@@ -315,6 +330,7 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	if opts.WorkflowVersion != "" {
 		runStartEvent = runStartEvent.WithPayload("workflow_version", opts.WorkflowVersion)
 	}
+	runStartEvent = runStartEvent.WithScope(opts.Scope)
 
 	// Add snapshot data for PetalTrace replay support
 	if opts.CaptureSnapshots {
@@ -1157,6 +1173,9 @@ func (r *BasicRuntime) executeNode(
 	// Inject emitter into context for node use
 	nodeCtx := ContextWithEmitter(ctx, emit)
 	nodeCtx = ContextWithIdempotencyKey(nodeCtx, opts.IdempotencyKey)
+	if !opts.Scope.IsZero() {
+		nodeCtx = memory.ContextWithScope(nodeCtx, opts.Scope)
+	}
 	if opts.HumanRequestHandler != nil {
 		nodeCtx = ContextWithHumanRequestHandler(nodeCtx, opts.HumanRequestHandler)
 	}
