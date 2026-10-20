@@ -81,3 +81,53 @@ func TestHTTPFetchBuiltinInvoke(t *testing.T) {
 		t.Fatalf("outputs[status_code] = %v, want 200", got)
 	}
 }
+
+func TestHTTPFetchBuiltinInvoke_AllowPrivateNetworkStringConfig(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	native, ok := LookupBuiltinNativeTool("http_fetch")
+	if !ok {
+		t.Fatal("LookupBuiltinNativeTool(http_fetch) = false")
+	}
+
+	adapter := NewNativeAdapter(native)
+	resp, err := adapter.Invoke(context.Background(), InvokeRequest{
+		Action: "fetch",
+		Inputs: map[string]any{
+			"url": srv.URL + "/ok",
+		},
+		Config: map[string]any{"allow_private_network": "true"},
+	})
+	if err != nil {
+		t.Fatalf("Invoke() error = %v", err)
+	}
+	if got := resp.Outputs["status_code"]; got != 200 {
+		t.Fatalf("outputs[status_code] = %v, want 200", got)
+	}
+}
+
+func TestHTTPFetchBuiltinInvoke_RejectsPrivateNetworkByDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	native, ok := LookupBuiltinNativeTool("http_fetch")
+	if !ok {
+		t.Fatal("LookupBuiltinNativeTool(http_fetch) = false")
+	}
+
+	adapter := NewNativeAdapter(native)
+	if _, err := adapter.Invoke(context.Background(), InvokeRequest{
+		Action: "fetch",
+		Inputs: map[string]any{
+			"url": srv.URL + "/ok",
+		},
+		Config: map[string]any{"allow_private_network": "not-a-bool"},
+	}); err == nil {
+		t.Fatal("Invoke() expected error for invalid allow_private_network value")
+	}
+}

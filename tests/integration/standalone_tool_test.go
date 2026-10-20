@@ -14,6 +14,7 @@ import (
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/runtime"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 type staticLLMClient struct{}
@@ -29,6 +30,38 @@ func (c *staticLLMClient) Complete(_ context.Context, req core.LLMRequest) (core
 			TotalTokens:  2,
 		},
 	}, nil
+}
+
+// httpFetchConfiguredStore serves an http_fetch registration that permits
+// private-network egress, exercising the per-registration config plumbing.
+type httpFetchConfiguredStore struct{}
+
+func (httpFetchConfiguredStore) List(context.Context) ([]tool.ToolRegistration, error) {
+	return []tool.ToolRegistration{configuredHTTPFetchRegistration()}, nil
+}
+
+func (httpFetchConfiguredStore) Get(_ context.Context, name string) (tool.ToolRegistration, bool, error) {
+	if name != "http_fetch" {
+		return tool.ToolRegistration{}, false, nil
+	}
+	return configuredHTTPFetchRegistration(), true, nil
+}
+
+func (httpFetchConfiguredStore) Upsert(context.Context, tool.ToolRegistration) error {
+	return nil
+}
+
+func (httpFetchConfiguredStore) Delete(context.Context, string) error {
+	return nil
+}
+
+func configuredHTTPFetchRegistration() tool.ToolRegistration {
+	reg, ok := tool.BuiltinRegistration("http_fetch")
+	if !ok {
+		panic("builtin http_fetch registration missing")
+	}
+	reg.Config = map[string]string{"allow_private_network": "true"}
+	return reg
 }
 
 func TestAgentCompile_StandaloneToolExecution_HTTPFetch(t *testing.T) {
@@ -92,7 +125,7 @@ func TestAgentCompile_StandaloneToolExecution_HTTPFetch(t *testing.T) {
 		t.Fatalf("Entry = %q, want fetch__http_fetch.fetch", gd.Entry)
 	}
 
-	toolRegistry, err := hydrate.BuildActionToolRegistry(context.Background(), nil)
+	toolRegistry, err := hydrate.BuildActionToolRegistry(context.Background(), httpFetchConfiguredStore{})
 	if err != nil {
 		t.Fatalf("BuildActionToolRegistry() error = %v", err)
 	}

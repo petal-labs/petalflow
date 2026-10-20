@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 
@@ -162,6 +163,10 @@ func (httpFetchTool) Manifest() Manifest {
 			Sensitive:   true,
 			Description: "Optional Authorization header value.",
 		},
+		"allow_private_network": {
+			Type:        TypeBoolean,
+			Description: "Allow fetching from loopback, private, and link-local network addresses.",
+		},
 	}
 	return manifest
 }
@@ -175,11 +180,7 @@ func (httpFetchTool) Invoke(ctx context.Context, action string, inputs map[strin
 	if strings.TrimSpace(urlValue) == "" {
 		return nil, fmt.Errorf("http_fetch: url input is required")
 	}
-	allowPrivate := false
-	if raw, ok := config["allow_private_network"].(bool); ok {
-		allowPrivate = raw
-	}
-	if err := security.ValidateOutboundURL(ctx, urlValue, allowPrivate); err != nil {
+	if err := security.ValidateOutboundURL(ctx, urlValue, configBool(config, "allow_private_network")); err != nil {
 		return nil, fmt.Errorf("http_fetch: outbound URL blocked")
 	}
 
@@ -223,4 +224,21 @@ func (httpFetchTool) Invoke(ctx context.Context, action string, inputs map[strin
 		"body":        string(respBody),
 		"headers":     headers,
 	}, nil
+}
+
+// configBool reads a boolean config value, accepting native booleans as well
+// as the string form used by persisted registration config.
+func configBool(config map[string]any, key string) bool {
+	switch raw := config[key].(type) {
+	case bool:
+		return raw
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return false
+		}
+		return parsed
+	default:
+		return false
+	}
 }
