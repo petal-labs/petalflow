@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/internal/sqldialect"
 	"github.com/petal-labs/petalflow/loader"
 
 	_ "modernc.org/sqlite"
@@ -41,6 +42,9 @@ CREATE TABLE IF NOT EXISTS workflow_schedules (
 	last_run_id TEXT,
 	last_status TEXT,
 	last_error TEXT,
+	lease_owner TEXT,
+	lease_expires_at TEXT,
+	consecutive_failures INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	FOREIGN KEY(workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
@@ -50,7 +54,13 @@ CREATE INDEX IF NOT EXISTS idx_workflow_schedules_workflow
 ON workflow_schedules(workflow_id);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due
-ON workflow_schedules(enabled, next_run_at);`
+ON workflow_schedules(enabled, next_run_at);
+
+` + runJobsSQLiteSchema
+
+// scheduleSelectColumns is the canonical workflow_schedules column list,
+// including the distributed lease columns.
+const scheduleSelectColumns = `id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id, lease_owner, lease_expires_at, consecutive_failures`
 
 var workflowInsertQueries = [8]string{
 	"INSERT INTO workflows (id, schema_kind, name, source, compiled, created_at, updated_at)\nVALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -93,7 +103,7 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 		return nil, errors.New("workflow store sqlite dsn is required")
 	}
 
-	db, err := sql.Open("sqlite", cfg.DSN)
+	db, err := sql.Open("sqlite", sqldialect.SQLiteBusyTimeout(cfg.DSN))
 	if err != nil {
 		return nil, fmt.Errorf("workflow sqlite store open: %w", err)
 	}
@@ -101,6 +111,12 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("workflow sqlite store set WAL mode: %w", err)
+	}
+	// Concurrent writers (worker claims, scheduler leases) must queue
+	// for the write lock instead of failing fast with SQLITE_BUSY.
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("workflow sqlite store set busy timeout: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		_ = db.Close()
@@ -126,6 +142,24 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 				_ = db.Close()
 				return nil, fmt.Errorf("workflow sqlite store add tenant column: %w", err)
 			}
+		}
+	}
+	scheduleColumns, err := sqliteTableColumns(db, "workflow_schedules")
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	for _, addition := range []struct{ column, ddl string }{
+		{column: "lease_owner", ddl: "ALTER TABLE workflow_schedules ADD COLUMN lease_owner TEXT"},
+		{column: "lease_expires_at", ddl: "ALTER TABLE workflow_schedules ADD COLUMN lease_expires_at TEXT"},
+		{column: "consecutive_failures", ddl: "ALTER TABLE workflow_schedules ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if scheduleColumns[addition.column] {
+			continue
+		}
+		if _, err := db.Exec(addition.ddl); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("workflow sqlite store add schedule column %s: %w", addition.column, err)
 		}
 	}
 	workflowColumns, err := sqliteTableColumns(db, "workflows")
@@ -298,7 +332,7 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 
 func (s *SQLiteStore) ListSchedules(ctx context.Context, workflowID string) ([]WorkflowSchedule, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
+SELECT `+scheduleSelectColumns+`
 FROM workflow_schedules
 WHERE workflow_id = ?
 ORDER BY created_at ASC`, workflowID)
@@ -323,7 +357,7 @@ ORDER BY created_at ASC`, workflowID)
 
 func (s *SQLiteStore) GetSchedule(ctx context.Context, workflowID, scheduleID string) (WorkflowSchedule, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
+SELECT `+scheduleSelectColumns+`
 FROM workflow_schedules
 WHERE workflow_id = ? AND id = ?`, workflowID, scheduleID)
 
@@ -362,11 +396,12 @@ func (s *SQLiteStore) CreateSchedule(ctx context.Context, schedule WorkflowSched
 
 	_, err = s.db.ExecContext(ctx, `
 INSERT INTO workflow_schedules
-	(id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at)
+	(id, workflow_id, tenant_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, lease_owner, lease_expires_at, consecutive_failures, created_at, updated_at)
 VALUES
-	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		schedule.ID,
 		schedule.WorkflowID,
+		schedule.TenantID,
 		schedule.Cron,
 		enabled,
 		inputJSON,
@@ -376,6 +411,9 @@ VALUES
 		nullIfEmpty(schedule.LastRunID),
 		nullIfEmpty(schedule.LastStatus),
 		nullIfEmpty(schedule.LastError),
+		nullIfEmpty(schedule.LeaseOwner),
+		formatNullableTime(schedule.LeaseExpiresAt),
+		schedule.ConsecutiveFailures,
 		schedule.CreatedAt.UTC().Format(time.RFC3339Nano),
 		schedule.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	)
@@ -384,9 +422,6 @@ VALUES
 			return ErrWorkflowScheduleExists
 		}
 		return fmt.Errorf("workflow sqlite store create schedule: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = ? WHERE id = ?", schedule.TenantID, schedule.ID); err != nil {
-		return fmt.Errorf("workflow sqlite store set schedule tenant: %w", err)
 	}
 	return nil
 }
@@ -422,6 +457,9 @@ SET
 	last_run_id = ?,
 	last_status = ?,
 	last_error = ?,
+	lease_owner = ?,
+	lease_expires_at = ?,
+	consecutive_failures = ?,
 	updated_at = ?
 WHERE workflow_id = ? AND id = ?`,
 		schedule.Cron,
@@ -433,6 +471,9 @@ WHERE workflow_id = ? AND id = ?`,
 		nullIfEmpty(schedule.LastRunID),
 		nullIfEmpty(schedule.LastStatus),
 		nullIfEmpty(schedule.LastError),
+		nullIfEmpty(schedule.LeaseOwner),
+		formatNullableTime(schedule.LeaseExpiresAt),
+		schedule.ConsecutiveFailures,
 		schedule.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		schedule.WorkflowID,
 		schedule.ID,
@@ -447,9 +488,6 @@ WHERE workflow_id = ? AND id = ?`,
 	}
 	if affected == 0 {
 		return ErrWorkflowScheduleNotFound
-	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = ? WHERE workflow_id = ? AND id = ?", schedule.TenantID, schedule.WorkflowID, schedule.ID); err != nil {
-		return fmt.Errorf("workflow sqlite store set schedule tenant: %w", err)
 	}
 	return nil
 }
@@ -483,7 +521,7 @@ WHERE workflow_id = ?`, workflowID); err != nil {
 
 func (s *SQLiteStore) ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]WorkflowSchedule, error) {
 	query := `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
+SELECT ` + scheduleSelectColumns + `
 FROM workflow_schedules
 WHERE enabled = 1 AND next_run_at <= ?
 ORDER BY next_run_at ASC`
@@ -587,20 +625,23 @@ func scanWorkflowRecord(scanner workflowScanner) (WorkflowRecord, error) {
 
 func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
 	var (
-		id         string
-		workflowID string
-		cronExpr   string
-		enabledRaw int
-		inputRaw   []byte
-		optionsRaw []byte
-		nextRunAt  string
-		lastRunAt  sql.NullString
-		lastRunID  sql.NullString
-		lastStatus sql.NullString
-		lastError  sql.NullString
-		createdAt  string
-		updatedAt  string
-		tenantID   string
+		id                  string
+		workflowID          string
+		cronExpr            string
+		enabledRaw          int
+		inputRaw            []byte
+		optionsRaw          []byte
+		nextRunAt           string
+		lastRunAt           sql.NullString
+		lastRunID           sql.NullString
+		lastStatus          sql.NullString
+		lastError           sql.NullString
+		createdAt           string
+		updatedAt           string
+		tenantID            string
+		leaseOwner          sql.NullString
+		leaseExpiresAt      sql.NullString
+		consecutiveFailures int
 	)
 	if err := scanner.Scan(
 		&id,
@@ -617,6 +658,9 @@ func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
 		&createdAt,
 		&updatedAt,
 		&tenantID,
+		&leaseOwner,
+		&leaseExpiresAt,
+		&consecutiveFailures,
 	); err != nil {
 		return WorkflowSchedule{}, err
 	}
@@ -652,21 +696,33 @@ func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
 		lastRunPtr = &parsed
 	}
 
+	var leaseExpiresPtr *time.Time
+	if leaseExpiresAt.Valid && strings.TrimSpace(leaseExpiresAt.String) != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, leaseExpiresAt.String)
+		if err != nil {
+			return WorkflowSchedule{}, fmt.Errorf("workflow sqlite store parse schedule lease_expires_at: %w", err)
+		}
+		leaseExpiresPtr = &parsed
+	}
+
 	return WorkflowSchedule{
-		ID:         id,
-		TenantID:   tenantID,
-		WorkflowID: workflowID,
-		Cron:       cronExpr,
-		Enabled:    enabledRaw == 1,
-		Input:      input,
-		Options:    options,
-		NextRunAt:  next,
-		LastRunAt:  lastRunPtr,
-		LastRunID:  lastRunID.String,
-		LastStatus: lastStatus.String,
-		LastError:  lastError.String,
-		CreatedAt:  created,
-		UpdatedAt:  updated,
+		ID:                  id,
+		TenantID:            tenantID,
+		WorkflowID:          workflowID,
+		Cron:                cronExpr,
+		Enabled:             enabledRaw == 1,
+		Input:               input,
+		Options:             options,
+		NextRunAt:           next,
+		LastRunAt:           lastRunPtr,
+		LastRunID:           lastRunID.String,
+		LastStatus:          lastStatus.String,
+		LastError:           lastError.String,
+		LeaseOwner:          leaseOwner.String,
+		LeaseExpiresAt:      leaseExpiresPtr,
+		ConsecutiveFailures: consecutiveFailures,
+		CreatedAt:           created,
+		UpdatedAt:           updated,
 	}, nil
 }
 

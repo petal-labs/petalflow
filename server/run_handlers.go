@@ -27,43 +27,113 @@ type RunStatusResponse struct {
 	CheckpointID    string                        `json:"checkpoint_id,omitempty"`
 	NodeStatuses    map[string]runtime.NodeStatus `json:"node_statuses,omitempty"`
 	PendingAction   *runtime.PendingAction        `json:"pending_action,omitempty"`
+	// Attempt is the execution attempt counter for asynchronous run jobs.
+	Attempt int `json:"attempt,omitempty"`
+	// NextAttemptAt is set for queued asynchronous jobs waiting on retry
+	// backoff.
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
 }
 
 func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	record, err := s.getOwnedRun(r)
-	if err != nil {
+	if err == nil {
+		writeJSON(w, http.StatusOK, runStatusResponse(record))
+		return
+	}
+	if !errors.Is(err, runtime.ErrRunNotFound) {
 		s.writeRunStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runStatusResponse(record))
+	// Fall back to the run job: queued or worker-executed runs are
+	// observable before the durable run record exists.
+	if job, jobErr := s.getOwnedRunJob(r); jobErr == nil {
+		writeJSON(w, http.StatusOK, runJobResponse(job))
+		return
+	} else if !errors.Is(jobErr, ErrRunJobNotFound) && !errors.Is(jobErr, errRunJobUnavailable) {
+		writeError(w, http.StatusInternalServerError, "RUN_JOB_STORE_ERROR", "load run job failed")
+		return
+	}
+	s.writeRunStoreError(w, err)
 }
 
 func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
-	if s.runStore == nil {
+	if s.runStore == nil && s.jobStore == nil {
 		writeError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "durable run store not configured")
 		return
 	}
 	runID := r.PathValue("run_id")
-	if _, err := s.getOwnedRun(r); err != nil {
-		s.writeRunStoreError(w, err)
+
+	_, runErr := s.getOwnedRun(r)
+	if runErr != nil && !errors.Is(runErr, runtime.ErrRunNotFound) {
+		s.writeRunStoreError(w, runErr)
 		return
 	}
-	if err := s.runStore.Cancel(r.Context(), runID); err != nil {
-		s.writeRunStoreError(w, err)
+	job, jobErr := s.getOwnedRunJob(r)
+	if jobErr != nil && !errors.Is(jobErr, ErrRunJobNotFound) && !errors.Is(jobErr, errRunJobUnavailable) {
+		writeError(w, http.StatusInternalServerError, "RUN_JOB_STORE_ERROR", "load run job failed")
 		return
 	}
-	s.activeMu.Lock()
-	cancel := s.activeRuns[runID]
-	s.activeMu.Unlock()
-	if cancel != nil {
-		cancel()
+	if runErr != nil && jobErr != nil {
+		// Neither the run record nor the job exists.
+		s.writeRunStoreError(w, runErr)
+		return
 	}
-	record, err := s.runStore.Get(r.Context(), runID)
+
+	// Cancel the asynchronous job, if one exists.
+	if jobErr == nil && !isRunJobTerminal(job.Status) {
+		if err := s.jobStore.CancelRunJob(r.Context(), runID, time.Now().UTC()); err != nil && !errors.Is(err, ErrRunJobConflict) {
+			writeError(w, http.StatusInternalServerError, "RUN_JOB_STORE_ERROR", "cancel run job failed")
+			return
+		}
+	}
+
+	// Cancel the durable run record, if one exists, and interrupt the
+	// local execution context when this process owns the run.
+	if runErr == nil {
+		if err := s.runStore.Cancel(r.Context(), runID); err != nil {
+			s.writeRunStoreError(w, err)
+			return
+		}
+		s.activeMu.Lock()
+		cancel := s.activeRuns[runID]
+		s.activeMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		updated, err := s.runStore.Get(r.Context(), runID)
+		if err != nil {
+			s.writeRunStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, runStatusResponse(updated))
+		return
+	}
+
+	refreshed, err := s.jobStore.GetRunJob(r.Context(), runID)
 	if err != nil {
 		s.writeRunStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, runStatusResponse(record))
+	writeJSON(w, http.StatusOK, runJobResponse(refreshed))
+}
+
+// errRunJobUnavailable marks a missing job store in fallback paths.
+var errRunJobUnavailable = errors.New("run job store not configured")
+
+// getOwnedRunJob returns the run job for the request path after a
+// tenant ownership check.
+func (s *Server) getOwnedRunJob(r *http.Request) (RunJob, error) {
+	if s.jobStore == nil {
+		return RunJob{}, errRunJobUnavailable
+	}
+	job, err := s.jobStore.GetRunJob(r.Context(), r.PathValue("run_id"))
+	if err != nil {
+		return RunJob{}, err
+	}
+	if !s.ownsTenant(r, job.TenantID) {
+		return RunJob{}, ErrRunJobNotFound
+	}
+	return job, nil
 }
 
 func (s *Server) handleResumeRun(w http.ResponseWriter, r *http.Request) {

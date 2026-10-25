@@ -34,9 +34,23 @@ type WorkflowSchedule struct {
 	LastStatus string     `json:"last_status,omitempty"`
 	LastError  string     `json:"last_error,omitempty"`
 
+	// Lease identifies the scheduler replica currently executing the
+	// due schedule. Claimed schedules are invisible to other replicas
+	// until the lease expires.
+	LeaseOwner     string     `json:"lease_owner,omitempty"`
+	LeaseExpiresAt *time.Time `json:"lease_expires_at,omitempty"`
+
+	// ConsecutiveFailures counts back-to-back failed runs for retry
+	// backoff and dead-lettering.
+	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+// scheduleRunStatusDeadLetter marks a schedule disabled after exceeding
+// its consecutive-failure budget.
+const ScheduleRunStatusDeadLetter = "dead_letter"
 
 // WorkflowScheduleStore provides CRUD + due scheduling operations.
 type WorkflowScheduleStore interface {
@@ -47,4 +61,8 @@ type WorkflowScheduleStore interface {
 	DeleteSchedule(ctx context.Context, workflowID, scheduleID string) error
 	DeleteSchedulesByWorkflow(ctx context.Context, workflowID string) error
 	ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]WorkflowSchedule, error)
+	// ClaimDueSchedules atomically claims due, unleased schedules for a
+	// named owner with a lease window. Two replicas calling concurrently
+	// must never both claim the same schedule.
+	ClaimDueSchedules(ctx context.Context, owner string, now time.Time, leaseDuration time.Duration, limit int) ([]WorkflowSchedule, error)
 }
