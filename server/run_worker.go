@@ -271,7 +271,7 @@ func (w *RunWorker) executeJob(ctx context.Context, job RunJob) {
 	defer close(stopPoll)
 
 	// A canceled job may have lost the race before execution started.
-	if w.jobCanceled(jobCtx, job.ID) {
+	if w.jobCanceled(job.ID) {
 		w.settleCanceled(job.ID)
 		return
 	}
@@ -336,8 +336,9 @@ func (w *RunWorker) handleRunError(ctx context.Context, job RunJob, runErr error
 		return
 	}
 
-	// An explicit cancel request must not be retried.
-	if ctx.Err() != nil && w.jobCanceled(ctx, job.ID) {
+	// An explicit cancel request must not be retried. Status lookups use
+	// a fresh context because the run context may already be cancelled.
+	if ctx.Err() != nil && w.jobCanceled(job.ID) {
 		w.settleCanceled(job.ID)
 		return
 	}
@@ -435,7 +436,7 @@ func (w *RunWorker) cancelPollLoop(ctx context.Context, jobID string, cancel con
 			case <-stop:
 				return
 			case <-ticker.C:
-				if w.jobCanceled(ctx, jobID) {
+				if w.jobCanceled(jobID) {
 					cancel()
 					return
 				}
@@ -446,8 +447,11 @@ func (w *RunWorker) cancelPollLoop(ctx context.Context, jobID string, cancel con
 }
 
 // jobCanceled reports whether a cancel was requested for the job, either
-// through the run job record or the durable run record.
-func (w *RunWorker) jobCanceled(ctx context.Context, jobID string) bool {
+// through the run job record or the durable run record. Lookups use a
+// fresh context so cancel detection keeps working when the run context
+// is already cancelled (shutdown, deadline, or cancel itself).
+func (w *RunWorker) jobCanceled(jobID string) bool {
+	ctx := context.Background()
 	job, err := w.store.GetRunJob(ctx, jobID)
 	if err == nil && job.Status == RunJobStatusCanceled {
 		return true
