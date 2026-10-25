@@ -26,10 +26,14 @@ type MCPOverlay struct {
 	Metadata             MCPOverlayMetadata               `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 }
 
-// MCPOverlayConfigField extends FieldSpec with environment variable mapping.
+// MCPOverlayConfigField extends FieldSpec with runtime injection mappings.
 type MCPOverlayConfigField struct {
 	FieldSpec `yaml:",inline" json:",inline"`
-	EnvVar    string `yaml:"env_var,omitempty" json:"env_var,omitempty"`
+	// EnvVar maps the config value to this environment variable for stdio.
+	EnvVar string `yaml:"env_var,omitempty" json:"env_var,omitempty"`
+	// Header maps the config value to this HTTP header for HTTP modes,
+	// allowing credentials from encrypted config without manifest storage.
+	Header string `yaml:"header,omitempty" json:"header,omitempty"`
 }
 
 // MCPOverlayHealth defines overlay health behavior.

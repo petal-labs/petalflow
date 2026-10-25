@@ -87,8 +87,62 @@
           "type": "string",
           "enum": [
             "stdio",
-            "sse"
+            "sse",
+            "streamable_http"
           ]
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "bearer",
+                "oauth2"
+              ]
+            },
+            "header": {
+              "type": "string"
+            },
+            "scheme": {
+              "type": "string"
+            },
+            "token_ref": {
+              "type": "string"
+            },
+            "oauth": {
+              "type": "object",
+              "properties": {
+                "token_url": {
+                  "type": "string"
+                },
+                "client_id": {
+                  "type": "string"
+                },
+                "client_secret_ref": {
+                  "type": "string"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "resource": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "allow_private_network": {
+          "type": "boolean"
         },
         "timeout_ms": {
           "type": "integer",

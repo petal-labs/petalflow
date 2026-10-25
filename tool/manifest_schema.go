@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -276,13 +277,125 @@ func (v *manifestSchemaValidator) validateMCPTransport(obj map[string]any) {
 		if ok && strings.TrimSpace(command) == "" {
 			v.add("transport.command", "MIN_LENGTH", "must not be empty for mcp stdio mode")
 		}
-	case MCPModeSSE:
+	case MCPModeSSE, MCPModeStreamableHTTP:
 		endpoint, ok := v.requireString(obj, "endpoint", "transport.endpoint")
 		if ok && strings.TrimSpace(endpoint) == "" {
-			v.add("transport.endpoint", "MIN_LENGTH", "must not be empty for mcp sse mode")
+			v.add("transport.endpoint", "MIN_LENGTH", fmt.Sprintf("must not be empty for mcp %s mode", mode))
+		} else if ok {
+			v.validateEndpointNoSecrets(endpoint)
 		}
+		v.validateTransportHeaders(obj)
+		v.validateMCPAuth(obj)
 	default:
-		v.add("transport.mode", "ENUM", "must be one of: stdio, sse")
+		v.add("transport.mode", "ENUM", "must be one of: stdio, sse, streamable_http")
+	}
+}
+
+// validateEndpointNoSecrets rejects credentials embedded in the endpoint
+// URL itself, keeping secrets in process configuration per the MCP
+// authorization guidance.
+func (v *manifestSchemaValidator) validateEndpointNoSecrets(endpoint string) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		v.add("transport.endpoint", "INVALID_URL", "must be a valid URL for mcp http modes")
+		return
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		v.add("transport.endpoint", "SCHEME", "must use http or https for mcp http modes")
+	}
+	if parsed.User != nil {
+		v.add("transport.endpoint", "CREDENTIALS_IN_URL", "must not embed user credentials in the endpoint URL")
+	}
+	for key := range parsed.Query() {
+		normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+		if strings.Contains(normalized, "token") || strings.Contains(normalized, "secret") ||
+			strings.Contains(normalized, "password") || strings.Contains(normalized, "api_key") ||
+			strings.Contains(normalized, "apikey") || strings.Contains(normalized, "key") {
+			v.add("transport.endpoint", "CREDENTIALS_IN_URL", fmt.Sprintf("endpoint query parameter %q looks like a credential; use sensitive config and auth.token_ref instead", key))
+		}
+	}
+}
+
+func (v *manifestSchemaValidator) validateTransportHeaders(obj map[string]any) {
+	headersRaw, ok := obj["headers"]
+	if !ok {
+		return
+	}
+	headers, ok := headersRaw.(map[string]any)
+	if !ok {
+		v.add("transport.headers", "TYPE", "must be an object of string values")
+		return
+	}
+	for key, value := range headers {
+		if _, ok := value.(string); ok {
+			continue
+		}
+		v.add("transport.headers."+key, "TYPE", "must be a string")
+	}
+}
+
+func (v *manifestSchemaValidator) validateMCPAuth(obj map[string]any) {
+	authRaw, ok := obj["auth"]
+	if !ok {
+		return
+	}
+	auth, ok := authRaw.(map[string]any)
+	if !ok {
+		v.add("transport.auth", "TYPE", "must be an object")
+		return
+	}
+
+	authType, hasType := readString(auth, "type")
+	if hasType {
+		switch MCPAuthType(authType) {
+		case MCPAuthBearer:
+			if _, ok := readString(auth, "token_ref"); !ok {
+				v.add("transport.auth.token_ref", "REQUIRED", "is required when auth.type is bearer")
+			}
+		case MCPAuthOAuth2:
+			v.validateMCPOAuth(auth)
+		default:
+			v.add("transport.auth.type", "ENUM", "must be one of: bearer, oauth2")
+		}
+	}
+	v.optionalString(auth, "header", "transport.auth.header")
+	v.optionalString(auth, "scheme", "transport.auth.scheme")
+	v.optionalString(auth, "token_ref", "transport.auth.token_ref")
+}
+
+func (v *manifestSchemaValidator) validateMCPOAuth(auth map[string]any) {
+	oauthRaw, ok := auth["oauth"]
+	if !ok {
+		v.add("transport.auth.oauth", "REQUIRED", "is required when auth.type is oauth2")
+		return
+	}
+	oauth, ok := oauthRaw.(map[string]any)
+	if !ok {
+		v.add("transport.auth.oauth", "TYPE", "must be an object")
+		return
+	}
+
+	clientID, hasClientID := readString(oauth, "client_id")
+	if !hasClientID || strings.TrimSpace(clientID) == "" {
+		v.add("transport.auth.oauth.client_id", "REQUIRED", "is required when auth.type is oauth2")
+	}
+	if secretRef, ok := readString(oauth, "client_secret_ref"); !ok || strings.TrimSpace(secretRef) == "" {
+		v.add("transport.auth.oauth.client_secret_ref", "REQUIRED", "is required when auth.type is oauth2")
+	}
+	v.optionalString(oauth, "token_url", "transport.auth.oauth.token_url")
+	v.optionalString(oauth, "resource", "transport.auth.oauth.resource")
+
+	if scopesRaw, ok := oauth["scopes"]; ok {
+		scopes, ok := scopesRaw.([]any)
+		if !ok {
+			v.add("transport.auth.oauth.scopes", "TYPE", "must be an array of strings")
+		} else {
+			for i, scope := range scopes {
+				if _, ok := scope.(string); !ok {
+					v.add(fmt.Sprintf("transport.auth.oauth.scopes[%d]", i), "TYPE", "must be a string")
+				}
+			}
+		}
 	}
 }
 

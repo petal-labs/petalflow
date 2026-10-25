@@ -24,6 +24,11 @@ type MCPMode string
 const (
 	MCPModeStdio MCPMode = "stdio"
 	MCPModeSSE   MCPMode = "sse"
+	// MCPModeStreamableHTTP is the current MCP transport mode per the
+	// Streamable HTTP specification: POST-based JSON-RPC with
+	// Mcp-Session-Id sessions, SSE response streams, and optional OAuth
+	// 2.1 authorization.
+	MCPModeStreamableHTTP MCPMode = "streamable_http"
 )
 
 // ToolManifest describes a registered tool independent of tool origin.
@@ -86,6 +91,15 @@ type TransportSpec struct {
 	Mode      MCPMode           `json:"mode,omitempty"`
 	TimeoutMS int               `json:"timeout_ms,omitempty"`
 	Retry     RetryPolicy       `json:"retry,omitempty"`
+	// Headers are static HTTP headers for MCP HTTP modes. Secret values
+	// must come from sensitive config via {{config:key}} templates; the
+	// manifest itself must not carry credentials.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Auth configures bearer or OAuth 2.1 authorization for MCP HTTP modes.
+	Auth *MCPAuthConfig `json:"auth,omitempty"`
+	// AllowPrivateNetwork opts an MCP HTTP endpoint out of the outbound
+	// egress (SSRF) policy for loopback/private destinations.
+	AllowPrivateNetwork bool `json:"allow_private_network,omitempty"`
 }
 
 // HTTPTransport is the typed view for HTTP transport configuration.
@@ -113,6 +127,51 @@ type MCPTransport struct {
 	Env       map[string]string `json:"env,omitempty"`
 	TimeoutMS int               `json:"timeout_ms,omitempty"`
 	Retry     RetryPolicy       `json:"retry,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Auth      *MCPAuthConfig    `json:"auth,omitempty"`
+	// AllowPrivateNetwork opts the endpoint out of the SSRF egress policy.
+	AllowPrivateNetwork bool `json:"allow_private_network,omitempty"`
+}
+
+// MCPAuthType identifies the authorization mechanism for MCP HTTP modes.
+type MCPAuthType string
+
+const (
+	// MCPAuthBearer attaches a static bearer token from sensitive config.
+	MCPAuthBearer MCPAuthType = "bearer"
+	// MCPAuthOAuth2 runs the OAuth 2.1 client credentials flow.
+	MCPAuthOAuth2 MCPAuthType = "oauth2"
+)
+
+// MCPAuthConfig configures authorization for MCP HTTP transports.
+type MCPAuthConfig struct {
+	// Type is "bearer" or "oauth2". Empty disables explicit authorization
+	// (still allows static transport headers).
+	Type MCPAuthType `json:"type,omitempty"`
+	// Header overrides the authorization header name for bearer tokens.
+	Header string `json:"header,omitempty"`
+	// Scheme overrides the authorization scheme for bearer tokens.
+	Scheme string `json:"scheme,omitempty"`
+	// TokenRef names a config key whose value is the bearer token. The
+	// referenced field should be marked sensitive so the value is
+	// encrypted at rest and redacted in outputs.
+	TokenRef string `json:"token_ref,omitempty"`
+	// OAuth configures the OAuth 2.1 client credentials flow.
+	OAuth *MCPOAuth2Auth `json:"oauth,omitempty"`
+}
+
+// MCPOAuth2Auth holds OAuth 2.1 client credentials settings. Secrets are
+// referenced by config key, never stored inline in the manifest.
+type MCPOAuth2Auth struct {
+	// TokenURL is the authorization server token endpoint. When empty it
+	// is discovered via protected resource / authorization server metadata.
+	TokenURL string `json:"token_url,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
+	// ClientSecretRef names a config key holding the client secret. The
+	// referenced field must be marked sensitive.
+	ClientSecretRef string   `json:"client_secret_ref,omitempty"`
+	Scopes          []string `json:"scopes,omitempty"`
+	Resource        string   `json:"resource,omitempty"`
 }
 
 // RetryPolicy defines adapter retry behavior.
@@ -175,14 +234,17 @@ func NewStdioTransport(cfg StdioTransport) TransportSpec {
 // NewMCPTransport creates a transport specification for MCP tools.
 func NewMCPTransport(cfg MCPTransport) TransportSpec {
 	return TransportSpec{
-		Type:      TransportTypeMCP,
-		Mode:      cfg.Mode,
-		Endpoint:  cfg.Endpoint,
-		Command:   cfg.Command,
-		Args:      slices.Clone(cfg.Args),
-		Env:       cloneStringMap(cfg.Env),
-		TimeoutMS: cfg.TimeoutMS,
-		Retry:     cfg.Retry,
+		Type:                TransportTypeMCP,
+		Mode:                cfg.Mode,
+		Endpoint:            cfg.Endpoint,
+		Command:             cfg.Command,
+		Args:                slices.Clone(cfg.Args),
+		Env:                 cloneStringMap(cfg.Env),
+		TimeoutMS:           cfg.TimeoutMS,
+		Retry:               cfg.Retry,
+		Headers:             cloneStringMap(cfg.Headers),
+		Auth:                cfg.Auth,
+		AllowPrivateNetwork: cfg.AllowPrivateNetwork,
 	}
 }
 
@@ -218,13 +280,16 @@ func (t TransportSpec) AsMCP() (MCPTransport, bool) {
 		return MCPTransport{}, false
 	}
 	return MCPTransport{
-		Mode:      t.Mode,
-		Endpoint:  t.Endpoint,
-		Command:   t.Command,
-		Args:      slices.Clone(t.Args),
-		Env:       cloneStringMap(t.Env),
-		TimeoutMS: t.TimeoutMS,
-		Retry:     t.Retry,
+		Mode:                t.Mode,
+		Endpoint:            t.Endpoint,
+		Command:             t.Command,
+		Args:                slices.Clone(t.Args),
+		Env:                 cloneStringMap(t.Env),
+		TimeoutMS:           t.TimeoutMS,
+		Retry:               t.Retry,
+		Headers:             cloneStringMap(t.Headers),
+		Auth:                t.Auth,
+		AllowPrivateNetwork: t.AllowPrivateNetwork,
 	}, true
 }
 

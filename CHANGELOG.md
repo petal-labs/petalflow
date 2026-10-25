@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **MCP Streamable HTTP transport with OAuth 2.1-compatible authorization**
+  ([#170](https://github.com/petal-labs/petalflow/issues/170)). A new
+  `streamable_http` MCP mode implements the current MCP transport
+  specification: POST-based JSON-RPC with `Mcp-Session-Id` session handling,
+  SSE response streams, server-to-client delivery over a GET stream with
+  `Last-Event-ID` resumption, and transparent session re-initialization when
+  a server expires a session. HTTP MCP endpoints support bearer-token
+  authorization (`auth.token_ref` referencing a sensitive config field) and
+  an OAuth 2.1-compatible client credentials flow with automatic protected
+  resource / authorization server metadata discovery (RFC 9728 / RFC 8414)
+  and expiry-aware token refresh. Unauthorized and insufficient-scope
+  failures are terminal and surface as `UNAUTHORIZED` / `FORBIDDEN` tool
+  errors; expired sessions are recovered or reported as unambiguous
+  `TRANSPORT_FAILURE`. MCP HTTP endpoints are now validated against the
+  outbound egress (SSRF) policy, endpoint URLs must not embed credentials,
+  and transport headers, auth references, and endpoint query strings are
+  redacted in daemon API responses and events. The legacy `sse` mode remains
+  supported for existing registrations and now receives the same header
+  injection, egress validation, and authorization plumbing; see
+  `docs/mcp-overlay.md` for migration guidance.
+
 ### Changed
 
 - **Upgraded Iris to v1.0.0** (from v0.17.0), the first stable Iris release.

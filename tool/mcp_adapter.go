@@ -182,6 +182,15 @@ func classifyMCPInvokeError(err error) error {
 		return nil
 	}
 
+	// Authorization failures are terminal: refreshing already happened in
+	// the transport, and retrying cannot change the outcome.
+	if errors.Is(err, mcpclient.ErrUnauthorized) {
+		return newToolError(ToolErrorCodeUnauthorized, "tool: mcp endpoint rejected credentials", false, err)
+	}
+	if errors.Is(err, mcpclient.ErrInsufficientScope) {
+		return newToolError(ToolErrorCodeForbidden, "tool: mcp endpoint rejected requested scopes", false, err)
+	}
+
 	var rpcErr *mcpclient.RPCError
 	if errors.As(err, &rpcErr) {
 		return withToolErrorDetails(

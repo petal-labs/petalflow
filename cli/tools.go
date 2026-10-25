@@ -51,7 +51,7 @@ func newToolsRegisterCmd() *cobra.Command {
 	cmd.Flags().String("command", "", "Transport command override")
 	cmd.Flags().StringArray("arg", nil, "Transport argument override (repeatable)")
 	cmd.Flags().StringArray("env", nil, "Transport environment override KEY=VALUE (repeatable)")
-	cmd.Flags().String("transport-mode", "", "MCP transport mode: stdio | sse")
+	cmd.Flags().String("transport-mode", "", "MCP transport mode: stdio | streamable_http | sse")
 	cmd.Flags().String("overlay", "", "Path to MCP overlay YAML")
 	return cmd
 }
@@ -774,7 +774,7 @@ func buildMCPTransportFromFlags(cmd *cobra.Command) (tool.MCPTransport, error) {
 	if mode == "" {
 		switch {
 		case strings.TrimSpace(endpoint) != "":
-			mode = string(tool.MCPModeSSE)
+			mode = string(tool.MCPModeStreamableHTTP)
 		case strings.TrimSpace(command) != "":
 			mode = string(tool.MCPModeStdio)
 		default:
@@ -808,6 +808,16 @@ func buildMCPTransportFromFlags(cmd *cobra.Command) (tool.MCPTransport, error) {
 		}
 		return tool.MCPTransport{
 			Mode:     tool.MCPModeSSE,
+			Endpoint: endpoint,
+			Args:     slices.Clone(args),
+			Env:      env,
+		}, nil
+	case tool.MCPModeStreamableHTTP:
+		if strings.TrimSpace(endpoint) == "" {
+			return tool.MCPTransport{}, fmt.Errorf("--endpoint is required for mcp streamable_http mode")
+		}
+		return tool.MCPTransport{
+			Mode:     tool.MCPModeStreamableHTTP,
 			Endpoint: endpoint,
 			Args:     slices.Clone(args),
 			Env:      env,
