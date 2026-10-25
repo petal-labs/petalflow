@@ -88,7 +88,7 @@ func TestWorkflowScheduler_RunOnceExecutesDueSchedule(t *testing.T) {
 	}
 }
 
-func TestWorkflowScheduler_SkipsOverlapWhenRunAlreadyActive(t *testing.T) {
+func TestWorkflowScheduler_LeasedScheduleNotClaimedByOtherReplica(t *testing.T) {
 	store := newTestSQLiteStore(t)
 	srv := NewServer(ServerConfig{
 		Store:         store,
@@ -112,33 +112,59 @@ func TestWorkflowScheduler_SkipsOverlapWhenRunAlreadyActive(t *testing.T) {
 		t.Fatalf("CreateSchedule: %v", err)
 	}
 
-	scheduler, err := NewWorkflowScheduler(WorkflowSchedulerConfig{
-		Runner: srv,
-		Store:  store,
-		Now:    func() time.Time { return now },
+	replicaA, err := NewWorkflowScheduler(WorkflowSchedulerConfig{
+		Runner:        srv,
+		Store:         store,
+		SchedulerID:   "replica-a",
+		LeaseDuration: time.Hour,
+		Now:           func() time.Time { return now },
 	})
 	if err != nil {
 		t.Fatalf("NewWorkflowScheduler: %v", err)
 	}
-	scheduler.markScheduleActive("sched-overlap")
-	defer scheduler.unmarkScheduleActive("sched-overlap")
+	_ = replicaA
+	replicaB, err := NewWorkflowScheduler(WorkflowSchedulerConfig{
+		Runner:        srv,
+		Store:         store,
+		SchedulerID:   "replica-b",
+		LeaseDuration: time.Hour,
+		Now:           func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewWorkflowScheduler: %v", err)
+	}
 
-	if err := scheduler.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce: %v", err)
+	// Replica A claims the schedule; its lease blocks replica B.
+	claimed, err := store.ClaimDueSchedules(context.Background(), "replica-a", now, time.Hour, 10)
+	if err != nil {
+		t.Fatalf("ClaimDueSchedules (A): %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("replica A claimed %d schedules, want 1", len(claimed))
+	}
+
+	if err := replicaB.RunOnce(context.Background()); err != nil {
+		t.Fatalf("replica B RunOnce: %v", err)
 	}
 
 	updated, found, err := store.GetSchedule(context.Background(), "scheduler-overlap", "sched-overlap")
+	if err != nil || !found {
+		t.Fatalf("GetSchedule: %v (found=%v)", err, found)
+	}
+	if updated.LeaseOwner != "replica-a" {
+		t.Fatalf("lease_owner=%q, want replica-a to retain the claim", updated.LeaseOwner)
+	}
+	if updated.LastStatus == ScheduleRunStatusRunning || updated.LastRunID != "" {
+		t.Fatalf("replica B executed a leased schedule: status=%q run_id=%q", updated.LastStatus, updated.LastRunID)
+	}
+
+	// After the lease expires, replica B may claim it.
+	claimedB, err := store.ClaimDueSchedules(context.Background(), "replica-b", now.Add(2*time.Hour), time.Hour, 10)
 	if err != nil {
-		t.Fatalf("GetSchedule: %v", err)
+		t.Fatalf("ClaimDueSchedules (B, after expiry): %v", err)
 	}
-	if !found {
-		t.Fatal("GetSchedule found=false")
-	}
-	if updated.LastStatus != ScheduleRunStatusSkippedOverlap {
-		t.Fatalf("last_status=%q, want %q", updated.LastStatus, ScheduleRunStatusSkippedOverlap)
-	}
-	if !updated.NextRunAt.After(now) {
-		t.Fatalf("next_run_at=%s, want > %s", updated.NextRunAt, now)
+	if len(claimedB) != 1 || claimedB[0].ID != "sched-overlap" {
+		t.Fatalf("replica B claimed %+v after lease expiry, want sched-overlap", claimedB)
 	}
 }
 
@@ -161,7 +187,7 @@ func waitForScheduleStatus(t *testing.T, store WorkflowScheduleStore, workflowID
 		if err != nil {
 			t.Fatalf("GetSchedule: %v", err)
 		}
-		if found && (schedule.LastStatus == ScheduleRunStatusCompleted || schedule.LastStatus == ScheduleRunStatusFailed || schedule.LastStatus == ScheduleRunStatusSkippedOverlap) {
+		if found && (schedule.LastStatus == ScheduleRunStatusCompleted || schedule.LastStatus == ScheduleRunStatusFailed || schedule.LastStatus == ScheduleRunStatusSkippedOverlap || schedule.LastStatus == ScheduleRunStatusDeadLetter) {
 			return schedule
 		}
 		if time.Now().After(deadline) {

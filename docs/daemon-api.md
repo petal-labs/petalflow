@@ -63,7 +63,7 @@ curl -N http://localhost:8080/api/runs/<run_id>/events
 | `GET` | `/api/workflows/{id}` | Get workflow by ID |
 | `PUT` | `/api/workflows/{id}` | Update workflow source and recompile |
 | `DELETE` | `/api/workflows/{id}` | Delete workflow |
-| `POST` | `/api/workflows/{id}/run` | Execute workflow |
+| `POST` | `/api/workflows/{id}/run` | Execute workflow, or submit asynchronously with `options.async=true` (returns `202`) |
 
 ### Webhook Trigger Route
 
@@ -95,6 +95,7 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 | --- | --- | --- |
 | `GET` | `/api/runs/{run_id}` | Read non-sensitive run status |
 | `POST` | `/api/runs/{run_id}/cancel` | Cancel a run terminally |
+| `POST` | `/api/runs/{run_id}/retry` | Requeue a terminal async run job (returns `202`) |
 | `POST` | `/api/runs/{run_id}/resume` | Resume a durable run; optional `{"resume_token":"..."}` body |
 | `GET` | `/api/runs/{run_id}/pending-actions` | List the pending human action |
 | `POST` | `/api/runs/{run_id}/pending-actions/{action_id}` | Complete a pending human action once |
@@ -124,6 +125,14 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 - `input` (`object`): initial envelope variables
 - `options.timeout` (`duration`, default `5m`)
 - `options.stream` (`bool`): stream run events via SSE
+- `options.async` (`bool`): submit as a durable asynchronous job and
+  return `202` immediately with `run_id`, `status_url`, and
+  `events_url` — the client does not hold the HTTP request open while
+  the run executes. Poll `GET /api/runs/{run_id}` for status (including
+  `attempt` and `next_attempt_at` while queued), stream persisted
+  events via `GET /api/runs/{run_id}/events`, cancel with
+  `POST /api/runs/{run_id}/cancel` at any time, and requeue a terminal
+  job with `POST /api/runs/{run_id}/retry`.
 - `options.human` (`object`): human node handling
 
 `options.human.mode` values:

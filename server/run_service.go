@@ -55,6 +55,15 @@ type webhookRunMetadata struct {
 }
 
 func (s *Server) planWorkflowRun(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error) {
+	if s.planHook != nil {
+		return s.planHook(ctx, workflowID, req)
+	}
+	return s.planWorkflowRunDefault(ctx, workflowID, req)
+}
+
+// planWorkflowRunDefault is the default planning path, split out so
+// tests can wrap it via planHook without infinite recursion.
+func (s *Server) planWorkflowRunDefault(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error) {
 	rec, ok, err := s.store.Get(ctx, workflowID)
 	if err != nil {
 		return nil, &runAPIError{Status: http.StatusInternalServerError, Code: "STORE_ERROR", Message: err.Error()}

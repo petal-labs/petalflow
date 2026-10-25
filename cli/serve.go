@@ -51,6 +51,11 @@ func NewServeCmd() *cobra.Command {
 	cmd.Flags().Duration("idle-timeout", 120*time.Second, "HTTP idle (keep-alive) timeout")
 	cmd.Flags().Int64("max-body", 1<<20, "Max request body size in bytes")
 	cmd.Flags().Duration("workflow-schedule-poll", 5*time.Second, "Workflow schedule poll interval")
+	cmd.Flags().Duration("run-worker-poll", time.Second, "Async run job worker poll interval")
+	cmd.Flags().Int("run-worker-concurrency", 4, "Max async run jobs executed concurrently per instance")
+	cmd.Flags().Duration("run-worker-lease", 60*time.Second, "Async run job lease duration; expired leases are reassigned to other workers")
+	cmd.Flags().Int("run-job-max-attempts", 3, "Default retry budget for async run jobs before dead-lettering")
+	cmd.Flags().Duration("run-job-retention", 24*time.Hour, "How long terminal async run jobs are retained")
 
 	return cmd
 }
@@ -90,6 +95,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	idleTimeout, _ := cmd.Flags().GetDuration("idle-timeout")
 	maxBody, _ := cmd.Flags().GetInt64("max-body")
 	workflowSchedulePoll, _ := cmd.Flags().GetDuration("workflow-schedule-poll")
+	runWorkerPoll, _ := cmd.Flags().GetDuration("run-worker-poll")
+	runWorkerLease, _ := cmd.Flags().GetDuration("run-worker-lease")
+	runWorkerConcurrency, _ := cmd.Flags().GetInt("run-worker-concurrency")
+	runJobMaxAttempts, _ := cmd.Flags().GetInt("run-job-max-attempts")
 	tlsCert, _ := cmd.Flags().GetString("tls-cert")
 	tlsKey, _ := cmd.Flags().GetString("tls-key")
 	apiToken := strings.TrimSpace(os.Getenv("PETALFLOW_API_TOKEN"))
@@ -227,12 +236,32 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		RunStore:   runStore,
 		CORSOrigin: corsOrigin,
 		MaxBody:    maxBody,
+		JobStore:   workflowStore,
 		Security: server.SecurityConfig{
 			RequireAuth:   true,
 			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),
 		},
 		Logger: logger,
 	})
+
+	runWorker, err := server.NewRunWorker(server.RunWorkerConfig{
+		Runner:        workflowServer,
+		Store:         workflowStore,
+		PollInterval:  runWorkerPoll,
+		LeaseDuration: runWorkerLease,
+		Concurrency:   runWorkerConcurrency,
+		MaxAttempts:   runJobMaxAttempts,
+		Logger:        logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating run worker: %w", err)
+	}
+	if err := runWorker.Start(cmd.Context()); err != nil {
+		return fmt.Errorf("starting run worker: %w", err)
+	}
+	defer func() {
+		_ = runWorker.Stop(context.Background())
+	}()
 
 	workflowScheduler, err := server.NewWorkflowScheduler(server.WorkflowSchedulerConfig{
 		Runner:       workflowServer,

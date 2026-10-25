@@ -347,6 +347,60 @@ func runScheduleStoreConformance(t *testing.T, newStore func(t *testing.T) Workf
 			t.Fatalf("DeleteSchedule missing error = %v, want ErrWorkflowScheduleNotFound", err)
 		}
 	})
+
+	t.Run("claim_due_schedules_is_atomic", func(t *testing.T) {
+		store := newStore(t)
+		createWorkflowFor(t, store, "wf-sched-claim")
+		ctx := context.Background()
+
+		now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+		for _, id := range []string{"sched-c1", "sched-c2", "sched-c3"} {
+			if err := store.CreateSchedule(ctx, WorkflowSchedule{
+				ID: id, WorkflowID: "wf-sched-claim", Cron: "* * * * *", Enabled: true,
+				NextRunAt: now.Add(-time.Minute), CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour),
+			}); err != nil {
+				t.Fatalf("CreateSchedule %s: %v", id, err)
+			}
+		}
+
+		claimedA, err := store.ClaimDueSchedules(ctx, "replica-a", now, time.Hour, 10)
+		if err != nil {
+			t.Fatalf("ClaimDueSchedules (A): %v", err)
+		}
+		claimedB, err := store.ClaimDueSchedules(ctx, "replica-b", now, time.Hour, 10)
+		if err != nil {
+			t.Fatalf("ClaimDueSchedules (B): %v", err)
+		}
+		if len(claimedA)+len(claimedB) != 3 {
+			t.Fatalf("claimed %d+%d schedules, want 3 total", len(claimedA), len(claimedB))
+		}
+		seen := map[string]string{}
+		for _, s := range claimedA {
+			seen[s.ID] = "replica-a"
+		}
+		for _, s := range claimedB {
+			if _, dup := seen[s.ID]; dup {
+				t.Fatalf("schedule %s claimed by both replicas", s.ID)
+			}
+			seen[s.ID] = "replica-b"
+		}
+
+		// A lease blocks claims until it expires.
+		none, err := store.ClaimDueSchedules(ctx, "replica-c", now.Add(time.Minute), time.Hour, 10)
+		if err != nil {
+			t.Fatalf("ClaimDueSchedules while leased: %v", err)
+		}
+		if len(none) != 0 {
+			t.Fatalf("claimed leased schedules: %+v", none)
+		}
+		reclaimed, err := store.ClaimDueSchedules(ctx, "replica-c", now.Add(2*time.Hour), time.Hour, 10)
+		if err != nil {
+			t.Fatalf("ClaimDueSchedules after expiry: %v", err)
+		}
+		if len(reclaimed) != 3 {
+			t.Fatalf("reclaimed %d schedules after lease expiry, want 3", len(reclaimed))
+		}
+	})
 }
 
 func TestSQLiteWorkflowStoreConformance(t *testing.T) {

@@ -107,3 +107,19 @@ func schemaName(testName string) string {
 	_, _ = h.Write([]byte(testName))
 	return fmt.Sprintf("pf_test_%s_%08x", prefix, h.Sum32())
 }
+
+func TestPostgresRunJobStoreConformance(t *testing.T) {
+	dsn := os.Getenv("PETALFLOW_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set PETALFLOW_TEST_POSTGRES_DSN to run postgres integration tests")
+	}
+	runRunJobStoreConformance(t, func(t *testing.T) RunJobStore {
+		schema := uniqueSchema(t, dsn)
+		s, err := NewPostgresStore(PostgresStoreConfig{DSN: schema})
+		if err != nil {
+			t.Fatalf("new postgres store: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}

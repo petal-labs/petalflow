@@ -303,8 +303,12 @@ type RunRequest struct {
 
 // RunReqOptions holds optional run configuration.
 type RunReqOptions struct {
-	Timeout        string              `json:"timeout,omitempty"`
-	Stream         bool                `json:"stream,omitempty"`
+	Timeout string `json:"timeout,omitempty"`
+	Stream  bool   `json:"stream,omitempty"`
+	// Async submits the run as a durable asynchronous job: the API
+	// returns 202 immediately with the run ID and the run executes on
+	// the background worker pool. Requires a run job store.
+	Async          bool                `json:"async,omitempty"`
 	IdempotencyKey string              `json:"idempotency_key,omitempty"`
 	Human          *RunReqHumanOptions `json:"human,omitempty"`
 }
@@ -353,6 +357,14 @@ func (s *Server) handleRunWorkflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "PARSE_ERROR", err.Error())
 			return
 		}
+	}
+
+	// Asynchronous submission returns immediately after enqueueing; the
+	// run executes on the background worker pool and is observable via
+	// the status, events, cancel, and retry endpoints.
+	if req.Options.Async {
+		s.handleRunAsync(w, r, id, req)
+		return
 	}
 
 	plan, err := s.planWorkflowRun(r.Context(), id, req)

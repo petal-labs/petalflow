@@ -18,6 +18,10 @@ const (
 	RunStatusCompleted RunStatus = "completed"
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCanceled  RunStatus = "canceled"
+	// RunStatusQueued is the state of an asynchronous run job that has
+	// not been claimed by a worker yet. It exists only at the job layer;
+	// durable run records are created when execution starts.
+	RunStatusQueued RunStatus = "queued"
 )
 
 // NodeStatus is the durable lifecycle state of one node attempt. A failed or

@@ -63,8 +63,39 @@ Daemon mode includes a background cron scheduler:
 
 - Poll interval: `--workflow-schedule-poll` (default `5s`)
 - Cron is UTC-only
-- Missed runs are not backfilled after downtime
-- Overlapping due runs for the same schedule are skipped
+- Due schedules are claimed with a durable lease, so multiple daemon
+  replicas sharing a database can never execute the same due schedule
+  concurrently. A replica that crashes mid-run leaves its lease to
+  expire, after which any replica claims the schedule again.
+- Missed runs coalesce into a single backfill execution at the next
+  claim: the schedule runs once and `next_run_at` advances to the next
+  cron occurrence.
+- Failed scheduled runs retry with exponential backoff
+  (`--workflow-schedule-poll` governs the claim cadence; the backoff
+  base is 30s, capped at 1h). A schedule that fails 5 consecutive times
+  is dead-lettered: it is disabled with `last_status=dead_letter` and
+  the final error in `last_error`.
+- Stop drains in-flight scheduled runs before returning.
+
+## Async Run Worker
+
+Daemon mode runs a background worker that executes asynchronous run
+jobs (`options.async=true`):
+
+- Poll interval: `--run-worker-poll` (default `1s`)
+- Concurrency: `--run-worker-concurrency` (default `4` jobs per
+  instance; the global run-slot limit still applies)
+- Lease duration: `--run-worker-lease` (default `60s`). A worker
+  renews the lease while a job executes; if a worker crashes, the
+  lease expires and any replica reclaims the job from the run's last
+  checkpoint. Lease-loss cancellation guarantees a single owner.
+- Retries: `--run-job-max-attempts` (default `3`). Failed attempts
+  retry with exponential backoff (base 5s, capped at 1h); exhausting
+  the budget dead-letters the job with status `dead`. Deterministic
+  client errors (missing workflow, invalid input, hydration failure)
+  dead-letter immediately.
+- Retention: `--run-job-retention` (default `24h`). Terminal jobs are
+  pruned in the background; paused (human-input) jobs are never pruned.
 
 ## Event Persistence and Streaming
 

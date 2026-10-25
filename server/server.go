@@ -32,6 +32,8 @@ type ServerConfig struct {
 	MaxBody       int64
 	Security      SecurityConfig
 	Logger        *slog.Logger
+	// JobStore enables asynchronous run submission and execution.
+	JobStore RunJobStore
 }
 
 // SecurityConfig controls authentication, CORS, and request concurrency.
@@ -70,6 +72,9 @@ type Server struct {
 	pendingMu     sync.Mutex
 	replayMu      sync.Mutex
 	replayedHooks map[string]time.Time
+	jobStore      RunJobStore
+	// planHook, when set, overrides run planning. It is a test seam.
+	planHook func(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error)
 }
 
 // NewServer creates a new Server with the given configuration.
@@ -112,6 +117,7 @@ func NewServer(cfg ServerConfig) *Server {
 		logger:        logger,
 		activeRuns:    make(map[string]context.CancelFunc),
 		replayedHooks: make(map[string]time.Time),
+		jobStore:      cfg.JobStore,
 	}
 }
 
@@ -150,6 +156,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
 	mux.HandleFunc("GET /api/runs/{run_id}", s.handleGetRun)
 	mux.HandleFunc("POST /api/runs/{run_id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("POST /api/runs/{run_id}/retry", s.handleRetryRun)
 	mux.HandleFunc("POST /api/runs/{run_id}/resume", s.handleResumeRun)
 	mux.HandleFunc("GET /api/runs/{run_id}/pending-actions", s.handleGetPendingAction)
 	mux.HandleFunc("POST /api/runs/{run_id}/pending-actions/{action_id}", s.handleCompletePendingAction)
