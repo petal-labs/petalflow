@@ -110,6 +110,7 @@ func ValidateNewRegistration(ctx context.Context, reg Registration, opts Registr
 	})
 	pipeline.AddRegistrationValidator(ConfigCompletenessValidator{})
 	pipeline.AddRegistrationValidator(SensitiveFieldValidator{})
+	pipeline.AddRegistrationValidator(MCPAuthReferenceValidator{})
 
 	manifestResult := pipeline.ValidateManifest(reg.Manifest)
 	registrationResult := pipeline.ValidateRegistration(reg)
@@ -344,6 +345,108 @@ func (SensitiveFieldValidator) ValidateRegistration(reg Registration) []Diagnost
 		})
 	}
 	return diags
+}
+
+// MCPAuthReferenceValidator enforces that MCP HTTP authorization secrets
+// and header templates reference config fields declared as sensitive, so
+// credentials stay encrypted at rest and redacted in outputs.
+type MCPAuthReferenceValidator struct{}
+
+func (MCPAuthReferenceValidator) ValidateRegistration(reg Registration) []Diagnostic {
+	transport, ok := reg.Manifest.Transport.AsMCP()
+	if !ok || (transport.Mode != MCPModeSSE && transport.Mode != MCPModeStreamableHTTP) {
+		return nil
+	}
+
+	diags := make([]Diagnostic, 0)
+	requireSensitiveRef := func(ref, field string) {
+		if strings.TrimSpace(ref) == "" {
+			return
+		}
+		spec, ok := reg.Manifest.Config[ref]
+		if !ok {
+			diags = append(diags, Diagnostic{
+				Field:    field,
+				Code:     "UNKNOWN_CONFIG_REF",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Config field %q referenced by %s is not declared", ref, field),
+			})
+			return
+		}
+		if !spec.Sensitive {
+			diags = append(diags, Diagnostic{
+				Field:    field,
+				Code:     "CONFIG_REF_NOT_SENSITIVE",
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("Config field %q referenced by %s must be marked sensitive", ref, field),
+			})
+		}
+	}
+
+	if transport.Auth != nil {
+		if transport.Auth.Type == MCPAuthBearer {
+			requireSensitiveRef(transport.Auth.TokenRef, "transport.auth.token_ref")
+		}
+		if transport.Auth.Type == MCPAuthOAuth2 && transport.Auth.OAuth != nil {
+			requireSensitiveRef(transport.Auth.OAuth.ClientSecretRef, "transport.auth.oauth.client_secret_ref")
+		}
+	}
+
+	for name, value := range transport.Headers {
+		for _, ref := range headerConfigRefs(value) {
+			requireSensitiveRef(ref, fmt.Sprintf("transport.headers.%s", name))
+		}
+	}
+
+	if overlay, err := loadOverlayForRegistration(reg); err == nil && overlay != nil {
+		for key, field := range overlay.Config {
+			if strings.TrimSpace(field.Header) == "" {
+				continue
+			}
+			spec, ok := reg.Manifest.Config[key]
+			if !ok {
+				diags = append(diags, Diagnostic{
+					Field:    "config." + key + ".header",
+					Code:     "UNKNOWN_CONFIG_REF",
+					Severity: SeverityError,
+					Message:  fmt.Sprintf("Overlay header mapping references undeclared config field %q", key),
+				})
+				continue
+			}
+			if !spec.Sensitive {
+				diags = append(diags, Diagnostic{
+					Field:    "config." + key + ".header",
+					Code:     "CONFIG_REF_NOT_SENSITIVE",
+					Severity: SeverityError,
+					Message:  fmt.Sprintf("Config field %q mapped to header %q must be marked sensitive", key, field.Header),
+				})
+			}
+		}
+	}
+
+	return diags
+}
+
+// headerConfigRefs extracts config keys referenced by {{config:key}} header
+// templates.
+func headerConfigRefs(value string) []string {
+	refs := make([]string, 0, 2)
+	remaining := value
+	for {
+		start := strings.Index(remaining, "{{config:")
+		if start < 0 {
+			return refs
+		}
+		rest := remaining[start+len("{{config:"):]
+		end := strings.Index(rest, "}}")
+		if end < 0 {
+			return refs
+		}
+		if key := strings.TrimSpace(rest[:end]); key != "" {
+			refs = append(refs, key)
+		}
+		remaining = rest[end+2:]
+	}
 }
 
 func hasValidationErrors(diags []Diagnostic) bool {

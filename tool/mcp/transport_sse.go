@@ -21,10 +21,13 @@ var sseDefaultTimeout = 30 * time.Second
 // SSETransportConfig configures an MCP endpoint transport.
 // The current implementation uses request/response JSON-RPC over HTTP while
 // preserving an interface that can evolve to full SSE stream handling.
+// New registrations should use the Streamable HTTP transport instead.
 type SSETransportConfig struct {
 	Endpoint string
 	Headers  map[string]string
-	Client   *http.Client
+	// Authorizer optionally attaches bearer or OAuth 2.1 authorization.
+	Authorizer TransportAuthorizer
+	Client     *http.Client
 }
 
 // SSETransport implements MCP transport over an HTTP endpoint.
@@ -71,6 +74,11 @@ func (t *SSETransport) Send(ctx context.Context, message Message) error {
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	for key, value := range t.cfg.Headers {
 		req.Header.Set(key, value)
+	}
+	if t.cfg.Authorizer != nil {
+		if err := t.cfg.Authorizer.Authorize(ctx, req); err != nil {
+			return fmt.Errorf("mcp: authorize request: %w", err)
+		}
 	}
 
 	resp, err := t.cfg.Client.Do(req)

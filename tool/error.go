@@ -23,6 +23,12 @@ const (
 	ToolErrorCodeInvocationFailed = "INVOCATION_FAILED"
 	// ToolErrorCodeMCPFailure is returned when MCP request/response handling fails.
 	ToolErrorCodeMCPFailure = "MCP_FAILURE"
+	// ToolErrorCodeUnauthorized is returned when MCP authorization fails
+	// terminally (HTTP 401 after any credential refresh).
+	ToolErrorCodeUnauthorized = "UNAUTHORIZED"
+	// ToolErrorCodeForbidden is returned when MCP authorization succeeds
+	// but scopes are insufficient (HTTP 403 / insufficient_scope).
+	ToolErrorCodeForbidden = "FORBIDDEN"
 )
 
 // ToolError is a structured invocation error that can flow across adapters, APIs,
