@@ -354,3 +354,183 @@ func TestRedactRegistrationMasksTransportCredentials(t *testing.T) {
 		t.Fatalf("endpoint = %q, want query string stripped", redacted.Manifest.Transport.Endpoint)
 	}
 }
+
+func TestRedactRegistrationsMasksEveryRegistration(t *testing.T) {
+	reg := ToolRegistration{
+		Name: "secret_tool",
+		Manifest: func() Manifest {
+			m := NewManifest("secret_tool")
+			m.Actions = map[string]ActionSpec{"run": {}}
+			m.Config = map[string]FieldSpec{"api_key": {Type: "string", Sensitive: true}}
+			m.Transport = NewMCPTransport(MCPTransport{
+				Mode:     MCPModeStreamableHTTP,
+				Endpoint: "https://mcp.example.com/mcp",
+			})
+			return m
+		}(),
+		Config: map[string]string{"api_key": "shh"},
+	}
+
+	redacted := RedactRegistrations([]ToolRegistration{reg})
+	if len(redacted) != 1 {
+		t.Fatalf("len = %d, want 1", len(redacted))
+	}
+	if got := redacted[0].Config["api_key"]; got != MaskedSecretValue {
+		t.Fatalf("api_key = %q, want masked", got)
+	}
+	// The original registration is untouched.
+	if reg.Config["api_key"] != "shh" {
+		t.Fatalf("original config mutated: %q", reg.Config["api_key"])
+	}
+}
+
+func TestMaskSensitiveConfigLeavesPlainValues(t *testing.T) {
+	specs := map[string]FieldSpec{"api_key": {Type: "string", Sensitive: true}, "region": {Type: "string"}}
+	values := map[string]string{"api_key": "shh", "region": "us-east-1"}
+
+	masked := MaskSensitiveConfig(specs, values)
+	if masked["api_key"] != MaskedSecretValue || masked["region"] != "us-east-1" {
+		t.Fatalf("masked = %+v", masked)
+	}
+	if MaskSensitiveConfig(specs, nil) != nil {
+		t.Fatal("MaskSensitiveConfig(nil) should return nil")
+	}
+}
+
+func TestRedactTransportInvalidEndpointIsMasked(t *testing.T) {
+	transport := TransportSpec{Endpoint: "http://[::1:bad"}
+	redactTransport(&transport)
+	if transport.Endpoint != MaskedSecretValue {
+		t.Fatalf("endpoint = %q, want masked", transport.Endpoint)
+	}
+}
+
+func TestNewMCPAuthorizerOAuth2SecretResolution(t *testing.T) {
+	transport := MCPTransport{
+		Mode:     MCPModeStreamableHTTP,
+		Endpoint: "https://mcp.example.com/mcp",
+		Auth: &MCPAuthConfig{
+			Type:  MCPAuthOAuth2,
+			OAuth: &MCPOAuth2Auth{ClientID: "petalflow", ClientSecretRef: "client_secret"},
+		},
+	}
+
+	if _, err := newMCPAuthorizer("reg", transport, map[string]string{}); err == nil {
+		t.Fatal("newMCPAuthorizer() with missing client secret should fail")
+	}
+
+	authorizer, err := newMCPAuthorizer("reg", transport, map[string]string{"client_secret": "shh"})
+	if err != nil {
+		t.Fatalf("newMCPAuthorizer() error = %v", err)
+	}
+	if authorizer == nil {
+		t.Fatal("newMCPAuthorizer() = nil, want authorizer")
+	}
+}
+
+func TestNewMCPAuthorizerValidation(t *testing.T) {
+	oauthTransport := MCPTransport{
+		Mode:     MCPModeStreamableHTTP,
+		Endpoint: "https://mcp.example.com/mcp",
+		Auth:     &MCPAuthConfig{Type: MCPAuthOAuth2},
+	}
+	if _, err := newMCPAuthorizer("reg", oauthTransport, nil); err == nil {
+		t.Fatal("newMCPAuthorizer() with oauth2 but no oauth settings should fail")
+	}
+
+	unknownTransport := MCPTransport{
+		Mode:     MCPModeStreamableHTTP,
+		Endpoint: "https://mcp.example.com/mcp",
+		Auth:     &MCPAuthConfig{Type: "api-key"},
+	}
+	if _, err := newMCPAuthorizer("reg", unknownTransport, nil); err == nil {
+		t.Fatal("newMCPAuthorizer() with unknown auth type should fail")
+	}
+
+	authorizer, err := newMCPAuthorizer("reg", MCPTransport{Mode: MCPModeStdio, Auth: nil}, nil)
+	if err != nil || authorizer != nil {
+		t.Fatalf("newMCPAuthorizer() without auth = (%v, %v), want (nil, nil)", authorizer, err)
+	}
+}
+
+func TestNewMCPRuntimeTransportSSEModeWiring(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request mcpclient.Message
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result": map[string]any{
+				"protocolVersion": "2025-06-18",
+				"serverInfo":      map[string]any{"name": "t", "version": "1"},
+				"tools":           []any{},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	transport := MCPTransport{
+		Mode:                MCPModeSSE,
+		Endpoint:            server.URL,
+		AllowPrivateNetwork: true,
+	}
+	runtime, err := newMCPRuntimeTransport(context.Background(), "sse-wired", transport, nil, nil)
+	if err != nil {
+		t.Fatalf("newMCPRuntimeTransport() error = %v", err)
+	}
+	defer runtime.Close(context.Background())
+
+	client := mcpclient.NewClient(runtime, mcpclient.Options{})
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+}
+
+func TestNewMCPRuntimeTransportErrors(t *testing.T) {
+	if _, err := newMCPRuntimeTransport(context.Background(), "bad", MCPTransport{Mode: "carrier_pigeon"}, nil, nil); err == nil {
+		t.Fatal("newMCPRuntimeTransport() with unsupported mode should fail")
+	}
+
+	headerTransport := MCPTransport{
+		Mode:     MCPModeStreamableHTTP,
+		Endpoint: "https://mcp.example.com/mcp",
+		Headers:  map[string]string{"Authorization": "Bearer {{config:missing}}"},
+	}
+	if _, err := newMCPRuntimeTransport(context.Background(), "bad-headers", headerTransport, nil, nil); err == nil {
+		t.Fatal("newMCPRuntimeTransport() with unresolved header template should fail")
+	}
+
+	emptyEndpoint := MCPTransport{Mode: MCPModeStreamableHTTP, AllowPrivateNetwork: true}
+	if _, err := newMCPRuntimeTransport(context.Background(), "no-endpoint", emptyEndpoint, nil, nil); err == nil {
+		t.Fatal("newMCPRuntimeTransport() without endpoint should fail")
+	}
+}
+
+func TestClassifyMCPInvokeErrorRemainingPaths(t *testing.T) {
+	rpcClassified := classifyMCPInvokeError(&mcpclient.RPCError{Code: -32601, Message: "method not found"})
+	var toolErr *ToolError
+	if !errors.As(rpcClassified, &toolErr) || toolErr.Code != ToolErrorCodeMCPFailure || toolErr.Retryable {
+		t.Fatalf("rpc classification = %+v, want non-retryable MCP_FAILURE", toolErr)
+	}
+
+	timeoutClassified := classifyMCPInvokeError(context.DeadlineExceeded)
+	if !errors.As(timeoutClassified, &toolErr) || toolErr.Code != ToolErrorCodeTimeout || !toolErr.Retryable {
+		t.Fatalf("timeout classification = %+v, want retryable TIMEOUT", toolErr)
+	}
+
+	cancelClassified := classifyMCPInvokeError(&mcpclient.RequestError{Method: "tools/call", Err: context.Canceled})
+	if !errors.As(cancelClassified, &toolErr) || toolErr.Code != ToolErrorCodeTransportFailure || toolErr.Retryable {
+		t.Fatalf("canceled classification = %+v, want non-retryable TRANSPORT_FAILURE", toolErr)
+	}
+
+	plainClassified := classifyMCPInvokeError(errors.New("boom"))
+	if !errors.As(plainClassified, &toolErr) || toolErr.Code != ToolErrorCodeMCPFailure {
+		t.Fatalf("plain classification = %+v, want MCP_FAILURE", toolErr)
+	}
+
+	if classifyMCPInvokeError(nil) != nil {
+		t.Fatal("classifyMCPInvokeError(nil) should be nil")
+	}
+}

@@ -545,7 +545,11 @@ func (t *StreamableHTTPTransport) runGETStream(ctx context.Context) {
 			return
 		}
 		if attempt >= t.cfg.MaxStreamReconnects {
-			t.failGETStream(fmt.Errorf("mcp: stream interrupted after %d reconnect attempts: %w", attempt+1, err))
+			if err == nil {
+				t.failGETStream(fmt.Errorf("mcp: stream interrupted after %d reconnect attempts", attempt+1))
+			} else {
+				t.failGETStream(fmt.Errorf("mcp: stream interrupted after %d reconnect attempts: %w", attempt+1, err))
+			}
 			return
 		}
 

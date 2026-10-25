@@ -154,10 +154,20 @@ func (s *streamableServer) writeResponse(w http.ResponseWriter, r *http.Request,
 func (s *streamableServer) handleGet(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.getRequests = append(s.getRequests, r.Header.Clone())
+	unauthorized := s.unauthorized
+	forbidden := s.forbidden
 	fail404 := s.failGETWith404
 	events := append([]string(nil), s.getStreamEvents...)
 	s.mu.Unlock()
 
+	if unauthorized {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if forbidden {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
 	if fail404 {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -192,6 +202,18 @@ func (s *streamableServer) expireNext() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireNextCall = true
+}
+
+func (s *streamableServer) setUnauthorized() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.unauthorized = true
+}
+
+func (s *streamableServer) setForbidden() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forbidden = true
 }
 
 func newStreamableTransport(t *testing.T, endpoint string, authorizer TransportAuthorizer, client *http.Client) *StreamableHTTPTransport {
@@ -288,7 +310,7 @@ func TestStreamableHTTPTransportUnauthorizedTerminal(t *testing.T) {
 
 func TestStreamableHTTPTransportInsufficientScopeTerminal(t *testing.T) {
 	server, srv := newStreamableServer(t)
-	server.forbidden = true
+	server.setForbidden()
 	transport := newStreamableTransport(t, srv.URL, nil, nil)
 
 	req := Message{JSONRPC: jsonRPCVersion, ID: 1, Method: "ping"}
@@ -370,6 +392,174 @@ func TestStreamableHTTPTransportGETStream404ReportsSessionExpired(t *testing.T) 
 	_, err := transport.Receive(ctx)
 	if !errors.Is(err, ErrSessionExpired) {
 		t.Fatalf("Receive() error = %v, want ErrSessionExpired", err)
+	}
+}
+
+func TestStreamableHTTPTransportGETStream401ReportsUnauthorized(t *testing.T) {
+	server, srv := newStreamableServer(t)
+	transport := newStreamableTransport(t, srv.URL, nil, nil)
+
+	client := NewClient(transport, Options{})
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	server.setUnauthorized()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := transport.Receive(ctx)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Receive() error = %v, want ErrUnauthorized from GET stream", err)
+	}
+}
+
+func TestStreamableHTTPTransportGETStream403ReportsInsufficientScope(t *testing.T) {
+	server, srv := newStreamableServer(t)
+	transport := newStreamableTransport(t, srv.URL, nil, nil)
+
+	client := NewClient(transport, Options{})
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	server.setForbidden()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := transport.Receive(ctx)
+	if !errors.Is(err, ErrInsufficientScope) {
+		t.Fatalf("Receive() error = %v, want ErrInsufficientScope from GET stream", err)
+	}
+}
+
+func TestStreamableHTTPTransportGETStream405DisablesStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request Message
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		if request.Method == "initialize" {
+			w.Header().Set(headerMCPSessionID, "no-get-stream")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"t"}}}`))
+			return
+		}
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`))
+	}))
+	defer srv.Close()
+
+	transport := newStreamableTransport(t, srv.URL, nil, nil)
+	client := NewClient(transport, Options{})
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	if _, err := client.ListTools(context.Background()); err != nil {
+		t.Fatalf("ListTools() error = %v", err)
+	}
+
+	transport.mu.Lock()
+	disabled := transport.getDisabled
+	transport.mu.Unlock()
+	if !disabled {
+		t.Fatal("GET stream was not disabled after 405")
+	}
+}
+
+func TestStreamableHTTPTransportRefreshFailureIsUnauthorized(t *testing.T) {
+	server, srv := newStreamableServer(t)
+	server.unauthorized = true
+	transport := newStreamableTransport(t, srv.URL, &failingAuthorizer{}, nil)
+
+	req := Message{JSONRPC: jsonRPCVersion, ID: 1, Method: "ping"}
+	err := transport.Send(context.Background(), req)
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Send() error = %v, want ErrUnauthorized", err)
+	}
+	if !strings.Contains(err.Error(), "credential refresh failed") {
+		t.Fatalf("error = %v, want refresh failure detail", err)
+	}
+}
+
+type failingAuthorizer struct{}
+
+func (failingAuthorizer) Authorize(ctx context.Context, req *http.Request) error {
+	req.Header.Set("Authorization", "Bearer stale")
+	return nil
+}
+
+func (failingAuthorizer) Refresh(ctx context.Context) error {
+	return errors.New("refresh endpoint down")
+}
+
+func TestStreamableHTTPTransportReinitializeRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every request, including re-initialize, reports the session gone.
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	transport := newStreamableTransport(t, srv.URL, nil, nil)
+	client := NewClient(transport, Options{})
+	if _, err := client.Initialize(context.Background()); err == nil {
+		t.Fatal("Initialize() against always-404 server should fail")
+	}
+}
+
+func TestStreamableHTTPTransportReinitializeUnauthorized(t *testing.T) {
+	var mu sync.Mutex
+	firstInitDone := false
+	expired := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request Message
+		_ = json.NewDecoder(r.Body).Decode(&request)
+
+		if request.Method == "initialize" {
+			mu.Lock()
+			first := !firstInitDone
+			firstInitDone = true
+			mu.Unlock()
+			if first {
+				w.Header().Set(headerMCPSessionID, "s1")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","serverInfo":{"name":"t"}}}`))
+				return
+			}
+			// The server requires re-authentication for re-initialize.
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		mu.Lock()
+		expiredNow := expired
+		mu.Unlock()
+		if expiredNow {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":2,"result":{"tools":[]}}`))
+	}))
+	defer srv.Close()
+
+	transport := newStreamableTransport(t, srv.URL, nil, nil)
+	client := NewClient(transport, Options{})
+	if _, err := client.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+
+	mu.Lock()
+	expired = true
+	mu.Unlock()
+
+	// tools/list hits 404; the replayed initialize is answered 401, so the
+	// transport must surface the unauthorized terminal state.
+	_, err := client.ListTools(context.Background())
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("ListTools() error = %v, want ErrUnauthorized", err)
 	}
 }
 
@@ -638,6 +828,105 @@ func TestOAuth2AuthorizerMetadataDiscovery(t *testing.T) {
 	}
 	if got := req.Header.Get("Authorization"); got != "Bearer discovered" {
 		t.Fatalf("Authorization = %q, want discovered token via metadata", got)
+	}
+}
+
+func TestOAuth2AuthorizerTokenEndpointErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{
+			name: "token endpoint 500",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+			},
+		},
+		{
+			name: "token response missing access_token",
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				writeJSONResponse(t, w, map[string]any{"token_type": "Bearer"})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+
+			authorizer, err := NewOAuth2Authorizer(OAuth2Config{
+				TokenURL:     srv.URL + "/token",
+				ClientID:     "petalflow",
+				ClientSecret: "shh",
+				Endpoint:     srv.URL + "/mcp",
+			})
+			if err != nil {
+				t.Fatalf("NewOAuth2Authorizer() error = %v", err)
+			}
+
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", nil)
+			if err := authorizer.Authorize(context.Background(), req); err == nil {
+				t.Fatal("Authorize() should fail")
+			}
+		})
+	}
+}
+
+func TestOAuth2AuthorizerDiscoveryFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// No metadata anywhere; discovery must fail cleanly.
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	authorizer, err := NewOAuth2Authorizer(OAuth2Config{
+		ClientID:     "petalflow",
+		ClientSecret: "shh",
+		Endpoint:     srv.URL + "/mcp",
+	})
+	if err != nil {
+		t.Fatalf("NewOAuth2Authorizer() error = %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", nil)
+	if err := authorizer.Authorize(context.Background(), req); err == nil {
+		t.Fatal("Authorize() with failed discovery should error")
+	}
+	// Discovery result is cached: the second attempt fails fast too.
+	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/mcp", nil)
+	if err := authorizer.Authorize(context.Background(), req2); err == nil {
+		t.Fatal("Authorize() after cached discovery failure should error")
+	}
+}
+
+func TestOAuth2AuthorizerValidation(t *testing.T) {
+	if _, err := NewOAuth2Authorizer(OAuth2Config{ClientID: "x"}); err == nil {
+		t.Fatal("NewOAuth2Authorizer() without endpoint or token url should fail")
+	}
+	if _, err := NewOAuth2Authorizer(OAuth2Config{TokenURL: "https://as.example/token"}); err == nil {
+		t.Fatal("NewOAuth2Authorizer() without client id should fail")
+	}
+}
+
+func TestStaticTokenAuthorizerCustomHeaderAndScheme(t *testing.T) {
+	authorizer := &StaticTokenAuthorizer{Header: "X-Api-Key", Scheme: "Token", Token: "shh"}
+	req, _ := http.NewRequest(http.MethodPost, "http://mcp.local", nil)
+	if err := authorizer.Authorize(context.Background(), req); err != nil {
+		t.Fatalf("Authorize() error = %v", err)
+	}
+	if got := req.Header.Get("X-Api-Key"); got != "Token shh" {
+		t.Fatalf("X-Api-Key = %q", got)
+	}
+}
+
+func TestOAuth2AuthorizerNilRequest(t *testing.T) {
+	authorizer := &OAuth2Authorizer{}
+	if err := authorizer.Authorize(context.Background(), nil); err == nil {
+		t.Fatal("Authorize() with nil request should fail")
+	}
+	if err := (&StaticTokenAuthorizer{}).Authorize(context.Background(), nil); err == nil {
+		t.Fatal("StaticTokenAuthorizer.Authorize() with nil request should fail")
 	}
 }
 
