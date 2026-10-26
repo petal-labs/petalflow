@@ -80,6 +80,24 @@ const (
 	// Payload includes: source_node, source_port, target_node, target_port,
 	// data_size_bytes, data_preview.
 	EventEdgeTransfer EventKind = "edge.transfer"
+
+	// EventMemoryRead is emitted when a memory provider retrieval completes.
+	// Payload includes: namespace, session_id, thread_id, tenant_id,
+	// query_length, document_count, total_tokens, latency_ms, and
+	// unavailable. Document text is omitted by default; nodes opt in to
+	// including redacted content via node configuration.
+	EventMemoryRead EventKind = "memory.read"
+
+	// EventMemoryWrite is emitted when a memory provider write completes.
+	// Payload includes: namespace, session_id, thread_id, tenant_id,
+	// byte_count, latency_ms, and unavailable. Written content is omitted by
+	// default; nodes opt in to including it via node configuration.
+	EventMemoryWrite EventKind = "memory.write"
+
+	// EventContextAssembled is emitted after budget-aware context assembly.
+	// Payload includes: documents_in, documents_out, tokens_in, tokens_out,
+	// truncated, strategy, max_tokens, max_documents.
+	EventContextAssembled EventKind = "context.assembled"
 )
 
 // String returns the string representation of the EventKind.

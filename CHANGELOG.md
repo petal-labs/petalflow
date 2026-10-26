@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Memory and context management integration**
+  ([#172](https://github.com/petal-labs/petalflow/issues/172)). A new
+  `memory` package defines a dependency-free pluggable
+  `memory.Provider` contract (retrieval + write) that external backends —
+  such as a Cortex adapter — implement and verify with the
+  `memory/memorytest` conformance suite without importing PetalFlow
+  internals. Workflows address memory by validated session, thread,
+  namespace, tenant, and run identifiers, propagated via
+  `RunOptions.MemoryScope` (or per-node template overrides) and
+  `runtime.ScopeFromContext`. A new `memory` node retrieves context or
+  writes envelope content, enforcing token-aware context and retrieval
+  budgets (`memory.ContextBudget`, default ~4 chars/token estimator, custom
+  `memory.TokenCounter` supported) through a pluggable `memory.Compactor`
+  hook whose default truncation strategy keeps ranked documents and trims
+  overflow. Reads, writes, and assembly emit `memory.read`,
+  `memory.write`, and `context.assembled` events that are content-free by
+  default so memory stays observable without storing sensitive content.
+  Providers unavailable backends by wrapping `memory.ErrUnavailable`; nodes
+  react per an explicit `OnUnavailable` policy (`fail` by default, or
+  `skip` to continue without memory). `llm.response` events now report
+  `cache_read_tokens` / `cache_creation_tokens` when providers surface
+  prompt-cache activity, and `core` token usage types carry the
+  corresponding fields. See `docs/memory.md`.
 
 - **Asynchronous run jobs and distributed schedule coordination**
   ([#171](https://github.com/petal-labs/petalflow/issues/171)). Run

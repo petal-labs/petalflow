@@ -19,6 +19,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -164,6 +165,8 @@ const (
 	NodeKindWebhookCall    = core.NodeKindWebhookCall
 	NodeKindWebhookTrigger = core.NodeKindWebhookTrigger
 	NodeKindHuman          = core.NodeKindHuman
+	NodeKindConditional    = core.NodeKindConditional
+	NodeKindMemory         = core.NodeKindMemory
 )
 
 // Core package constructors
@@ -307,6 +310,10 @@ const (
 	EventStepResumed   = runtime.EventStepResumed
 	EventStepSkipped   = runtime.EventStepSkipped
 	EventStepAborted   = runtime.EventStepAborted
+
+	EventMemoryRead       = runtime.EventMemoryRead
+	EventMemoryWrite      = runtime.EventMemoryWrite
+	EventContextAssembled = runtime.EventContextAssembled
 )
 
 // StepAction constants
@@ -567,6 +574,52 @@ type (
 
 	// MockHTTPClient is a mock HTTP client for testing.
 	MockHTTPClient = nodes.MockHTTPClient
+
+	// MemoryNode integrates durable memory and knowledge into a workflow.
+	MemoryNode = nodes.MemoryNode
+
+	// MemoryNodeConfig configures a MemoryNode.
+	MemoryNodeConfig = nodes.MemoryNodeConfig
+
+	// MemoryResult records what a MemoryNode did.
+	MemoryResult = nodes.MemoryResult
+
+	// MemoryMode selects what a MemoryNode does with the provider.
+	MemoryMode = nodes.MemoryMode
+
+	// MemoryUnavailableAction defines behavior when memory is unavailable.
+	MemoryUnavailableAction = nodes.MemoryUnavailableAction
+)
+
+// Memory package re-exports: the pluggable memory/knowledge contract.
+type (
+	// MemoryProvider is the pluggable memory/knowledge interface.
+	MemoryProvider = memory.Provider
+
+	// MemoryScope carries session, thread, namespace, tenant, and run
+	// identifiers that bind memory reads and writes.
+	MemoryScope = memory.Scope
+
+	// MemoryDocument is a single retrieved memory or knowledge item.
+	MemoryDocument = memory.Document
+
+	// MemoryContextBudget bounds assembled context by tokens and documents.
+	MemoryContextBudget = memory.ContextBudget
+
+	// MemoryRetrievalQuery describes a memory read.
+	MemoryRetrievalQuery = memory.RetrievalQuery
+
+	// MemoryWriteRequest describes a memory write.
+	MemoryWriteRequest = memory.WriteRequest
+
+	// MemoryCompactor is the compaction/truncation hook for context assembly.
+	MemoryCompactor = memory.Compactor
+
+	// MemoryCompactionStats describes what context assembly did.
+	MemoryCompactionStats = memory.CompactionStats
+
+	// MemoryTokenCounter estimates the token count of a text string.
+	MemoryTokenCounter = memory.TokenCounter
 )
 
 // ConditionOp constants
@@ -673,6 +726,18 @@ const (
 	WebhookAuthTypeHeaderToken = nodes.WebhookAuthTypeHeaderToken
 )
 
+// Memory mode constants
+const (
+	MemoryModeRetrieve = nodes.MemoryModeRetrieve
+	MemoryModeWrite    = nodes.MemoryModeWrite
+)
+
+// Memory unavailability policy constants
+const (
+	MemoryUnavailableFail = nodes.MemoryUnavailableFail
+	MemoryUnavailableSkip = nodes.MemoryUnavailableSkip
+)
+
 // Nodes package constructors
 var (
 	NewLLMNode                = nodes.NewLLMNode
@@ -696,6 +761,7 @@ var (
 	NewMockNode               = nodes.NewMockNode
 	NewGuardianNode           = nodes.NewGuardianNode
 	NewHumanNode              = nodes.NewHumanNode
+	NewMemoryNode             = nodes.NewMemoryNode
 	NewChannelHumanHandler    = nodes.NewChannelHumanHandler
 	NewCallbackHumanHandler   = nodes.NewCallbackHumanHandler
 	NewAutoApproveHandler     = nodes.NewAutoApproveHandler
@@ -704,6 +770,16 @@ var (
 	NewWebhookCallNode        = nodes.NewWebhookCallNode
 	NewWebhookTriggerNode     = nodes.NewWebhookTriggerNode
 	NewMockHTTPClient         = nodes.NewMockHTTPClient
+)
+
+// Memory package constructors
+var (
+	NewMemoryProvider     = memory.NewInMemoryProvider
+	NewTruncateCompactor  = memory.NewTruncateCompactor
+	MemoryEstimateTokens  = memory.EstimateTokens
+	MemoryRenderContext   = memory.RenderContext
+	MemoryErrUnavailable  = memory.ErrUnavailable
+	ErrInvalidMemoryScope = runtime.ErrInvalidMemoryScope
 )
 
 // =============================================================================

@@ -13,6 +13,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 )
 
 // Runtime errors
@@ -24,6 +25,11 @@ var (
 	// The panic is converted into an error so it flows through the normal
 	// fail / continue-on-error path instead of crashing the process.
 	ErrNodePanic = errors.New("node panicked")
+
+	// ErrInvalidMemoryScope indicates RunOptions.MemoryScope failed
+	// validation. Memory scopes require at least a namespace and session ID
+	// with characters safe for storage keys.
+	ErrInvalidMemoryScope = errors.New("invalid memory scope")
 )
 
 // NodePanicError is returned when a node's Run method panics. The panic is
@@ -195,6 +201,13 @@ type RunOptions struct {
 
 	// WorkflowVersion is the workflow version for tracing.
 	WorkflowVersion string
+
+	// MemoryScope is the validated memory context (tenant, namespace,
+	// session, thread) propagated to nodes for the whole run. Memory nodes
+	// fall back to it when their configuration does not name explicit
+	// identifiers. If non-empty it must pass memory.Scope.Validate, which
+	// requires at least a namespace and session ID.
+	MemoryScope memory.Scope
 }
 
 // DefaultRunOptions returns sensible default options.
@@ -236,6 +249,12 @@ func (r *BasicRuntime) Events() <-chan Event {
 
 // Run executes the graph sequentially, following edges from the entry node.
 func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelope, opts RunOptions) (*core.Envelope, error) {
+	// Validate and propagate the memory scope for the whole run so memory
+	// nodes (and any provider-aware node) see stable identifiers.
+	if err := applyMemoryScope(&ctx, opts.MemoryScope); err != nil {
+		return nil, err
+	}
+
 	if opts.RunStore != nil {
 		return r.runDurable(ctx, g, env, opts)
 	}
@@ -358,9 +377,27 @@ func (r *BasicRuntime) Resume(ctx context.Context, g graph.Graph, runID string, 
 	if runID == "" {
 		return nil, errors.New("resume requires a run ID")
 	}
+	// Validate and propagate the memory scope for the whole run so resumed
+	// executions address memory with the same identifiers as the original.
+	if err := applyMemoryScope(&ctx, opts.MemoryScope); err != nil {
+		return nil, err
+	}
 	opts.RunID = runID
 	opts.Resume = true
 	return r.runDurable(ctx, g, nil, opts)
+}
+
+// applyMemoryScope validates opts scope and attaches it to ctx in place.
+// A zero scope is left untouched (no memory identifiers requested).
+func applyMemoryScope(ctxp *context.Context, scope memory.Scope) error {
+	if scope == (memory.Scope{}) {
+		return nil
+	}
+	if err := scope.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidMemoryScope, err)
+	}
+	*ctxp = ContextWithScope(*ctxp, scope)
+	return nil
 }
 
 func runStatusForError(err error) string {
