@@ -134,6 +134,13 @@ func (c *InstrumentedClient) emitLLMResponseEvent(req core.LLMRequest, resp core
 		event.Payload["output_tokens"] = resp.Usage.OutputTokens
 		event.Payload["total_tokens"] = resp.Usage.TotalTokens
 
+		if resp.Usage.CacheReadTokens > 0 {
+			event.Payload["cache_read_tokens"] = resp.Usage.CacheReadTokens
+		}
+		if resp.Usage.CacheCreationTokens > 0 {
+			event.Payload["cache_creation_tokens"] = resp.Usage.CacheCreationTokens
+		}
+
 		if resp.Usage.CostUSD > 0 {
 			event.Payload["cost_usd"] = resp.Usage.CostUSD
 		}
@@ -262,6 +269,12 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 							event.Payload["input_tokens"] = finalUsage.InputTokens
 							event.Payload["output_tokens"] = finalUsage.OutputTokens
 							event.Payload["total_tokens"] = finalUsage.TotalTokens
+							if finalUsage.CacheReadTokens > 0 {
+								event.Payload["cache_read_tokens"] = finalUsage.CacheReadTokens
+							}
+							if finalUsage.CacheCreationTokens > 0 {
+								event.Payload["cache_creation_tokens"] = finalUsage.CacheCreationTokens
+							}
 						}
 					}
 

@@ -223,6 +223,22 @@ func registerBuiltins(r *Registry) {
 	})
 
 	r.Register(NodeTypeDef{
+		Type:        "memory",
+		Category:    "data",
+		DisplayName: "Memory",
+		Description: "Retrieve or write durable memory and knowledge by session and namespace, with token-aware context budgets",
+		Ports: PortSchema{
+			Inputs: []PortDef{
+				{Name: "input", Type: "any", Required: false},
+			},
+			Outputs: []PortDef{
+				{Name: "output", Type: "string"},
+				{Name: "stats", Type: "object"},
+			},
+		},
+	})
+
+	r.Register(NodeTypeDef{
 		Type:        "noop",
 		Category:    "control",
 		DisplayName: "No-Op",
@@ -287,6 +303,7 @@ var builtinConfigKeys = map[string][]string{
 	"human":           {"mode", "prompt", "output_var", "timeout"},
 	"map":             {"input_var", "output_var", "item_var", "index_var", "concurrency", "continue_on_error", "preserve_order", "mapper_binding", "mapper_node"},
 	"cache":           {"cache_key", "ttl", "output_var", "output_key", "input_vars", "include_artifacts", "include_input", "wrapped_binding", "wrapped_node"},
+	"memory":          {"mode", "query_template", "input_vars", "namespace", "session_id", "thread_id", "tenant_id", "max_documents", "max_tokens", "output_var", "omit_artifacts", "write_var", "write_key", "on_unavailable", "include_content_in_events", "timeout"},
 	"conditional":     {"default", "output_key", "evaluation_order", "pass_through", "conditions"},
 	"webhook_trigger": {"methods", "auth", "request_var", "body_var", "headers_var", "query_var", "metadata_var", "timeout"},
 	"webhook_call":    {"url", "method", "headers", "timeout", "max_response_bytes", "template", "result_var", "input_vars", "include_artifacts", "include_messages", "include_trace"},

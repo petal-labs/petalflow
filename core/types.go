@@ -31,6 +31,7 @@ const (
 	NodeKindWebhookTrigger NodeKind = "webhook_trigger"
 	NodeKindHuman          NodeKind = "human"
 	NodeKindConditional    NodeKind = "conditional"
+	NodeKindMemory         NodeKind = "memory"
 )
 
 // String returns the string representation of the NodeKind.
@@ -126,15 +127,21 @@ type TokenUsage struct {
 	OutputTokens int     // tokens generated in output
 	TotalTokens  int     // total tokens (input + output)
 	CostUSD      float64 // cost in USD (if computable)
+	// CacheReadTokens and CacheCreationTokens report prompt-cache activity
+	// (subsets of InputTokens). Populated when the provider reports them.
+	CacheReadTokens     int
+	CacheCreationTokens int
 }
 
 // Add combines two TokenUsage values.
 func (u TokenUsage) Add(other TokenUsage) TokenUsage {
 	return TokenUsage{
-		InputTokens:  u.InputTokens + other.InputTokens,
-		OutputTokens: u.OutputTokens + other.OutputTokens,
-		TotalTokens:  u.TotalTokens + other.TotalTokens,
-		CostUSD:      u.CostUSD + other.CostUSD,
+		InputTokens:         u.InputTokens + other.InputTokens,
+		OutputTokens:        u.OutputTokens + other.OutputTokens,
+		TotalTokens:         u.TotalTokens + other.TotalTokens,
+		CostUSD:             u.CostUSD + other.CostUSD,
+		CacheReadTokens:     u.CacheReadTokens + other.CacheReadTokens,
+		CacheCreationTokens: u.CacheCreationTokens + other.CacheCreationTokens,
 	}
 }
 
@@ -308,6 +315,14 @@ type LLMTokenUsage struct {
 	OutputTokens int
 	TotalTokens  int
 	CostUSD      float64 // optional: computed cost
+	// CacheReadTokens reports prompt tokens served from the provider's
+	// prompt cache (a subset of InputTokens). Populated when the provider
+	// reports cache hits; zero otherwise.
+	CacheReadTokens int
+	// CacheCreationTokens reports tokens written to the provider's prompt
+	// cache. Populated when the provider reports cache writes; zero
+	// otherwise.
+	CacheCreationTokens int
 }
 
 // LLMToolCall represents a tool invocation requested by the model.

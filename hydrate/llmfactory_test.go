@@ -9,6 +9,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	condnode "github.com/petal-labs/petalflow/nodes/conditional"
 	"github.com/petal-labs/petalflow/registry"
@@ -384,6 +385,69 @@ func TestNewLiveNodeFactory_HumanNode_MissingHandler(t *testing.T) {
 	_, err := nodeFactory(nd)
 	if err == nil {
 		t.Fatal("expected error for missing HumanHandler, got nil")
+	}
+}
+
+// --- Memory node tests ---
+
+func TestNewLiveNodeFactory_MemoryNode(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory, WithMemoryProvider(memory.NewInMemoryProvider()))
+
+	nd := graph.NodeDef{
+		ID:   "recall",
+		Type: "memory",
+		Config: map[string]any{
+			"mode":           "retrieve",
+			"query_template": "{{.input}}",
+			"namespace":      "ops",
+			"session_id":     "sess-1",
+			"max_documents":  5,
+			"max_tokens":     512,
+			"on_unavailable": "skip",
+			"output_var":     "context",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mn, ok := node.(*nodes.MemoryNode)
+	if !ok {
+		t.Fatalf("expected *nodes.MemoryNode, got %T", node)
+	}
+	cfg := mn.Config()
+	if cfg.Mode != nodes.MemoryModeRetrieve {
+		t.Errorf("Mode = %q, want %q", cfg.Mode, nodes.MemoryModeRetrieve)
+	}
+	if cfg.Budget.MaxDocuments != 5 || cfg.Budget.MaxTokens != 512 {
+		t.Errorf("Budget = %+v", cfg.Budget)
+	}
+	if cfg.OnUnavailable != nodes.MemoryUnavailableSkip {
+		t.Errorf("OnUnavailable = %q, want %q", cfg.OnUnavailable, nodes.MemoryUnavailableSkip)
+	}
+	if cfg.OutputVar != "context" {
+		t.Errorf("OutputVar = %q, want context", cfg.OutputVar)
+	}
+}
+
+func TestNewLiveNodeFactory_MemoryNode_MissingProvider(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory) // no WithMemoryProvider
+
+	nd := graph.NodeDef{
+		ID:   "recall",
+		Type: "memory",
+		Config: map[string]any{
+			"namespace":  "ops",
+			"session_id": "sess-1",
+		},
+	}
+
+	if _, err := nodeFactory(nd); err == nil {
+		t.Fatal("expected error for missing memory provider, got nil")
 	}
 }
 
@@ -1078,6 +1142,7 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 		factory,
 		WithToolRegistry(toolRegistry),
 		WithHumanHandler(handler),
+		WithMemoryProvider(memory.NewInMemoryProvider()),
 	)
 
 	type caseDef struct {
@@ -1190,6 +1255,16 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 							"output_var": "cache_out",
 						},
 					},
+				},
+			},
+		},
+		"memory": {
+			node: graph.NodeDef{
+				ID:   "n-memory",
+				Type: "memory",
+				Config: map[string]any{
+					"namespace":  "ops",
+					"session_id": "sess-1",
 				},
 			},
 		},

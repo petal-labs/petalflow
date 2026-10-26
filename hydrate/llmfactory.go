@@ -8,6 +8,7 @@ import (
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/nodes/conditional"
 	"github.com/petal-labs/petalflow/nodes/conditional/expr"
@@ -25,8 +26,9 @@ type ClientFactory func(providerName string, cfg ProviderConfig) (core.LLMClient
 
 // liveFactoryOptions holds optional dependencies for non-LLM node types.
 type liveFactoryOptions struct {
-	toolRegistry *core.ToolRegistry
-	humanHandler nodes.HumanHandler
+	toolRegistry   *core.ToolRegistry
+	humanHandler   nodes.HumanHandler
+	memoryProvider memory.Provider
 }
 
 type liveFactoryRuntime struct {
@@ -47,6 +49,13 @@ func WithToolRegistry(r *core.ToolRegistry) LiveNodeOption {
 // real HumanNode instances instead of FuncNode placeholders.
 func WithHumanHandler(h nodes.HumanHandler) LiveNodeOption {
 	return func(o *liveFactoryOptions) { o.humanHandler = h }
+}
+
+// WithMemoryProvider provides a memory.Provider so that memory-type nodes
+// resolve to real MemoryNode instances. The provider is shared by all memory
+// nodes in the workflow; scoping happens per node via session and namespace.
+func WithMemoryProvider(p memory.Provider) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.memoryProvider = p }
 }
 
 // NewLiveNodeFactory returns a NodeFactory that creates executable nodes for
@@ -112,6 +121,8 @@ func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 		return buildMapNode(r, nd)
 	case "cache":
 		return buildCacheNode(r, nd)
+	case "memory":
+		return buildMemoryNode(nd, r.options.memoryProvider)
 	case "merge":
 		return buildMergeNode(nd)
 	case "human":
@@ -200,6 +211,48 @@ func buildCacheNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
 	}
 
 	return nodes.NewCacheNode(nd.ID, cfg), nil
+}
+
+// buildMemoryNode creates a MemoryNode from a NodeDef. Returns an error if no
+// memory.Provider was provided.
+func buildMemoryNode(nd graph.NodeDef, provider memory.Provider) (core.Node, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("node %q: memory node requires a memory provider (use WithMemoryProvider)", nd.ID)
+	}
+
+	cfg := nodes.MemoryNodeConfig{
+		Provider:      provider,
+		Mode:          nodes.MemoryMode(configString(nd.Config, "mode")),
+		QueryTemplate: configString(nd.Config, "query_template"),
+		Namespace:     configString(nd.Config, "namespace"),
+		SessionID:     configString(nd.Config, "session_id"),
+		ThreadID:      configString(nd.Config, "thread_id"),
+		TenantID:      configString(nd.Config, "tenant_id"),
+		OutputVar:     configString(nd.Config, "output_var"),
+		WriteVar:      configString(nd.Config, "write_var"),
+		WriteKey:      configString(nd.Config, "write_key"),
+		OnUnavailable: nodes.MemoryUnavailableAction(configString(nd.Config, "on_unavailable")),
+	}
+	if vars, ok := configStringSlice(nd.Config, "input_vars"); ok {
+		cfg.InputVars = vars
+	}
+	if maxDocuments, ok := configInt(nd.Config, "max_documents"); ok && maxDocuments > 0 {
+		cfg.Budget.MaxDocuments = maxDocuments
+	}
+	if maxTokens, ok := configInt(nd.Config, "max_tokens"); ok && maxTokens > 0 {
+		cfg.Budget.MaxTokens = maxTokens
+	}
+	if v, ok := nd.Config["omit_artifacts"].(bool); ok {
+		cfg.OmitArtifacts = v
+	}
+	if v, ok := nd.Config["include_content_in_events"].(bool); ok {
+		cfg.IncludeContentInEvents = v
+	}
+	if d := configDuration(nd.Config, "timeout"); d > 0 {
+		cfg.Timeout = d
+	}
+
+	return nodes.NewMemoryNode(nd.ID, cfg), nil
 }
 
 func boundNodeDefFromConfig(nd graph.NodeDef, keys []string, defaultID string) (graph.NodeDef, error) {
@@ -356,17 +409,20 @@ func configFloat64(m map[string]any, key string) (float64, bool) {
 	return v, ok
 }
 
-// configInt extracts an int from config, handling JSON float64 → int coercion.
+// configInt extracts an int from config, handling JSON float64 → int coercion
+// and programmatic int literals.
 func configInt(m map[string]any, key string) (int, bool) {
-	v, ok := m[key].(float64)
-	if !ok {
-		return 0, false
+	switch v := m[key].(type) {
+	case float64:
+		// Guard against NaN/Inf and non-integer values
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return 0, false
+		}
+		return int(v), true
+	case int:
+		return v, true
 	}
-	// Guard against NaN/Inf and non-integer values
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		return 0, false
-	}
-	return int(v), true
+	return 0, false
 }
 
 // configDuration extracts a time.Duration from config.
