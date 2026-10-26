@@ -208,6 +208,23 @@ type RunOptions struct {
 	// identifiers. If non-empty it must pass memory.Scope.Validate, which
 	// requires at least a namespace and session ID.
 	MemoryScope memory.Scope
+
+	// NodeRecorder optionally observes each node execution's input and
+	// output envelopes. It is invoked from the single node execution choke
+	// point for both sequential and parallel paths, after the node returns
+	// or fails, and is purely observational: implementations must not mutate
+	// the envelopes (clone before retaining). When set together with an
+	// EventHandler, a capture layer can combine envelope state with the
+	// event stream.
+	NodeRecorder NodeRecorder
+}
+
+// NodeRecorder receives per-node envelope state for capture and replay.
+// Input is the envelope as handed to the node; output is the envelope the
+// node returned (nil when the node failed). runErr is the node's error, if
+// any.
+type NodeRecorder interface {
+	RecordNode(nodeID string, kind core.NodeKind, input, output *core.Envelope, runErr error)
 }
 
 // DefaultRunOptions returns sensible default options.
@@ -1214,6 +1231,12 @@ func (r *BasicRuntime) executeNode(
 
 	// Calculate elapsed time
 	nodeElapsed := opts.Now().Sub(nodeStart)
+
+	// Report envelope state to the capture hook (purely observational; the
+	// recorder is responsible for cloning anything it retains).
+	if opts.NodeRecorder != nil {
+		opts.NodeRecorder.RecordNode(nodeID, nodeKind, env, result, err)
+	}
 
 	if err != nil {
 		// Emit node failed
