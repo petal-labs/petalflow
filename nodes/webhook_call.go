@@ -143,6 +143,12 @@ func (n *WebhookCallNode) Config() WebhookCallNodeConfig {
 	return n.config
 }
 
+// Replayable reports that webhook calls must not run during offline replay:
+// they perform outbound HTTP requests with external side effects.
+func (n *WebhookCallNode) Replayable() bool {
+	return false
+}
+
 // Run executes a webhook call.
 func (n *WebhookCallNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
 	if err := ctx.Err(); err != nil {

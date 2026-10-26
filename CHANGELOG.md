@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Deterministic fixture playback and offline replay**
+  ([#197](https://github.com/petal-labs/petalflow/issues/197), part of
+  [#173](https://github.com/petal-labs/petalflow/issues/173)). Building on
+  the replay capture format (#196), full-fidelity recordings now double as
+  fixture stores: `replay.NewFixtureStore` derives deterministic LLM and
+  tool fixtures, `replay.NewFixtureLLMClient` / `replay.FixtureTool` /
+  `replay.ReplayToolRegistry` replay recorded interactions with input
+  fingerprint matching (recorded-order matching for redacted recordings,
+  single-consumption semantics for loops and parallel branches), and
+  explicit mismatch policies (`fail` by default — replay never silently
+  invokes live systems — or `live` fallback). A node-level
+  `core.ReplayAware` marker marks `webhook_call`, `webhook_trigger`, and
+  `human` as non-replayable; the `replay.Replayer` offline runner fails on
+  them by default or substitutes their recorded output envelopes
+  (`ReplayNonReplayableStub`), never silently invoking them. Replay runs
+  with a frozen clock (deterministic zero elapsed), no node timeouts, and
+  concurrency-safe fixture consumption for parallel maps; human gates
+  resolve to their recorded decisions offline. `replay.Verify` diffs the
+  replay's own full-fidelity recording against the original — node
+  sequence, outputs, LLM interactions, tool results, and terminal status —
+  for CI regression checking. See `docs/replay.md`.
+
 - **Replay capture format and redaction policy engine**
   ([#196](https://github.com/petal-labs/petalflow/issues/196), part of
   [#173](https://github.com/petal-labs/petalflow/issues/173)). A new

@@ -167,6 +167,12 @@ func (n *HumanNode) Config() HumanNodeConfig {
 	return n.config
 }
 
+// Replayable reports that human gates must not run during offline replay:
+// they require live human interaction and cannot resolve deterministically.
+func (n *HumanNode) Replayable() bool {
+	return false
+}
+
 // Run executes the human node logic.
 func (n *HumanNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
 	// Check context

@@ -171,6 +171,12 @@ func (n *WebhookTriggerNode) Config() WebhookTriggerNodeConfig {
 	return n.config
 }
 
+// Replayable reports that webhook triggers must not run during offline
+// replay: they depend on inbound HTTP request semantics.
+func (n *WebhookTriggerNode) Replayable() bool {
+	return false
+}
+
 // Run maps __webhook_request payload into configured output vars.
 func (n *WebhookTriggerNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
 	if err := ctx.Err(); err != nil {

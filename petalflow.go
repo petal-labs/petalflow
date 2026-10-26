@@ -837,6 +837,60 @@ var (
 	ReplaySummarize     = replay.Summarize
 )
 
+// Replay fixture and runner re-exports
+type (
+	// ReplayFixtureStore holds recorded interactions for offline replay.
+	ReplayFixtureStore = replay.FixtureStore
+
+	// ReplayFixtureLLMClient is a deterministic LLM client backed by
+	// fixtures.
+	ReplayFixtureLLMClient = replay.FixtureLLMClient
+
+	// ReplayFixtureTool is a deterministic tool backed by fixtures.
+	ReplayFixtureTool = replay.FixtureTool
+
+	// ReplayReplayer runs a captured recording offline.
+	ReplayReplayer = replay.Replayer
+
+	// ReplayOptions configures an offline replay.
+	ReplayOptions = replay.ReplayOptions
+
+	// ReplayResult carries the outputs of an offline replay.
+	ReplayResult = replay.ReplayResult
+
+	// ReplayDifference describes a replay/recording mismatch.
+	ReplayDifference = replay.Difference
+
+	// ReplayNonReplayablePolicy selects non-replayable node behavior.
+	ReplayNonReplayablePolicy = replay.NonReplayablePolicy
+
+	// ReplayFixtureMissPolicy selects fixture mismatch behavior.
+	ReplayFixtureMissPolicy = replay.FixtureMissPolicy
+
+	// ReplayAware is implemented by nodes that must not run unmodified
+	// during offline replay.
+	ReplayAware = core.ReplayAware
+)
+
+// Replay policy constants
+const (
+	ReplayFixtureMissFail   = replay.FixtureMissFail
+	ReplayFixtureMissLive   = replay.FixtureMissLive
+	ReplayNonReplayableFail = replay.ReplayNonReplayableFail
+	ReplayNonReplayableStub = replay.ReplayNonReplayableStub
+)
+
+// Replay package functions
+var (
+	ReplayNewFixtureStore     = replay.NewFixtureStore
+	ReplayNewFixtureLLMClient = replay.NewFixtureLLMClient
+	ReplayNewFixtureTool      = replay.NewFixtureTool
+	ReplayToolRegistry        = replay.ReplayToolRegistry
+	ReplayNewReplayer         = replay.NewReplayer
+	ReplayVerify              = replay.Verify
+	ReplayErrNoFixture        = replay.ErrNoFixture
+)
+
 // =============================================================================
 // Convenience type aliases for common function signatures
 // =============================================================================

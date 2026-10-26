@@ -39,6 +39,22 @@ type RouterNode interface {
 	Route(ctx context.Context, env *Envelope) (RouteDecision, error)
 }
 
+// ReplayAware is implemented by nodes whose execution has external side
+// effects (outbound webhooks) or requires live interaction (human gates),
+// and therefore must not run unmodified during an offline replay. Nodes
+// that do not implement this interface are considered replayable.
+//
+// Offline replay consults this marker through the replay runner's
+// non-replayable policy: fail fast, or substitute the node's recorded
+// output. Non-replayable nodes are never silently invoked during replay.
+type ReplayAware interface {
+	Node
+	// Replayable reports whether the node can execute unmodified during
+	// offline replay. Implementations returning false declare external
+	// side effects or interaction requirements.
+	Replayable() bool
+}
+
 // BaseNode provides common functionality for node implementations.
 // Embed this in concrete node types to get ID and Kind handling for free.
 type BaseNode struct {
