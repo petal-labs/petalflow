@@ -8,7 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-
 - **Memory and context management integration**
   ([#172](https://github.com/petal-labs/petalflow/issues/172)). A new
   `memory` package defines a dependency-free pluggable
@@ -32,6 +31,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cache_read_tokens` / `cache_creation_tokens` when providers surface
   prompt-cache activity, and `core` token usage types carry the
   corresponding fields. See `docs/memory.md`.
+
+- **Asynchronous run jobs and distributed schedule coordination**
+  ([#171](https://github.com/petal-labs/petalflow/issues/171)). Run
+  submission no longer requires holding an HTTP request open:
+  `POST /api/workflows/{id}/run` with `options.async=true` returns `202`
+  immediately with the run ID, and a background worker pool executes the
+  run with durable lease ownership — the job ID is the durable run ID, so
+  polling (`GET /api/runs/{run_id}`, now including queued/attempt state),
+  event streaming, cancel, and retry work uniformly before, during, and
+  after execution. Workers renew their lease while executing and poll for
+  cancel requests raised on any replica; expired leases (crashed workers)
+  are reclaimed automatically from the last checkpoint. Failed attempts
+  retry with exponential backoff and dead-letter after the attempt budget
+  (`POST /api/runs/{run_id}/retry` requeues terminal jobs), deterministic
+  client errors dead-letter immediately, and terminal jobs are pruned by
+  a retention policy (paused/human-input jobs excluded). The workflow
+  scheduler now claims due schedules with a durable database lease instead
+  of process-local overlap maps, so two replicas sharing a store can never
+  execute the same due schedule concurrently; it also honors its `Start`
+  context, drains in-flight runs on `Stop`, coalesces missed runs into a
+  single backfill execution, and dead-letters schedules after repeated
+  consecutive failures. New flags: `--run-worker-poll`,
+  `--run-worker-concurrency`, `--run-worker-lease`,
+  `--run-job-max-attempts`, `--run-job-retention`. SQLite stores now
+  configure per-connection `busy_timeout` and `BEGIN IMMEDIATE`
+  transactions so concurrent workers and schedulers queue for the write
+  lock instead of failing with `SQLITE_BUSY`.
+
+### Changed
 
 - **MCP Streamable HTTP transport with OAuth 2.1-compatible authorization**
   ([#170](https://github.com/petal-labs/petalflow/issues/170)). A new

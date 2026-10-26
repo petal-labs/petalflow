@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/petal-labs/petalflow/internal/sqldialect"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -37,7 +39,7 @@ func NewSQLiteRunStore(cfg SQLiteRunStoreConfig) (*SQLiteRunStore, error) {
 	if strings.TrimSpace(cfg.DSN) == "" {
 		return nil, errors.New("run store sqlite dsn is required")
 	}
-	db, err := sql.Open("sqlite", cfg.DSN)
+	db, err := sql.Open("sqlite", sqldialect.SQLiteBusyTimeout(cfg.DSN))
 	if err != nil {
 		return nil, fmt.Errorf("run sqlite store open: %w", err)
 	}

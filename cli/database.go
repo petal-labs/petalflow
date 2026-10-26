@@ -124,10 +124,12 @@ func openEventStore(dsn string, backend databaseBackend) (eventStoreCloser, erro
 	}
 }
 
-// workflowStore is the combined workflow + schedule store surface used by serve.
+// workflowStore is the combined workflow + schedule + run job store
+// surface used by serve.
 type workflowStore interface {
 	server.WorkflowStore
 	server.WorkflowScheduleStore
+	server.RunJobStore
 	io.Closer
 }
 

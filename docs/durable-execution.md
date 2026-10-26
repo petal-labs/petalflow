@@ -29,11 +29,21 @@ their queued node; an explicit API cancellation is terminal.
 
 The HTTP server exposes:
 
-- `GET /api/runs/{run_id}` for status;
+- `POST /api/workflows/{id}/run` with `options.async=true` to submit a
+  run as a durable job (returns `202` immediately);
+- `GET /api/runs/{run_id}` for status, including queued/attempt state
+  for asynchronous jobs;
 - `POST /api/runs/{run_id}/cancel` for terminal cancellation;
+- `POST /api/runs/{run_id}/retry` to requeue a terminal asynchronous
+  job;
 - `POST /api/runs/{run_id}/resume` to continue from the checkpoint;
 - `GET /api/runs/{run_id}/pending-actions` to retrieve a waiting human action;
 - `POST /api/runs/{run_id}/pending-actions/{action_id}` to complete it exactly once.
+
+Asynchronous runs execute on a leased worker pool: the job's ID is the
+durable run ID, expired leases (crashed workers) are reclaimed
+automatically from the last checkpoint, and cancel requests raised on
+any replica are honored by the owning worker's cancel polling.
 
 Human actions are stored separately from event payloads. Snapshot events contain
 only checkpoint identity and navigation metadata; the checkpoint store remains

@@ -52,6 +52,16 @@ func NewPostgresStore(cfg PostgresStoreConfig) (*PostgresStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("workflow postgres store: add schedule tenant column: %w", err)
 	}
+	for _, addition := range []struct{ column, ddl string }{
+		{column: "lease_owner", ddl: "ALTER TABLE workflow_schedules ADD COLUMN IF NOT EXISTS lease_owner TEXT"},
+		{column: "lease_expires_at", ddl: "ALTER TABLE workflow_schedules ADD COLUMN IF NOT EXISTS lease_expires_at TEXT"},
+		{column: "consecutive_failures", ddl: "ALTER TABLE workflow_schedules ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if _, err := db.Exec(addition.ddl); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("workflow postgres store: add schedule column %s: %w", addition.column, err)
+		}
+	}
 
 	return &PostgresStore{db: db}, nil
 }
@@ -191,7 +201,7 @@ func (s *PostgresStore) Delete(ctx context.Context, id string) error {
 
 func (s *PostgresStore) ListSchedules(ctx context.Context, workflowID string) ([]WorkflowSchedule, error) {
 	rows, err := s.db.QueryContext(ctx, sqldialect.Rebind(`
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
+SELECT `+scheduleSelectColumns+`
 FROM workflow_schedules
 WHERE workflow_id = ?
 ORDER BY created_at ASC`), workflowID)
@@ -216,7 +226,7 @@ ORDER BY created_at ASC`), workflowID)
 
 func (s *PostgresStore) GetSchedule(ctx context.Context, workflowID, scheduleID string) (WorkflowSchedule, bool, error) {
 	row := s.db.QueryRowContext(ctx, sqldialect.Rebind(`
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
+SELECT `+scheduleSelectColumns+`
 FROM workflow_schedules
 WHERE workflow_id = ? AND id = ?`), workflowID, scheduleID)
 
@@ -261,11 +271,12 @@ func (s *PostgresStore) CreateSchedule(ctx context.Context, schedule WorkflowSch
 
 	_, err = s.db.ExecContext(ctx, sqldialect.Rebind(`
 INSERT INTO workflow_schedules
-	(id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at)
+	(id, workflow_id, tenant_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, lease_owner, lease_expires_at, consecutive_failures, created_at, updated_at)
 VALUES
-	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+	(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		schedule.ID,
 		schedule.WorkflowID,
+		schedule.TenantID,
 		schedule.Cron,
 		enabled,
 		inputJSON,
@@ -275,6 +286,9 @@ VALUES
 		nullIfEmpty(schedule.LastRunID),
 		nullIfEmpty(schedule.LastStatus),
 		nullIfEmpty(schedule.LastError),
+		nullIfEmpty(schedule.LeaseOwner),
+		formatNullableTime(schedule.LeaseExpiresAt),
+		schedule.ConsecutiveFailures,
 		schedule.CreatedAt.UTC().Format(time.RFC3339Nano),
 		schedule.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	)
@@ -283,9 +297,6 @@ VALUES
 			return ErrWorkflowScheduleExists
 		}
 		return fmt.Errorf("workflow postgres store: create schedule: %w", err)
-	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = $1 WHERE id = $2", schedule.TenantID, schedule.ID); err != nil {
-		return fmt.Errorf("workflow postgres store: set schedule tenant: %w", err)
 	}
 	return nil
 }
@@ -321,6 +332,9 @@ SET
 	last_run_id = ?,
 	last_status = ?,
 	last_error = ?,
+	lease_owner = ?,
+	lease_expires_at = ?,
+	consecutive_failures = ?,
 	updated_at = ?
 WHERE workflow_id = ? AND id = ?`),
 		schedule.Cron,
@@ -332,6 +346,9 @@ WHERE workflow_id = ? AND id = ?`),
 		nullIfEmpty(schedule.LastRunID),
 		nullIfEmpty(schedule.LastStatus),
 		nullIfEmpty(schedule.LastError),
+		nullIfEmpty(schedule.LeaseOwner),
+		formatNullableTime(schedule.LeaseExpiresAt),
+		schedule.ConsecutiveFailures,
 		schedule.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		schedule.WorkflowID,
 		schedule.ID,
@@ -346,9 +363,6 @@ WHERE workflow_id = ? AND id = ?`),
 	}
 	if affected == 0 {
 		return ErrWorkflowScheduleNotFound
-	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflow_schedules SET tenant_id = $1 WHERE workflow_id = $2 AND id = $3", schedule.TenantID, schedule.WorkflowID, schedule.ID); err != nil {
-		return fmt.Errorf("workflow postgres store: set schedule tenant: %w", err)
 	}
 	return nil
 }
@@ -382,7 +396,7 @@ WHERE workflow_id = ?`), workflowID); err != nil {
 
 func (s *PostgresStore) ListDueSchedules(ctx context.Context, now time.Time, limit int) ([]WorkflowSchedule, error) {
 	query := `
-SELECT id, workflow_id, cron_expr, enabled, input_json, options_json, next_run_at, last_run_at, last_run_id, last_status, last_error, created_at, updated_at, tenant_id
+SELECT ` + scheduleSelectColumns + `
 FROM workflow_schedules
 WHERE enabled = 1 AND next_run_at <= ?
 ORDER BY next_run_at ASC`
@@ -410,6 +424,81 @@ ORDER BY next_run_at ASC`
 		return nil, fmt.Errorf("workflow postgres store: list due schedules rows: %w", err)
 	}
 	return schedules, nil
+}
+
+// ClaimDueSchedules atomically claims due, unleased schedules for the
+// owner. The conditional UPDATE arbitrates between concurrent replicas:
+// the losing replica's UPDATE matches no rows and the schedule is skipped.
+func (s *PostgresStore) ClaimDueSchedules(ctx context.Context, owner string, now time.Time, leaseDuration time.Duration, limit int) ([]WorkflowSchedule, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	nowText := now.UTC().Format(time.RFC3339Nano)
+	leaseUntil := now.Add(leaseDuration).UTC().Format(time.RFC3339Nano)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("workflow postgres store: begin schedule claim: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query := `
+SELECT id FROM workflow_schedules
+WHERE enabled = 1
+	AND next_run_at <= ?
+	AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+ORDER BY next_run_at ASC
+LIMIT ?`
+	rows, err := tx.QueryContext(ctx, sqldialect.Rebind(query), nowText, nowText, limit)
+	if err != nil {
+		return nil, fmt.Errorf("workflow postgres store: claim due schedules: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("workflow postgres store: scan due schedule id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("workflow postgres store: claim due schedules rows: %w", err)
+	}
+
+	claimed := make([]WorkflowSchedule, 0, len(ids))
+	for _, id := range ids {
+		res, err := tx.ExecContext(ctx, sqldialect.Rebind(`
+UPDATE workflow_schedules
+SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+WHERE id = ? AND enabled = 1
+	AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`),
+			owner, leaseUntil, nowText, id, nowText)
+		if err != nil {
+			return nil, fmt.Errorf("workflow postgres store: claim schedule %s: %w", id, err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("workflow postgres store: claim schedule %s affected: %w", id, err)
+		}
+		if affected == 0 {
+			continue
+		}
+		row := tx.QueryRowContext(ctx, sqldialect.Rebind(`
+SELECT `+scheduleSelectColumns+`
+FROM workflow_schedules WHERE id = ?`), id)
+		schedule, err := scanWorkflowSchedule(row)
+		if err != nil {
+			return nil, fmt.Errorf("workflow postgres store: scan claimed schedule: %w", err)
+		}
+		claimed = append(claimed, schedule)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("workflow postgres store: commit schedule claim: %w", err)
+	}
+	return claimed, nil
 }
 
 // Close closes the underlying database connection.
