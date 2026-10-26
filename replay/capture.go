@@ -348,7 +348,7 @@ func Save(rec *Recording, path string) error {
 // Load reads and validates a recording from path. Recordings with an
 // incompatible schema version are rejected.
 func Load(path string) (*Recording, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path from caller
 	if err != nil {
 		return nil, fmt.Errorf("replay: read recording: %w", err)
 	}
