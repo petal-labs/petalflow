@@ -422,3 +422,72 @@ func TestMemoryNodeNoProvider(t *testing.T) {
 		t.Fatal("expected error when provider is nil")
 	}
 }
+
+func TestMemoryNodeWriteUnavailableSkip(t *testing.T) {
+	provider := &stubProvider{writeErr: unavailableErr()}
+	node := NewMemoryNode("mem", MemoryNodeConfig{
+		Provider:      provider,
+		Mode:          MemoryModeWrite,
+		Namespace:     "ops",
+		SessionID:     "sess-1",
+		OnUnavailable: MemoryUnavailableSkip,
+	})
+
+	var sawUnavailable bool
+	ctx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) {
+		if e.Kind == runtime.EventMemoryWrite && e.Payload["unavailable"] == true {
+			sawUnavailable = true
+		}
+	})
+
+	result, err := node.Run(ctx, newTestEnvelope())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !sawUnavailable {
+		t.Error("memory.write event with unavailable=true missing")
+	}
+	statsVar, _ := result.GetVar("mem_memory_stats")
+	stats, ok := statsVar.(MemoryResult)
+	if !ok || !stats.Unavailable {
+		t.Errorf("stats = %#v, want Unavailable=true", statsVar)
+	}
+}
+
+func TestMemoryNodeQueryFromInputVars(t *testing.T) {
+	provider := &stubProvider{}
+	node := NewMemoryNode("mem", MemoryNodeConfig{
+		Provider:  provider,
+		Namespace: "ops",
+		SessionID: "sess-1",
+		InputVars: []string{"topic", "missing_var"},
+	})
+
+	env := newTestEnvelope()
+	env.SetVar("topic", "deploy pipeline")
+
+	if _, err := node.Run(context.Background(), env); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if provider.lastQuery.Query != "deploy pipeline" {
+		t.Errorf("query = %q, want present var joined", provider.lastQuery.Query)
+	}
+}
+
+func TestMemoryNodeWriteMissingVarWritesEmpty(t *testing.T) {
+	provider := &stubProvider{}
+	node := NewMemoryNode("mem", MemoryNodeConfig{
+		Provider:  provider,
+		Mode:      MemoryModeWrite,
+		Namespace: "ops",
+		SessionID: "sess-1",
+		WriteVar:  "not_set",
+	})
+
+	if _, err := node.Run(context.Background(), newTestEnvelope()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if provider.lastWrite.Text != "" {
+		t.Errorf("written text = %q, want empty for missing var", provider.lastWrite.Text)
+	}
+}
