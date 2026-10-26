@@ -6,8 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-
 ### Added
+
+- **Replay capture format and redaction policy engine**
+  ([#196](https://github.com/petal-labs/petalflow/issues/196), part of
+  [#173](https://github.com/petal-labs/petalflow/issues/173)). A new
+  `replay` package defines a versioned, validated recording format for
+  workflow runs — graph definition and inputs, per-node envelope input and
+  output snapshots, model calls with usage/latency, and tool invocations —
+  written by an observational `replay.Capture` layer that implements both
+  `runtime.EventHandler` and the new `runtime.NodeRecorder` hook (invoked
+  from the single node execution choke point for sequential and parallel
+  paths) without altering execution semantics. Redaction is default-deny:
+  prompts, outputs, tool data, and artifact contents are replaced with a
+  placeholder as they are captured, credential-shaped strings are scrubbed
+  from everything kept, and full-fidelity capture for offline fixture
+  replay is an explicit `AllowAllPolicy` opt-out with granular include
+  flags and field-level overrides. Recordings load back with schema
+  validation (`replay.Load`, `ErrInvalidRecording`) and summarize to
+  content-free one-liners for logs and CI output. See `docs/replay.md`.
+
 - **Memory and context management integration**
   ([#172](https://github.com/petal-labs/petalflow/issues/172)). A new
   `memory` package defines a dependency-free pluggable

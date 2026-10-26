@@ -21,6 +21,7 @@ import (
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
+	"github.com/petal-labs/petalflow/replay"
 	"github.com/petal-labs/petalflow/runtime"
 )
 
@@ -780,6 +781,60 @@ var (
 	MemoryRenderContext   = memory.RenderContext
 	MemoryErrUnavailable  = memory.ErrUnavailable
 	ErrInvalidMemoryScope = runtime.ErrInvalidMemoryScope
+)
+
+// =============================================================================
+// Replay Package Re-exports
+// =============================================================================
+
+// Replay package type aliases.
+type (
+	// ReplayRecording is a versioned capture of a single workflow run.
+	ReplayRecording = replay.Recording
+
+	// ReplayNodeRecord captures one execution of one node.
+	ReplayNodeRecord = replay.NodeRecord
+
+	// ReplayEnvelopeState is a (possibly redacted) envelope snapshot.
+	ReplayEnvelopeState = replay.EnvelopeState
+
+	// ReplayLLMCallRecord captures one model call and its response.
+	ReplayLLMCallRecord = replay.LLMCallRecord
+
+	// ReplayToolCallRecord captures one tool invocation.
+	ReplayToolCallRecord = replay.ToolCallRecord
+
+	// ReplayUsageRecord is token consumption for a model call.
+	ReplayUsageRecord = replay.UsageRecord
+
+	// ReplayCapture records a run into a redacted Recording.
+	ReplayCapture = replay.Capture
+
+	// ReplayRedactionPolicy controls what content survives into a recording.
+	ReplayRedactionPolicy = replay.RedactionPolicy
+
+	// ReplayFieldPolicy is a field-level redaction rule.
+	ReplayFieldPolicy = replay.FieldPolicy
+
+	// ReplayRedactionAction determines how a matched field is treated.
+	ReplayRedactionAction = replay.RedactionAction
+)
+
+// Replay redaction actions
+const (
+	ReplayRedactAction = replay.RedactAction
+	ReplayDropAction   = replay.DropAction
+	ReplayKeepAction   = replay.KeepAction
+)
+
+// Replay package constructors
+var (
+	NewCapture          = replay.NewCapture
+	ReplayDefaultPolicy = replay.DefaultPolicy
+	ReplayAllowAll      = replay.AllowAllPolicy
+	ReplaySave          = replay.Save
+	ReplayLoad          = replay.Load
+	ReplaySummarize     = replay.Summarize
 )
 
 // =============================================================================
