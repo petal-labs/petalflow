@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Evaluation harness: dataset runs, graders, and metrics**
+  ([#198](https://github.com/petal-labs/petalflow/issues/198), part of
+  [#173](https://github.com/petal-labs/petalflow/issues/173)). A new `eval`
+  package runs a workflow against a dataset of cases (JSON format with
+  inputs, variables, expectations, metadata, and tags) and grades every
+  case. The `eval.Grader` interface is deliberately small so external
+  graders — such as an LLM-as-judge — can be implemented outside the
+  PetalFlow tree; built-ins cover exact/expected-value equality (canonical
+  JSON comparison, decode-type agnostic), substring, regex, JSON Schema
+  validation, and numeric thresholds. The batch runner runs cases through a
+  pluggable `eval.CaseRunner` (built-in `RuntimeCaseRunner` for live runs;
+  implement one over `replay.Replayer` for offline replay) with bounded
+  concurrency and per-case failure isolation. Every case records duration
+  and token usage captured from `llm.response` events; aggregates report
+  pass rate, total tokens/cost, and average/p50/p95 latency. Results are
+  written as machine-readable JSON reports for baseline diffing, with a
+  content-free summary for logs and CI. See `docs/eval.md`.
+
 - **Deterministic fixture playback and offline replay**
   ([#197](https://github.com/petal-labs/petalflow/issues/197), part of
   [#173](https://github.com/petal-labs/petalflow/issues/173)). Building on
