@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Model cost metadata and preflight token estimates**
+  ([#206](https://github.com/petal-labs/petalflow/issues/206), part of
+  [#174](https://github.com/petal-labs/petalflow/issues/174)). The
+  capability registry now resolves per-model prices (USD per 1M tokens)
+  with the same defensive semantics as capabilities: configuration
+  overrides (`providers.<name>.costs.<model>`) beat the bundled snapshot
+  for known OpenAI/Anthropic models, negative prices are rejected with
+  warnings, and unknown prices are explicitly "cost unknown" rather than
+  silently zero. A new `llmprovider.CostEstimator` estimates prompt tokens
+  before dispatch (~4 chars/token heuristic, pluggable counter for
+  model-specific tokenizers) and computes input-side cost estimates;
+  instrumentation carries the estimate on `llm.call` events
+  (`estimated_input_tokens`, `estimated_cost_usd`) and actual usage plus
+  computed-or-unknown cost on `llm.response` events under consistent field
+  names, so tooling can diff estimate vs. actual per call. See
+  `docs/capabilities.md`.
+
 - **Ordered fallback chains and health-aware model routing**
   ([#205](https://github.com/petal-labs/petalflow/issues/205), part of
   [#174](https://github.com/petal-labs/petalflow/issues/174)). A new

@@ -1174,3 +1174,16 @@ var (
 	RoutingErrNoTargets     = routing.ErrNoTargets
 	RoutingErrNoCapable     = routing.ErrNoCapableTarget
 )
+
+// Capability pricing re-exports
+type (
+	// CapabilityPrice is USD pricing per 1M tokens for a model.
+	CapabilityPrice = capability.Price
+
+	// CapabilityModelPrice is a resolved price with provenance.
+	CapabilityModelPrice = capability.ModelPrice
+)
+
+// Cost estimation types live in llmprovider (import
+// github.com/petal-labs/petalflow/llmprovider for CostEstimator and
+// NewCostEstimator); hydrate.ModelCost is the config type.

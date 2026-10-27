@@ -86,3 +86,61 @@ Unknown models fail closed rather than passing validation by optimism — the
 error explains how to declare the model's capabilities. Fallback to other
 models is the concern of the routing layer (#205), which will use this same
 registry to check candidates.
+
+## Cost metadata and preflight estimates (#206)
+
+The registry also resolves per-model prices (USD per 1M tokens), resolved
+like capabilities: config override → bundled snapshot (best-effort, for
+known OpenAI/Anthropic models) → unknown. Unknown is explicit: cost is
+"unknown", never silently zero — a silently wrong price is worse than an
+admitted gap.
+
+Declare or override prices per provider:
+
+```json
+{
+  "providers": {
+    "acme": {
+      "api_key": "...",
+      "costs": {
+        "private-model": {"input_per_million": 5.0, "output_per_million": 20.0},
+        "small-*": {"input_per_million": 0.1, "output_per_million": 0.4}
+      }
+    }
+  }
+}
+```
+
+Negative prices are malformed: skipped with a warning. Zero prices are legal
+(free or locally-hosted models).
+
+### Preflight estimates
+
+`llmprovider.CostEstimator` estimates the prompt token count of a request
+before dispatch — building on the ~4 chars/token heuristic from the memory
+package, with a pluggable counter for model-specific tokenizers — and the
+input-side cost from the resolved price (output size is unknowable before
+the call).
+
+Estimates flow into the event stream with field names that mirror the
+actuals, so tooling can diff estimate vs. actual per call:
+
+| Event            | Fields                                                              |
+|------------------|----------------------------------------------------------------------|
+| `llm.call`       | `estimated_input_tokens`, `estimated_cost_usd` (or `cost_unknown`)  |
+| `llm.response`   | `input_tokens`, `output_tokens`, `total_tokens`, `cost_usd` (or `cost_unknown`) |
+
+Cost resolution on the response: a provider-reported cost wins; otherwise
+the price registry computes it from actual usage; otherwise the event marks
+`cost_unknown: true`. Wire it via the instrumentation layer:
+
+```go
+instrumented := llmprovider.NewInstrumentedClient(client, emitter, llmprovider.LLMEventContext{
+    RunID: runID, NodeID: nodeID, NodeKind: core.NodeKindLLM,
+    Provider:  "openai",
+    Estimator: llmprovider.NewCostEstimator("openai", providerCfg),
+})
+```
+
+These actual/estimated/unknown distinctions are what the budget ceilings
+(#207) enforce against.

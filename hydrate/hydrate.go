@@ -24,6 +24,18 @@ type ProviderConfig struct {
 	// streaming). Overrides win over the bundled capability snapshot and
 	// are the way to teach the registry about unknown or private models.
 	Capabilities map[string][]string `json:"capabilities,omitempty"`
+
+	// Costs optionally declares per-model pricing (USD per 1M tokens) for
+	// this provider, keyed by model name (a trailing "*" makes a prefix
+	// pattern). Overrides win over the bundled price snapshot; negative
+	// prices are rejected as malformed with a warning.
+	Costs map[string]ModelCost `json:"costs,omitempty"`
+}
+
+// ModelCost is USD pricing per one million tokens for one model.
+type ModelCost struct {
+	InputPerMillion  float64 `json:"input_per_million"`
+	OutputPerMillion float64 `json:"output_per_million"`
 }
 
 // ProviderMap maps provider names to their configurations.
