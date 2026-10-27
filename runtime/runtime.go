@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/petal-labs/petalflow/budget"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/memory"
@@ -209,6 +210,13 @@ type RunOptions struct {
 	// requires at least a namespace and session ID.
 	MemoryScope memory.Scope
 
+	// BudgetLedger optionally provides the run-scoped budget ledger that
+	// every node execution draws from. It is propagated on the node
+	// execution context (budget.LedgerFromContext) so dispatch points
+	// check and record cumulative spend — retries and parallel branches
+	// share one accounting source and cannot bypass a ceiling.
+	BudgetLedger *budget.Ledger
+
 	// NodeRecorder optionally observes each node execution's input and
 	// output envelopes. It is invoked from the single node execution choke
 	// point for both sequential and parallel paths, after the node returns
@@ -270,6 +278,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	// nodes (and any provider-aware node) see stable identifiers.
 	if err := applyMemoryScope(&ctx, opts.MemoryScope); err != nil {
 		return nil, err
+	}
+	if opts.BudgetLedger != nil {
+		ctx = budget.ContextWithLedger(ctx, opts.BudgetLedger)
 	}
 
 	if opts.RunStore != nil {
@@ -398,6 +409,9 @@ func (r *BasicRuntime) Resume(ctx context.Context, g graph.Graph, runID string, 
 	// executions address memory with the same identifiers as the original.
 	if err := applyMemoryScope(&ctx, opts.MemoryScope); err != nil {
 		return nil, err
+	}
+	if opts.BudgetLedger != nil {
+		ctx = budget.ContextWithLedger(ctx, opts.BudgetLedger)
 	}
 	opts.RunID = runID
 	opts.Resume = true

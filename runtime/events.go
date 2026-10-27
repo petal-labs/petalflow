@@ -104,6 +104,12 @@ const (
 	// model, target_index, trigger_error, fallback_to_provider,
 	// fallback_to_model, attempt.
 	EventRoutingFallback EventKind = "routing.fallback"
+
+	// EventBudgetExceeded is emitted when a dispatch is rejected because
+	// its projected spend breaches a budget ceiling. Payload includes:
+	// scope, gate, ceiling, projected, spent_cost_usd, spent_tokens,
+	// estimated_tokens, estimated_cost_usd.
+	EventBudgetExceeded EventKind = "budget.exceeded"
 )
 
 // String returns the string representation of the EventKind.

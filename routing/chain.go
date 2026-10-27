@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/petal-labs/petalflow/budget"
 	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/runtime"
 )
 
@@ -153,6 +155,12 @@ func (c *ChainClient) Complete(ctx context.Context, req core.LLMRequest) (core.L
 				return core.LLMResponse{}, ctx.Err()
 			}
 
+			// Budget: every dispatch attempt checks and records against the
+			// run ledger, so fallback attempts cannot bypass a ceiling.
+			if err := c.budgetCheck(ctx, req); err != nil {
+				return core.LLMResponse{}, err
+			}
+
 			// The target's model is authoritative when dispatching to it.
 			dispatched := req
 			dispatched.Model = target.config.Model
@@ -160,6 +168,7 @@ func (c *ChainClient) Complete(ctx context.Context, req core.LLMRequest) (core.L
 			resp, err := target.client.Complete(ctx, dispatched)
 			if err == nil {
 				c.health.RecordSuccess(target.config.Provider, target.config.Model)
+				c.budgetRecord(ctx, resp.Usage)
 				return c.withRoutingMeta(resp, target, attempted), nil
 			}
 
@@ -357,6 +366,35 @@ func chunkMetaWithRouting(meta map[string]any, config ModelTarget) map[string]an
 	}
 	meta["routing_selected"] = config.Provider + "/" + config.Model
 	return meta
+}
+
+// budgetCheck preflights the run ledger against the estimated prompt size
+// before each dispatch attempt. Cost estimates are unavailable here when
+// the model's price is unknown (#206): the token gate applies, the cost
+// gate applies to recorded actuals.
+func (c *ChainClient) budgetCheck(ctx context.Context, req core.LLMRequest) error {
+	ledger := budget.LedgerFromContext(ctx)
+	if ledger == nil {
+		return nil
+	}
+	estimate := memory.EstimateTokens(req.System) + memory.EstimateTokens(req.InputText)
+	if err := ledger.Check("run", estimate, 0); err != nil {
+		return fmt.Errorf("routing: %w", err)
+	}
+	return nil
+}
+
+// budgetRecord commits the actual spend of a dispatch attempt.
+func (c *ChainClient) budgetRecord(ctx context.Context, usage core.LLMTokenUsage) {
+	if ledger := budget.LedgerFromContext(ctx); ledger != nil {
+		_ = ledger.Record(usage.TotalTokens, usage.CostUSD)
+	}
+}
+
+// RecordsOwnSpend declares that the chain accounts for its own spend per
+// dispatch attempt, so outer layers do not double-count.
+func (c *ChainClient) RecordsOwnSpend() bool {
+	return true
 }
 
 // Compile-time interface checks.
