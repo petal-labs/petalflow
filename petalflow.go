@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/eval"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
@@ -889,6 +890,81 @@ var (
 	ReplayNewReplayer         = replay.NewReplayer
 	ReplayVerify              = replay.Verify
 	ReplayErrNoFixture        = replay.ErrNoFixture
+)
+
+// =============================================================================
+// Eval Package Re-exports
+// =============================================================================
+
+// Eval package type aliases.
+type (
+	// EvalCase is a single evaluation case.
+	EvalCase = eval.Case
+
+	// EvalDataset is a named collection of evaluation cases.
+	EvalDataset = eval.Dataset
+
+	// EvalGrader asserts on a case's run outcome.
+	EvalGrader = eval.Grader
+
+	// EvalGrade is the outcome of grading a case.
+	EvalGrade = eval.Grade
+
+	// EvalCaseEvaluation carries what a grader may inspect.
+	EvalCaseEvaluation = eval.CaseEvaluation
+
+	// EvalCaseRunner executes a single dataset case.
+	EvalCaseRunner = eval.CaseRunner
+
+	// EvalRuntimeCaseRunner runs cases through the live runtime.
+	EvalRuntimeCaseRunner = eval.RuntimeCaseRunner
+
+	// EvalRunner executes a dataset and grades every case.
+	EvalRunner = eval.Runner
+
+	// EvalCaseResult is the outcome of one case.
+	EvalCaseResult = eval.CaseResult
+
+	// EvalGradeResult records one grader's verdict.
+	EvalGradeResult = eval.GradeResult
+
+	// EvalDatasetResult is the outcome of a dataset run.
+	EvalDatasetResult = eval.DatasetResult
+
+	// EvalUsageTotals aggregates token usage and cost.
+	EvalUsageTotals = eval.UsageTotals
+)
+
+// Eval built-in graders
+type (
+	// EvalVarEquals asserts an envelope var equals the case's expected value.
+	EvalVarEquals = eval.VarEquals
+
+	// EvalExact asserts an envelope var equals a fixed value.
+	EvalExact = eval.Exact
+
+	// EvalContains asserts an envelope var contains a substring.
+	EvalContains = eval.Contains
+
+	// EvalRegex asserts an envelope var matches a pattern.
+	EvalRegex = eval.Regex
+
+	// EvalSchema asserts an envelope var validates against a JSON Schema.
+	EvalSchema = eval.Schema
+
+	// EvalThreshold asserts a numeric var within bounds.
+	EvalThreshold = eval.Threshold
+)
+
+// Eval package constructors and functions
+var (
+	EvalNewThreshold      = eval.NewThreshold
+	EvalLoadDataset       = eval.LoadDataset
+	EvalSaveDataset       = eval.SaveDataset
+	EvalWriteReport       = eval.WriteReport
+	EvalLoadReport        = eval.LoadReport
+	EvalSummarize         = eval.Summarize
+	EvalErrInvalidDataset = eval.ErrInvalidDataset
 )
 
 // =============================================================================
