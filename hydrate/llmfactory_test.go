@@ -2,11 +2,13 @@ package hydrate
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/memory"
@@ -389,6 +391,108 @@ func TestNewLiveNodeFactory_HumanNode_MissingHandler(t *testing.T) {
 }
 
 // --- Memory node tests ---
+
+// --- capability preflight tests ---
+
+func TestNewLiveNodeFactory_CapabilityPreflightFails(t *testing.T) {
+	// text-embedding-3-small registers embeddings only: a node with a JSON
+	// schema requires structured_output, so hydration must fail without
+	// any provider call.
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "answer",
+		Type: "llm_prompt",
+		Config: map[string]any{
+			"provider":        "anthropic",
+			"model":           "text-embedding-3-small",
+			"prompt_template": "hi",
+			"json_schema":     map[string]any{"type": "object"},
+		},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected hydration failure for unsupported capability")
+	}
+	if !errors.Is(err, capability.ErrUnsupportedCapability) {
+		t.Errorf("error should wrap capability.ErrUnsupportedCapability: %v", err)
+	}
+	if !strings.Contains(err.Error(), `node "answer"`) {
+		t.Errorf("error should name the node: %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_CapabilityPreflightPasses(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{"anthropic": {APIKey: "sk-test"}}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "answer",
+		Type: "llm_prompt",
+		Config: map[string]any{
+			"provider":        "anthropic",
+			"model":           "claude-sonnet-4-6",
+			"prompt_template": "hi",
+		},
+	}
+
+	if _, err := nodeFactory(nd); err != nil {
+		t.Fatalf("hydration should pass for a capable model: %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_CapabilityConfigOverride(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	providers := ProviderMap{
+		"acme": {
+			APIKey: "test-key",
+			Capabilities: map[string][]string{
+				"private-model": {"tools", "structured_output", "streaming"},
+			},
+		},
+	}
+	nodeFactory := NewLiveNodeFactory(providers, factory)
+
+	nd := graph.NodeDef{
+		ID:   "answer",
+		Type: "llm_prompt",
+		Config: map[string]any{
+			"provider":    "acme",
+			"model":       "private-model",
+			"json_schema": map[string]any{"type": "object"},
+		},
+	}
+
+	if _, err := nodeFactory(nd); err != nil {
+		t.Fatalf("configured override should satisfy the requirement: %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_CapabilityUnknownModelFailsClosed(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(ProviderMap{}, factory)
+
+	nd := graph.NodeDef{
+		ID:   "answer",
+		Type: "llm_prompt",
+		Config: map[string]any{
+			"provider":        "acme",
+			"model":           "never-heard-of-it",
+			"prompt_template": "hi",
+			"json_schema":     map[string]any{"type": "object"},
+		},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("unknown model should fail closed on structured_output")
+	}
+	if !strings.Contains(err.Error(), "unknown model") || !strings.Contains(err.Error(), "capabilities.<model>") {
+		t.Errorf("error should explain fail-closed configuration: %v", err)
+	}
+}
 
 func TestNewLiveNodeFactory_MemoryNode(t *testing.T) {
 	factory, _ := newMockClientFactory()

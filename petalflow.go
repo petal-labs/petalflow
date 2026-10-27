@@ -17,6 +17,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/eval"
 	"github.com/petal-labs/petalflow/graph"
@@ -1099,3 +1100,43 @@ func NewTimedRunOptions(now func() time.Time) RunOptions {
 	opts.Now = now
 	return opts
 }
+
+// =============================================================================
+// Capability Package Re-exports
+// =============================================================================
+
+// Capability package type aliases.
+type (
+	// Capability identifies a model feature a workflow may require.
+	Capability = capability.Capability
+
+	// CapabilitySet is a collection of capabilities.
+	CapabilitySet = capability.Set
+
+	// CapabilityRegistry resolves capability metadata for provider/model
+	// pairs.
+	CapabilityRegistry = capability.Registry
+
+	// CapabilityUnsupportedError names the model, node, and missing
+	// capabilities for a failed preflight.
+	CapabilityUnsupportedError = capability.UnsupportedError
+)
+
+// Capability constants
+const (
+	CapabilityTools            = capability.CapabilityTools
+	CapabilityStructuredOutput = capability.CapabilityStructuredOutput
+	CapabilityReasoning        = capability.CapabilityReasoning
+	CapabilityMultimodalInput  = capability.CapabilityMultimodalInput
+	CapabilityEmbeddings       = capability.CapabilityEmbeddings
+	CapabilityStreaming        = capability.CapabilityStreaming
+)
+
+// Capability package constructors
+var (
+	NewCapabilitySet         = capability.NewSet
+	ParseCapabilityName      = capability.ParseCapability
+	NewCapabilityRegistry    = capability.NewRegistry
+	CapabilityRequirements   = capability.RequirementsFromRequest
+	CapabilityErrUnsupported = capability.ErrUnsupportedCapability
+)
