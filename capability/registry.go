@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Registry resolves capability metadata for provider/model pairs.
@@ -12,7 +13,12 @@ import (
 // ending in "*") → provider default → unknown model (empty set, fail
 // closed). Entries come from the bundled static snapshot and configuration
 // overrides; configuration wins over the snapshot.
+//
+// The registry also resolves per-model prices with the same resolution
+// semantics (see pricing.go).
 type Registry struct {
+	mu sync.RWMutex
+
 	// models maps "provider/model" (lowercased) to capabilities.
 	models map[string]modelEntry
 	// patterns holds model entries whose names end in "*", longest pattern
@@ -20,6 +26,9 @@ type Registry struct {
 	patterns map[string][]modelEntry
 	// providers maps provider names to default capabilities.
 	providers map[string]Set
+	// prices and pricePatterns hold per-model prices.
+	prices        map[string]priceEntry
+	pricePatterns map[string][]priceEntry
 }
 
 type modelEntry struct {
@@ -31,11 +40,14 @@ type modelEntry struct {
 // capability snapshot for known providers and models.
 func NewRegistry() *Registry {
 	r := &Registry{
-		models:    make(map[string]modelEntry),
-		patterns:  make(map[string][]modelEntry),
-		providers: make(map[string]Set),
+		models:        make(map[string]modelEntry),
+		patterns:      make(map[string][]modelEntry),
+		providers:     make(map[string]Set),
+		prices:        make(map[string]priceEntry),
+		pricePatterns: make(map[string][]priceEntry),
 	}
 	r.applyStaticDefaults()
+	r.applyStaticPrices()
 	return r
 }
 
@@ -53,6 +65,12 @@ func (r *Registry) ApplyConfig(provider string, models map[string][]string) []st
 		return nil
 	}
 	var warnings []string
+
+	// Parse without holding the lock, then apply mutations atomically.
+	parsed := make([]struct {
+		model string
+		set   Set
+	}, 0, len(models))
 	for model, caps := range models {
 		set := Set{}
 		for _, raw := range caps {
@@ -64,8 +82,17 @@ func (r *Registry) ApplyConfig(provider string, models map[string][]string) []st
 			}
 			set.Add(capability)
 		}
-		r.registerModelEntry(provider, model, set)
+		parsed = append(parsed, struct {
+			model string
+			set   Set
+		}{model, set})
 	}
+
+	r.mu.Lock()
+	for _, p := range parsed {
+		r.registerModelEntry(provider, p.model, p.set)
+	}
+	r.mu.Unlock()
 	return warnings
 }
 
@@ -87,6 +114,9 @@ func (r *Registry) registerModelEntry(provider, model string, set Set) {
 // Model resolves the capability set for a provider/model pair.
 // known is false for models absent from the registry (fail closed).
 func (r *Registry) Model(provider, model string) (capabilities Set, known bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	if entry, ok := r.models[modelKey(provider, model)]; ok {
 		return entry.capabilities, true
 	}

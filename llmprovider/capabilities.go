@@ -10,12 +10,33 @@ import (
 
 // NewCapabilityRegistry builds a capability registry for a provider from
 // its configuration: the bundled static snapshot plus the provider's
-// per-model capability overrides. Overrides win; malformed capability
-// strings are skipped and returned as warnings (never silently dropped).
+// per-model capability overrides and price overrides. Overrides win;
+// malformed entries are skipped and returned as warnings (never silently
+// dropped).
 func NewCapabilityRegistry(providerName string, cfg hydrate.ProviderConfig) (*capability.Registry, []string) {
 	registry := capability.NewRegistry()
 	warnings := registry.ApplyConfig(providerName, cfg.Capabilities)
+
+	if len(cfg.Costs) > 0 {
+		costs := make(map[string]capability.Price, len(cfg.Costs))
+		for model, cost := range cfg.Costs {
+			costs[model] = capability.Price{
+				InputPerMillion:  cost.InputPerMillion,
+				OutputPerMillion: cost.OutputPerMillion,
+			}
+		}
+		warnings = append(warnings, registry.ApplyCostConfig(providerName, costs)...)
+	}
 	return registry, warnings
+}
+
+// NewCostEstimator builds a CostEstimator resolving prices from the
+// provider's bundled snapshot and configured cost overrides. Wire it into
+// LLMEventContext.Estimator so llm.call events carry preflight estimates
+// and llm.response events carry computed or unknown cost accounting.
+func NewCostEstimator(providerName string, cfg hydrate.ProviderConfig) CostEstimator {
+	registry, _ := NewCapabilityRegistry(providerName, cfg)
+	return CostEstimator{Registry: registry}
 }
 
 // CapabilityAwareClient wraps a core.LLMClient and preflights every

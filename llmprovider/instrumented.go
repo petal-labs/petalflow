@@ -15,6 +15,12 @@ type LLMEventContext struct {
 	RunID    string
 	NodeID   string
 	NodeKind core.NodeKind
+	// Provider is the provider ID (used for cost resolution).
+	Provider string
+	// Estimator produces preflight token/cost estimates for llm.call
+	// events and computed cost accounting for llm.response events. When
+	// nil, events carry actual usage only.
+	Estimator *CostEstimator
 }
 
 // InstrumentedClient wraps an LLMClient to emit runtime events for observability.
@@ -94,6 +100,12 @@ func (c *InstrumentedClient) emitLLMCallEvent(req core.LLMRequest, startTime tim
 
 	if req.MaxTokens != nil {
 		event.Payload["max_tokens"] = *req.MaxTokens
+	}
+
+	if c.ctx.Estimator != nil {
+		for key, value := range c.ctx.Estimator.estimateEventFields(c.ctx.Provider, req) {
+			event.Payload[key] = value
+		}
 	}
 
 	if req.JSONSchema != nil {
