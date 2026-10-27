@@ -17,6 +17,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/petal-labs/petalflow/budget"
 	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/eval"
@@ -1187,3 +1188,39 @@ type (
 // Cost estimation types live in llmprovider (import
 // github.com/petal-labs/petalflow/llmprovider for CostEstimator and
 // NewCostEstimator); hydrate.ModelCost is the config type.
+
+// =============================================================================
+// Budget Package Re-exports
+// =============================================================================
+
+// Budget package type aliases.
+type (
+	// BudgetCeiling bounds cumulative spend.
+	BudgetCeiling = budget.Ceiling
+
+	// BudgetLedger accounts cumulative spend against a ceiling.
+	BudgetLedger = budget.Ledger
+
+	// BudgetSpend is the cumulative recorded spend.
+	BudgetSpend = budget.Spend
+
+	// BudgetExceededError describes a rejected dispatch.
+	BudgetExceededError = budget.BudgetExceededError
+
+	// BudgetSelfRecorder is implemented by clients that account their own
+	// spend per dispatch.
+	BudgetSelfRecorder = budget.SelfRecorder
+)
+
+// Budget errors
+var (
+	BudgetErrExceeded  = budget.ErrBudgetExceeded
+	BudgetErrMalformed = budget.ErrMalformedBudget
+)
+
+// Budget package constructors
+var (
+	NewBudgetLedger     = budget.NewLedger
+	BudgetWithLedger    = budget.ContextWithLedger
+	BudgetLedgerFromCtx = budget.LedgerFromContext
+)

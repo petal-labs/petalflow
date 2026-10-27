@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Per-node and per-run budget enforcement with hard cost ceilings**
+  ([#207](https://github.com/petal-labs/petalflow/issues/207), part of
+  [#174](https://github.com/petal-labs/petalflow/issues/174)). A new
+  `budget` package accounts cumulative spend (tokens and USD) against
+  ceilings in a concurrency-safe ledger: every provider dispatch checks the
+  predicted spend before dispatch (rejecting predicted breaches with
+  `budget.ErrBudgetExceeded` before any spend happens) and records actuals
+  after. A run-scoped ledger travels on the node execution context
+  (`runtime.RunOptions.BudgetLedger`, `budget.LedgerFromContext`) and is
+  shared by all dispatch points — retries, parallel branches, and map
+  fan-outs cannot multiply spend past a ceiling (race-tested); fallback
+  chains check and record per target attempt and declare
+  `budget.SelfRecorder` so accounting is never double-counted. `llm_prompt`
+  nodes accept cumulative node ceilings (`max_total_tokens`,
+  `max_cost_usd`); malformed (negative) budgets are rejected at hydration.
+  Budget rejections emit a `budget.exceeded` run event naming the scope,
+  gate, ceiling, and spent/projected values; cost-unknown models (#206)
+  enforce via the token gate while the cost gate applies only to recorded
+  actuals. See `docs/budget.md`.
+
 - **Model cost metadata and preflight token estimates**
   ([#206](https://github.com/petal-labs/petalflow/issues/206), part of
   [#174](https://github.com/petal-labs/petalflow/issues/174)). The

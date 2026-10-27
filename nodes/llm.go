@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"text/template"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/petal-labs/petalflow/budget"
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/runtime"
 )
 
@@ -146,11 +149,23 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 	// Build the LLM request
 	req := n.buildLLMRequest(env, prompt)
 
+	// Budget enforcement: the run ledger (from context) and the node
+	// budget (from config) are re-checked before every dispatch attempt
+	// and recorded after — retries cannot bypass a ceiling that a parallel
+	// branch drained mid-run.
+	checkBudgetSpend, recordSpend, err := n.prepareBudget(ctx, env, emit, req)
+	if err != nil {
+		return nil, err
+	}
+
 	// Execute with retries
 	var resp core.LLMResponse
 	var lastErr error
 
 	for attempt := 1; attempt <= n.config.RetryPolicy.MaxAttempts; attempt++ {
+		if err := checkBudgetSpend(); err != nil {
+			return nil, err
+		}
 		resp, lastErr = n.client.Complete(ctx, req)
 		if lastErr == nil {
 			break
@@ -175,7 +190,12 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 		return nil, fmt.Errorf("LLM call failed after %d attempts: %w", n.config.RetryPolicy.MaxAttempts, lastErr)
 	}
 
-	// Check budget if configured
+	// Record actual spend after a successful dispatch.
+	if recordSpend != nil {
+		recordSpend(resp.Usage)
+	}
+
+	// Per-call budget limits (input/output caps) still apply post-call.
 	if n.config.Budget != nil {
 		if err := n.checkBudget(resp.Usage); err != nil {
 			return nil, err
@@ -228,6 +248,15 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 	// Build the LLM request
 	req := n.buildLLMRequest(env, prompt)
 
+	// Budget enforcement (mirrors the sync path).
+	checkBudgetSpend, recordSpend, err := n.prepareBudget(ctx, env, emit, req)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkBudgetSpend(); err != nil {
+		return nil, err
+	}
+
 	// Start streaming
 	ch, err := streamClient.CompleteStream(ctx, req)
 	if err != nil {
@@ -278,7 +307,12 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 
 	text := accumulated.String()
 
-	// Check budget if configured
+	// Record actual spend after a successful dispatch.
+	if recordSpend != nil {
+		recordSpend(usage)
+	}
+
+	// Per-call budget limits (input/output caps) still apply post-call.
 	if n.config.Budget != nil {
 		if err := n.checkBudget(usage); err != nil {
 			return nil, err
@@ -360,6 +394,105 @@ func (n *LLMNode) executeTemplate(env *core.Envelope) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// prepareBudget resolves budget enforcement for one LLM call: the run
+// ledger (from context, if any) and the node budget (from config, if any)
+// are preflighted against the estimated prompt size, and the returned
+// function records actual spend after a successful dispatch.
+//
+// Cost estimates are unavailable at the node layer when the model's price
+// is unknown (#206): the token gate always applies, the cost gate applies
+// when actual usage carries a cost.
+func (n *LLMNode) prepareBudget(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, req core.LLMRequest) (func() error, func(core.LLMTokenUsage), error) {
+	estimate := memory.EstimateTokens(req.System) + memory.EstimateTokens(req.InputText)
+
+	// Node-scoped ledger from the configured budget.
+	var nodeLedger *budget.Ledger
+	if b := n.config.Budget; b != nil {
+		ceiling := budget.Ceiling{MaxTotalTokens: b.MaxTotalTokens, MaxCostUSD: b.MaxCostUSD}
+		ledger, err := budget.NewLedger(ceiling)
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s: %w", n.ID(), err)
+		}
+		nodeLedger = ledger
+	}
+
+	runLedger := budget.LedgerFromContext(ctx)
+
+	// Pre-dispatch checks: reject before the provider request is spent.
+	type scopedLedger struct {
+		scope  string
+		ledger *budget.Ledger
+	}
+	for _, sl := range []scopedLedger{
+		{scope: "run", ledger: runLedger},
+		{scope: "node:" + n.ID(), ledger: nodeLedger},
+	} {
+		if sl.ledger == nil {
+			continue
+		}
+		if err := sl.ledger.Check(sl.scope, estimate, 0); err != nil {
+			emit(n.budgetExceededEvent(env, err))
+			return nil, nil, fmt.Errorf("node %s: %w", n.ID(), err)
+		}
+	}
+
+	// Self-recording clients (fallback chains) account for spend per
+	// target attempt themselves; the node would double-count.
+	selfRecording := false
+	if recorder, ok := n.client.(budget.SelfRecorder); ok {
+		selfRecording = recorder.RecordsOwnSpend()
+	}
+
+	check := func() error {
+		for _, sl := range []scopedLedger{
+			{scope: "run", ledger: runLedger},
+			{scope: "node:" + n.ID(), ledger: nodeLedger},
+		} {
+			if sl.ledger == nil {
+				continue
+			}
+			if err := sl.ledger.Check(sl.scope, estimate, 0); err != nil {
+				emit(n.budgetExceededEvent(env, err))
+				return fmt.Errorf("node %s: %w", n.ID(), err)
+			}
+		}
+		return nil
+	}
+
+	record := func(usage core.LLMTokenUsage) {
+		cost := usage.CostUSD
+		if nodeLedger != nil {
+			_ = nodeLedger.Record(usage.TotalTokens, cost)
+		}
+		if runLedger != nil && !selfRecording {
+			_ = runLedger.Record(usage.TotalTokens, cost)
+		}
+	}
+	return check, record, nil
+}
+
+// budgetExceededEvent renders a budget rejection observably: the gate that
+// tripped, the ceiling, and the spent/projected values.
+func (n *LLMNode) budgetExceededEvent(env *core.Envelope, err error) runtime.Event {
+	event := runtime.NewEvent(runtime.EventBudgetExceeded, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("error", err.Error())
+
+	var exceeded *budget.BudgetExceededError
+	if errors.As(err, &exceeded) {
+		event = event.
+			WithPayload("scope", exceeded.Scope).
+			WithPayload("gate", exceeded.Gate).
+			WithPayload("ceiling", exceeded.Ceiling).
+			WithPayload("projected", exceeded.Projected).
+			WithPayload("spent_cost_usd", exceeded.Spent.CostUSD).
+			WithPayload("spent_tokens", exceeded.Spent.TotalTokens).
+			WithPayload("estimated_tokens", exceeded.Estimate.TotalTokens).
+			WithPayload("estimated_cost_usd", exceeded.Estimate.CostUSD)
+	}
+	return event
 }
 
 // checkBudget verifies the response is within budget limits.
