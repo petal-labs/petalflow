@@ -16,6 +16,14 @@ import (
 type ProviderConfig struct {
 	APIKey  string `json:"api_key"`
 	BaseURL string `json:"base_url,omitempty"`
+
+	// Capabilities optionally declares per-model capability overrides for
+	// this provider, keyed by model name (a trailing "*" makes a prefix
+	// pattern). Values are capability names from the capability package
+	// (tools, structured_output, reasoning, multimodal_input, embeddings,
+	// streaming). Overrides win over the bundled capability snapshot and
+	// are the way to teach the registry about unknown or private models.
+	Capabilities map[string][]string `json:"capabilities,omitempty"`
 }
 
 // ProviderMap maps provider names to their configurations.

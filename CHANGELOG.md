@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Provider/model capability discovery and preflight validation**
+  ([#204](https://github.com/petal-labs/petalflow/issues/204), part of
+  [#174](https://github.com/petal-labs/petalflow/issues/174)). A new
+  `capability` package models provider/model features (tools, structured
+  output, reasoning, multimodal input, embeddings, streaming) in a registry
+  resolved as: configuration override → bundled conservative snapshot →
+  provider default → fail-closed for unknown models. Requests imply their
+  own requirements from their shape (tools, JSON schema, reasoning effort,
+  non-text content parts), and validation now happens twice without any
+  network call: at graph hydration (a node whose model cannot satisfy it
+  fails at load, naming the node, model, and missing capability) and per
+  request inside `llmprovider` (an unsupported combination fails before
+  dispatch with `capability.ErrUnsupportedCapability` instead of an
+  expensive provider call). Per-model capability overrides are configurable
+  per provider (`providers.<name>.capabilities.<model>`, with `*` prefix
+  patterns); malformed capability entries are skipped as warnings and
+  unknown models fail closed with guidance rather than optimism. See
+  `docs/capabilities.md`.
+
 - **CI regression gates for quality, cost, and latency**
   ([#199](https://github.com/petal-labs/petalflow/issues/199), part of
   [#173](https://github.com/petal-labs/petalflow/issues/173)). `eval.Gates`

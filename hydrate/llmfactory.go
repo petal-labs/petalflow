@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/memory"
@@ -33,6 +34,7 @@ type liveFactoryOptions struct {
 
 type liveFactoryRuntime struct {
 	options   liveFactoryOptions
+	providers ProviderMap
 	getClient func(string) (core.LLMClient, error)
 }
 
@@ -64,6 +66,7 @@ func WithMemoryProvider(p memory.Provider) LiveNodeOption {
 func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts ...LiveNodeOption) NodeFactory {
 	runtime := liveFactoryRuntime{
 		options:   collectLiveFactoryOptions(opts),
+		providers: providers,
 		getClient: newLiveFactoryClientGetter(providers, clientFactory),
 	}
 	return runtime.buildNode
@@ -100,7 +103,7 @@ func newLiveFactoryClientGetter(providers ProviderMap, clientFactory ClientFacto
 func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 	switch nd.Type {
 	case "llm_prompt":
-		return buildLLMNode(nd, r.getClient)
+		return buildLLMNode(r, nd, r.getClient)
 	case "llm_router":
 		return buildLLMRouter(nd, r.getClient)
 	case "rule_router":
@@ -333,15 +336,13 @@ func buildConfiguredToolNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node,
 }
 
 // buildLLMNode extracts config from a NodeDef and returns an LLMNode.
-func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, error)) (core.Node, error) {
+// Node-level capability requirements are preflighted here, at hydration:
+// a model that cannot satisfy the node fails with a diagnosable error
+// before any run starts and without any network call.
+func buildLLMNode(r liveFactoryRuntime, nd graph.NodeDef, getClient func(string) (core.LLMClient, error)) (core.Node, error) {
 	providerName, _ := nd.Config["provider"].(string)
 	if providerName == "" {
 		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
-	}
-
-	client, err := getClient(providerName)
-	if err != nil {
-		return nil, fmt.Errorf("node %q: %w", nd.ID, err)
 	}
 
 	cfg := nodes.LLMNodeConfig{
@@ -349,6 +350,21 @@ func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, erro
 		System:         configString(nd.Config, "system_prompt"),
 		PromptTemplate: configString(nd.Config, "prompt_template"),
 		OutputKey:      configString(nd.Config, "output_key"),
+	}
+	if schema, ok := nd.Config["json_schema"].(map[string]any); ok {
+		cfg.JSONSchema = schema
+	}
+
+	// Capability preflight before any client is resolved: structured
+	// output constraints on the node config imply the structured_output
+	// capability, and validation requires no network call.
+	if err := preflightNodeCapabilities(r.providers, providerName, cfg.Model, nd.ID, cfg.JSONSchema != nil); err != nil {
+		return nil, err
+	}
+
+	client, err := getClient(providerName)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", nd.ID, err)
 	}
 
 	if v, ok := configFloat64(nd.Config, "temperature"); ok {
@@ -359,6 +375,23 @@ func buildLLMNode(nd graph.NodeDef, getClient func(string) (core.LLMClient, erro
 	}
 
 	return nodes.NewLLMNode(nd.ID, client, cfg), nil
+}
+
+// preflightNodeCapabilities validates node-implied capabilities against the
+// provider's model capabilities. providerCfg may be nil (provider built
+// from flags/env only, no overrides).
+func preflightNodeCapabilities(providers ProviderMap, providerName, model, nodeID string, jsonSchemaSet bool) error {
+	registry := capability.NewRegistry()
+	if providers != nil {
+		if providerCfg, ok := providers[providerName]; ok {
+			registry.ApplyConfig(providerName, providerCfg.Capabilities)
+		}
+	}
+	required := capability.RequirementsFromConfig(jsonSchemaSet)
+	if err := registry.Validate(providerName, model, nodeID, required); err != nil {
+		return fmt.Errorf("node %q: %w", nodeID, err)
+	}
+	return nil
 }
 
 // buildLLMRouter extracts config from a NodeDef and returns an LLMRouter.

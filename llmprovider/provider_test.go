@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	iriscore "github.com/petal-labs/iris/core"
+
+	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
 )
 
@@ -65,7 +67,8 @@ func TestNewClient_WiresBaseURLForKnownProviders(t *testing.T) {
 				t.Fatalf("NewClient() error = %v", err)
 			}
 
-			adapter, ok := client.(*irisAdapter)
+			// NewClient wraps the adapter with capability preflight; unwrap it.
+			adapter, ok := unwrapAdapter(client)
 			if !ok {
 				t.Fatalf("expected *irisAdapter, got %T", client)
 			}
@@ -116,4 +119,19 @@ func readProviderConfigStringField(t *testing.T, p iriscore.Provider, field stri
 	}
 
 	return v.String()
+}
+
+// unwrapAdapter digs the *irisAdapter out of the capability preflight
+// wrapper.
+func unwrapAdapter(client core.LLMClient) (*irisAdapter, bool) {
+	switch typed := client.(type) {
+	case *CapabilityAwareStreamingClient:
+		return typed.inner.(*irisAdapter), true
+	case *CapabilityAwareClient:
+		return typed.inner.(*irisAdapter), true
+	case *irisAdapter:
+		return typed, true
+	default:
+		return nil, false
+	}
 }
