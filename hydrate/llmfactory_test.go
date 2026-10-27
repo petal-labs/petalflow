@@ -1475,3 +1475,80 @@ func TestConfigHelpers_EdgeCases(t *testing.T) {
 		t.Fatalf("configMapAnyMap returned %v, want key k=v", got)
 	}
 }
+
+// --- fallback chain hydration tests ---
+
+func TestNewLiveNodeFactory_FallbackChain(t *testing.T) {
+	factory, _ := newMockClientFactory()
+	providers := ProviderMap{
+		"anthropic": {APIKey: "sk-test"},
+		"openai":    {APIKey: "sk-test"},
+	}
+	nodeFactory := NewLiveNodeFactory(providers, factory)
+
+	nd := graph.NodeDef{
+		ID:   "answer",
+		Type: "llm_prompt",
+		Config: map[string]any{
+			"provider":        "anthropic",
+			"model":           "claude-sonnet-4-6",
+			"prompt_template": "hi",
+			"fallback_models": []any{
+				map[string]any{"provider": "openai", "model": "gpt-4o", "max_attempts": float64(2)},
+			},
+		},
+	}
+
+	if _, err := nodeFactory(nd); err != nil {
+		t.Fatalf("fallback chain hydration should succeed: %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_FallbackChainMalformed(t *testing.T) {
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{
+			name: "entry missing model",
+			config: map[string]any{
+				"fallback_models": []any{
+					map[string]any{"provider": "openai"},
+				},
+			},
+		},
+		{
+			name: "entry not an object",
+			config: map[string]any{
+				"fallback_models": []any{"openai/gpt-4o"},
+			},
+		},
+		{
+			name: "unconfigured provider",
+			config: map[string]any{
+				"fallback_models": []any{
+					map[string]any{"provider": "never-configured", "model": "m"},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory, _ := newMockClientFactory()
+			nodeFactory := NewLiveNodeFactory(ProviderMap{"anthropic": {APIKey: "sk-test"}}, factory)
+
+			config := map[string]any{
+				"provider":        "anthropic",
+				"model":           "claude-sonnet-4-6",
+				"prompt_template": "hi",
+			}
+			for k, v := range tt.config {
+				config[k] = v
+			}
+
+			if _, err := nodeFactory(graph.NodeDef{ID: "answer", Type: "llm_prompt", Config: config}); err == nil {
+				t.Fatal("malformed fallback config should fail hydration")
+			}
+		})
+	}
+}

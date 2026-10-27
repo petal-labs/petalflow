@@ -292,7 +292,7 @@ func registerBuiltins(r *Registry) {
 // warning at load time. Types absent from this map (e.g. noop, func) accept no
 // config and are not checked. Keep in sync with hydrate/llmfactory.go.
 var builtinConfigKeys = map[string][]string{
-	"llm_prompt":      {"provider", "model", "system_prompt", "prompt_template", "output_key", "temperature", "max_tokens", "json_schema"},
+	"llm_prompt":      {"provider", "model", "system_prompt", "prompt_template", "output_key", "temperature", "max_tokens", "json_schema", "fallback_models"},
 	"llm_router":      {"provider", "model", "system_prompt", "decision_key", "temperature", "allowed_targets"},
 	"rule_router":     {"default_target", "decision_key", "allow_multiple", "rules"},
 	"filter":          {"target", "input_var", "output_var", "stats_var", "filters"},

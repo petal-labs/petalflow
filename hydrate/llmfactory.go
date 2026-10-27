@@ -13,6 +13,7 @@ import (
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/nodes/conditional"
 	"github.com/petal-labs/petalflow/nodes/conditional/expr"
+	"github.com/petal-labs/petalflow/routing"
 )
 
 func init() {
@@ -36,6 +37,11 @@ type liveFactoryRuntime struct {
 	options   liveFactoryOptions
 	providers ProviderMap
 	getClient func(string) (core.LLMClient, error)
+	// health and capability are shared across all nodes hydrated by one
+	// factory: degraded-provider state and capability overrides are
+	// workflow-wide.
+	health     *routing.HealthTracker
+	capability *capability.Registry
 }
 
 // LiveNodeOption configures optional dependencies for NewLiveNodeFactory.
@@ -64,10 +70,20 @@ func WithMemoryProvider(p memory.Provider) LiveNodeOption {
 // supported graph node types. Unsupported node types fail fast so wiring
 // issues are surfaced during hydration instead of silently no-oping.
 func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts ...LiveNodeOption) NodeFactory {
+	// Shared capability registry preloaded with per-provider config
+	// overrides; warnings for malformed entries are reported here via a
+	// warning function when one is provided through options.
+	registry := capability.NewRegistry()
+	for name, cfg := range providers {
+		registry.ApplyConfig(name, cfg.Capabilities)
+	}
+
 	runtime := liveFactoryRuntime{
-		options:   collectLiveFactoryOptions(opts),
-		providers: providers,
-		getClient: newLiveFactoryClientGetter(providers, clientFactory),
+		options:    collectLiveFactoryOptions(opts),
+		providers:  providers,
+		getClient:  newLiveFactoryClientGetter(providers, clientFactory),
+		health:     routing.NewHealthTracker(routing.HealthConfig{}),
+		capability: registry,
 	}
 	return runtime.buildNode
 }
@@ -358,7 +374,7 @@ func buildLLMNode(r liveFactoryRuntime, nd graph.NodeDef, getClient func(string)
 	// Capability preflight before any client is resolved: structured
 	// output constraints on the node config imply the structured_output
 	// capability, and validation requires no network call.
-	if err := preflightNodeCapabilities(r.providers, providerName, cfg.Model, nd.ID, cfg.JSONSchema != nil); err != nil {
+	if err := preflightNodeCapabilities(r, providerName, cfg.Model, nd.ID, cfg.JSONSchema != nil); err != nil {
 		return nil, err
 	}
 
@@ -374,21 +390,65 @@ func buildLLMNode(r liveFactoryRuntime, nd graph.NodeDef, getClient func(string)
 		cfg.MaxTokens = &v
 	}
 
+	// Ordered fallback chain: when configured, the primary client becomes
+	// a routing.ChainClient over primary + fallback targets. Missing
+	// providers and malformed entries are hard hydration errors — a
+	// misconfigured chain must not silently shrink.
+	if raw, ok := nd.Config["fallback_models"].([]any); ok && len(raw) > 0 {
+		chainClient, err := r.buildChainClient(nd.ID, providerName, cfg.Model, raw, getClient)
+		if err != nil {
+			return nil, err
+		}
+		client = chainClient
+	}
+
 	return nodes.NewLLMNode(nd.ID, client, cfg), nil
 }
 
-// preflightNodeCapabilities validates node-implied capabilities against the
-// provider's model capabilities. providerCfg may be nil (provider built
-// from flags/env only, no overrides).
-func preflightNodeCapabilities(providers ProviderMap, providerName, model, nodeID string, jsonSchemaSet bool) error {
-	registry := capability.NewRegistry()
-	if providers != nil {
-		if providerCfg, ok := providers[providerName]; ok {
-			registry.ApplyConfig(providerName, providerCfg.Capabilities)
+// buildChainClient assembles a routing.ChainClient from the node's
+// primary provider/model plus its fallback_models config entries.
+func (r liveFactoryRuntime) buildChainClient(nodeID, providerName, model string, raw []any, getClient func(string) (core.LLMClient, error)) (core.LLMClient, error) {
+	targets := []routing.ModelTarget{{Provider: providerName, Model: model}}
+
+	for i, entry := range raw {
+		entryMap, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("node %q: fallback_models[%d] must be an object with provider and model", nodeID, i)
 		}
+		provider := configMapString(entryMap, "provider")
+		fallbackModel := configMapString(entryMap, "model")
+		if provider == "" || fallbackModel == "" {
+			return nil, fmt.Errorf("node %q: fallback_models[%d] requires provider and model", nodeID, i)
+		}
+		if _, configured := r.providers[provider]; !configured {
+			return nil, fmt.Errorf("node %q: fallback_models[%d] provider %q is not configured", nodeID, i, provider)
+		}
+
+		target := routing.ModelTarget{Provider: provider, Model: fallbackModel}
+		if attempts, ok := configMapInt(entryMap, "max_attempts"); ok {
+			target.MaxAttempts = attempts
+		}
+		targets = append(targets, target)
 	}
+
+	chain, err := routing.NewChainClient(routing.ChainConfig{
+		Targets:  targets,
+		Registry: r.capability,
+		Health:   r.health,
+	}, func(providerName, _ string) (core.LLMClient, error) {
+		return getClient(providerName)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("node %q: building fallback chain: %w", nodeID, err)
+	}
+	return chain, nil
+}
+
+// preflightNodeCapabilities validates node-implied capabilities against the
+// provider's model capabilities using the factory's shared registry.
+func preflightNodeCapabilities(r liveFactoryRuntime, providerName, model, nodeID string, jsonSchemaSet bool) error {
 	required := capability.RequirementsFromConfig(jsonSchemaSet)
-	if err := registry.Validate(providerName, model, nodeID, required); err != nil {
+	if err := r.capability.Validate(providerName, model, nodeID, required); err != nil {
 		return fmt.Errorf("node %q: %w", nodeID, err)
 	}
 	return nil
