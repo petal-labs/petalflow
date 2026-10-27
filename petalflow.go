@@ -24,6 +24,7 @@ import (
 	"github.com/petal-labs/petalflow/memory"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/replay"
+	"github.com/petal-labs/petalflow/routing"
 	"github.com/petal-labs/petalflow/runtime"
 )
 
@@ -1139,4 +1140,37 @@ var (
 	NewCapabilityRegistry    = capability.NewRegistry
 	CapabilityRequirements   = capability.RequirementsFromRequest
 	CapabilityErrUnsupported = capability.ErrUnsupportedCapability
+)
+
+// =============================================================================
+// Routing Package Re-exports
+// =============================================================================
+
+// Routing package type aliases.
+type (
+	// RoutingChainClient routes requests through an ordered fallback chain.
+	RoutingChainClient = routing.ChainClient
+
+	// RoutingChainConfig configures a fallback chain client.
+	RoutingChainConfig = routing.ChainConfig
+
+	// RoutingModelTarget is one entry in a fallback chain.
+	RoutingModelTarget = routing.ModelTarget
+
+	// RoutingHealthTracker records model outcomes for health-aware routing.
+	RoutingHealthTracker = routing.HealthTracker
+
+	// RoutingHealthConfig configures health tracking.
+	RoutingHealthConfig = routing.HealthConfig
+
+	// RoutingClientFactory creates a client for one provider/model pair.
+	RoutingClientFactory = routing.ClientFactory
+)
+
+// Routing package constructors
+var (
+	NewRoutingChainClient   = routing.NewChainClient
+	NewRoutingHealthTracker = routing.NewHealthTracker
+	RoutingErrNoTargets     = routing.ErrNoTargets
+	RoutingErrNoCapable     = routing.ErrNoCapableTarget
 )

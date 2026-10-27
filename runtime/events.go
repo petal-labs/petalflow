@@ -98,6 +98,12 @@ const (
 	// Payload includes: documents_in, documents_out, tokens_in, tokens_out,
 	// truncated, strategy, max_tokens, max_documents.
 	EventContextAssembled EventKind = "context.assembled"
+
+	// EventRoutingFallback is emitted when a model call falls back from one
+	// provider/model to the next in its chain. Payload includes: provider,
+	// model, target_index, trigger_error, fallback_to_provider,
+	// fallback_to_model, attempt.
+	EventRoutingFallback EventKind = "routing.fallback"
 )
 
 // String returns the string representation of the EventKind.

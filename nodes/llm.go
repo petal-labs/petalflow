@@ -119,21 +119,32 @@ func (n *LLMNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope, 
 }
 
 // runSync executes a synchronous (non-streaming) LLM call.
-func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
-	// Build the LLM request
+// buildLLMRequest constructs the request from node config, attaching
+// node and run identity in Meta so client-side layers (capability
+// preflight, routing, budgets) can attribute their errors and events.
+func (n *LLMNode) buildLLMRequest(env *core.Envelope, prompt string) core.LLMRequest {
 	req := core.LLMRequest{
 		Model:      n.config.Model,
 		System:     n.config.System,
 		InputText:  prompt,
 		JSONSchema: n.config.JSONSchema,
 	}
-
 	if n.config.Temperature != nil {
 		req.Temperature = n.config.Temperature
 	}
 	if n.config.MaxTokens != nil {
 		req.MaxTokens = n.config.MaxTokens
 	}
+	req.Meta = map[string]any{
+		"node_id": n.ID(),
+		"run_id":  env.Trace.RunID,
+	}
+	return req
+}
+
+func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
+	// Build the LLM request
+	req := n.buildLLMRequest(env, prompt)
 
 	// Execute with retries
 	var resp core.LLMResponse
@@ -215,19 +226,7 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 // runStreaming executes a streaming LLM call, emitting delta events for each chunk.
 func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamClient core.StreamingLLMClient, emit runtime.EventEmitter, prompt string) (*core.Envelope, error) {
 	// Build the LLM request
-	req := core.LLMRequest{
-		Model:      n.config.Model,
-		System:     n.config.System,
-		InputText:  prompt,
-		JSONSchema: n.config.JSONSchema,
-	}
-
-	if n.config.Temperature != nil {
-		req.Temperature = n.config.Temperature
-	}
-	if n.config.MaxTokens != nil {
-		req.MaxTokens = n.config.MaxTokens
-	}
+	req := n.buildLLMRequest(env, prompt)
 
 	// Start streaming
 	ch, err := streamClient.CompleteStream(ctx, req)

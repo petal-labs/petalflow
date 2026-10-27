@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Ordered fallback chains and health-aware model routing**
+  ([#205](https://github.com/petal-labs/petalflow/issues/205), part of
+  [#174](https://github.com/petal-labs/petalflow/issues/174)). A new
+  `routing` package routes model calls through ordered fallback chains:
+  targets are skipped when their capabilities cannot serve the request
+  (#204) or when they are in cooldown (health tracking with exponentially
+  growing, capped cooldowns and recovery by probe — never permanent
+  blacklisting), the target's model is authoritative when dispatched, and
+  caller cancellation never triggers fallback. Every fallback is emitted as
+  a `routing.fallback` run event and recorded on the response metadata
+  (`routing_selected`, `routing_attempted`); the LLM node now attaches node
+  and run identity to request metadata so client layers can attribute
+  errors and events. `llm_prompt` nodes accept a `fallback_models` workflow
+  config; malformed fallback entries and unconfigured providers are hard
+  hydration errors so a misconfigured chain never silently shrinks.
+  See `docs/routing.md`.
+
 - **Provider/model capability discovery and preflight validation**
   ([#204](https://github.com/petal-labs/petalflow/issues/204), part of
   [#174](https://github.com/petal-labs/petalflow/issues/174)). A new
