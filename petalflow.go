@@ -967,6 +967,34 @@ var (
 	EvalErrInvalidDataset = eval.ErrInvalidDataset
 )
 
+// Eval gates re-exports
+type (
+	// EvalGates configures CI regression gates for a dataset run.
+	EvalGates = eval.Gates
+
+	// EvalGateViolation reports one tripped gate with the metric that moved.
+	EvalGateViolation = eval.GateViolation
+
+	// EvalPolicy is the declarative evaluation policy (graders + gates).
+	EvalPolicy = eval.Policy
+
+	// EvalGraderConfig is the declarative form of a built-in grader.
+	EvalGraderConfig = eval.GraderConfig
+)
+
+// Eval gate constants and functions
+const (
+	EvalSeverityError   = eval.SeverityError
+	EvalSeverityWarning = eval.SeverityWarning
+)
+
+var (
+	EvalLoadGates     = eval.LoadGates
+	EvalLoadPolicy    = eval.LoadPolicy
+	EvalCheckGates    = eval.Gates.CheckGates
+	EvalErrGateFailed = eval.ErrGateFailed
+)
+
 // =============================================================================
 // Convenience type aliases for common function signatures
 // =============================================================================

@@ -109,3 +109,80 @@ runs — the input to regression gating
 ([#199](https://github.com/petal-labs/petalflow/issues/199)). `Summarize`
 renders a content-free one-line summary (plus failing cases and reasons)
 for logs and CI output.
+
+## CI regression gates (#199)
+
+`eval.Gates` enforces documented quality, cost, and latency budgets against
+a dataset result, optionally comparing against the last accepted baseline
+artifact:
+
+```json
+{
+  "graders": [
+    {"type": "var_equals", "var": "answer_output"},
+    {"type": "contains", "var": "answer_output", "substring": "refund"}
+  ],
+  "gates": {
+    "min_pass_rate": 0.9,
+    "max_cost_usd": 1.0,
+    "max_total_tokens": 50000,
+    "max_latency_p95_ms": 3000,
+    "max_pass_rate_drop": 0.1,
+    "max_cost_increase": 0.25,
+    "max_latency_p95_increase": 0.5,
+    "tolerance": 0.05
+  }
+}
+```
+
+Absolute budgets cap the current run's metrics. Baseline-relative gates
+(`max_pass_rate_drop`, `max_cost_increase`, `max_latency_p95_increase`)
+compare against the baseline artifact: a metric that regresses beyond its
+cap fails; within the cap it passes.
+
+The `tolerance` margin absorbs flakiness: a metric that misses its budget or
+baseline cap by at most `tolerance` (a relative fraction, e.g. 0.05 = 5%) is
+reported as a **warning** and allowed; beyond tolerance it is an **error**.
+`CheckGates` returns `ErrGateFailed` when any error-severity violation
+exists.
+
+### CLI
+
+`petalflow eval` runs the workflow against a dataset, grades the cases with
+the policy's graders, and enforces the gates — exiting non-zero on gate
+errors:
+
+```sh
+petalflow eval workflow.yaml \
+  --dataset datasets/support.json \
+  --policy eval-policy.json \
+  --report reports/latest.json \
+  --baseline reports/baseline.json \
+  --concurrency 4
+```
+
+Flags: `--report` writes the result artifact; `--baseline` compares against
+the last accepted run; `--update-baseline` rewrites the baseline (accepting
+intentional changes); `--tags`/`--concurrency` scope and parallelize the
+run; provider, env, and store flags mirror `petalflow run`.
+
+Gate failures print each violation with its gate, severity, and the metric
+that moved:
+
+```
+dataset support-quality: 7/10 passed (70%), tokens=1234, latency avg=210ms p95=480ms
+GATE ERROR [min_pass_rate] pass_rate: pass_rate 0.700 below floor 0.900
+Error: eval: quality gate failed
+```
+
+### Baseline update path
+
+Baselines are explicit artifacts checked into your pipeline — never implicit
+state. When an intentional change (a better prompt, a new model, a pricing
+change) shifts metrics, re-run with `--update-baseline` after reviewing the
+report; subsequent runs compare against the new baseline. A missing baseline
+is not an error: the first run establishes one.
+
+For flaky workflows, prefer widening `tolerance` and re-running the eval
+command over loosening budgets: the tolerance absorbs measurement noise
+while still failing on real regressions.

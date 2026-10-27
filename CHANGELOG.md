@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **CI regression gates for quality, cost, and latency**
+  ([#199](https://github.com/petal-labs/petalflow/issues/199), part of
+  [#173](https://github.com/petal-labs/petalflow/issues/173)). `eval.Gates`
+  enforces documented budgets on dataset runs — minimum pass rate, cost in
+  USD, total tokens, average and p95 latency — and baseline-relative gates
+  (pass-rate drop, cost increase, p95 latency increase) compared against
+  the last accepted baseline report artifact. A relative `tolerance` margin
+  absorbs flakiness: violations within tolerance are warnings, beyond it
+  errors. Violations attribute the failure to the tripped gate and the
+  metric that moved. A declarative policy file (`eval.LoadPolicy`) carries
+  the grader list and gates together. A new `petalflow eval` CLI command
+  runs a workflow against a dataset with the policy, writes result
+  reports, compares against baselines, and exits non-zero on gate errors —
+  the CI loop closes with `--update-baseline` as the documented path for
+  accepting intentional changes. See `docs/eval.md`.
+
 - **Evaluation harness: dataset runs, graders, and metrics**
   ([#198](https://github.com/petal-labs/petalflow/issues/198), part of
   [#173](https://github.com/petal-labs/petalflow/issues/173)). A new `eval`
