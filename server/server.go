@@ -34,6 +34,9 @@ type ServerConfig struct {
 	Logger        *slog.Logger
 	// JobStore enables asynchronous run submission and execution.
 	JobStore RunJobStore
+	// DefaultTenantPolicy is the statically configured tenant tool
+	// policy used when a tenant has no stored override.
+	DefaultTenantPolicy *tool.ToolPolicy
 }
 
 // SecurityConfig controls authentication, CORS, and request concurrency.
@@ -73,6 +76,8 @@ type Server struct {
 	replayMu      sync.Mutex
 	replayedHooks map[string]time.Time
 	jobStore      RunJobStore
+	// defaultTenantPolicy is the statically configured tenant tool policy.
+	defaultTenantPolicy *tool.ToolPolicy
 	// planHook, when set, overrides run planning. It is a test seam.
 	planHook func(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error)
 }
@@ -99,25 +104,26 @@ func NewServer(cfg ServerConfig) *Server {
 		securityConfig.MaxConcurrentRuns = 32
 	}
 	return &Server{
-		store:         cfg.Store,
-		scheduleStore: cfg.ScheduleStore,
-		toolStore:     cfg.ToolStore,
-		providers:     cfg.Providers,
-		clientFactory: cfg.ClientFactory,
-		bus:           cfg.Bus,
-		eventStore:    cfg.EventStore,
-		runStore:      cfg.RunStore,
-		runtimeEvents: cfg.RuntimeEvents,
-		emitDecorator: cfg.EmitDecorator,
-		corsOrigin:    corsOrigin,
-		security:      securityConfig,
-		requestSlots:  make(chan struct{}, securityConfig.MaxConcurrentRequests),
-		runSlots:      make(chan struct{}, securityConfig.MaxConcurrentRuns),
-		maxBody:       maxBody,
-		logger:        logger,
-		activeRuns:    make(map[string]context.CancelFunc),
-		replayedHooks: make(map[string]time.Time),
-		jobStore:      cfg.JobStore,
+		store:               cfg.Store,
+		scheduleStore:       cfg.ScheduleStore,
+		toolStore:           cfg.ToolStore,
+		providers:           cfg.Providers,
+		clientFactory:       cfg.ClientFactory,
+		bus:                 cfg.Bus,
+		eventStore:          cfg.EventStore,
+		runStore:            cfg.RunStore,
+		runtimeEvents:       cfg.RuntimeEvents,
+		emitDecorator:       cfg.EmitDecorator,
+		corsOrigin:          corsOrigin,
+		security:            securityConfig,
+		requestSlots:        make(chan struct{}, securityConfig.MaxConcurrentRequests),
+		runSlots:            make(chan struct{}, securityConfig.MaxConcurrentRuns),
+		maxBody:             maxBody,
+		logger:              logger,
+		activeRuns:          make(map[string]context.CancelFunc),
+		replayedHooks:       make(map[string]time.Time),
+		jobStore:            cfg.JobStore,
+		defaultTenantPolicy: cfg.DefaultTenantPolicy,
 	}
 }
 
@@ -154,6 +160,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)
 	mux.HandleFunc("POST /api/workflows/{id}/run", s.handleRunWorkflow)
+	mux.HandleFunc("GET /api/workflows/{id}/policy", s.handleGetWorkflowPolicy)
+	mux.HandleFunc("PUT /api/workflows/{id}/policy", s.handlePutWorkflowPolicy)
+	mux.HandleFunc("GET /api/policies/tenant", s.handleGetTenantPolicy)
+	mux.HandleFunc("PUT /api/policies/tenant", s.handlePutTenantPolicy)
 	mux.HandleFunc("GET /api/runs/{run_id}", s.handleGetRun)
 	mux.HandleFunc("POST /api/runs/{run_id}/cancel", s.handleCancelRun)
 	mux.HandleFunc("POST /api/runs/{run_id}/retry", s.handleRetryRun)

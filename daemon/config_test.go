@@ -137,3 +137,65 @@ type noopReachabilityChecker struct{}
 func (noopReachabilityChecker) CheckHTTP(ctx context.Context, endpoint string) error      { return nil }
 func (noopReachabilityChecker) CheckStdio(ctx context.Context, command string) error      { return nil }
 func (noopReachabilityChecker) CheckMCP(ctx context.Context, reg tool.Registration) error { return nil }
+
+func TestLoadDefaultToolPolicy(t *testing.T) {
+	baseDir := t.TempDir()
+	configPath := filepath.Join(baseDir, "petalflow.yaml")
+
+	// No config file -> nil policy, no error.
+	policy, err := LoadDefaultToolPolicy(filepath.Join(baseDir, "missing.yaml"))
+	if policy != nil || err != nil {
+		t.Fatalf("LoadDefaultToolPolicy(missing) = %v, %v; want nil, nil", policy, err)
+	}
+
+	configYAML := `
+tool_policy:
+  allow:
+    - "mcp/*"
+    - email-send
+  deny:
+    - fs/write
+  require_approval:
+    - email-send
+`
+	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	policy, err = LoadDefaultToolPolicy(configPath)
+	if err != nil {
+		t.Fatalf("LoadDefaultToolPolicy() error = %v", err)
+	}
+	if policy == nil {
+		t.Fatal("LoadDefaultToolPolicy() = nil, want policy")
+	}
+	if got, want := policy.Evaluate("email-send"), tool.PolicyNeedsApproval; got != want {
+		t.Fatalf("email-send = %q, want %q", got, want)
+	}
+	if got, want := policy.Evaluate("fs/write"), tool.PolicyDeny; got != want {
+		t.Fatalf("fs/write = %q, want %q", got, want)
+	}
+	if got, want := policy.Evaluate("mcp/grep"), tool.PolicyAllow; got != want {
+		t.Fatalf("mcp/grep = %q, want %q", got, want)
+	}
+
+	// Config without a policy section -> nil.
+	noPolicyPath := filepath.Join(baseDir, "no-policy.yaml")
+	if err := os.WriteFile(noPolicyPath, []byte("tools: {}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(no-policy) error = %v", err)
+	}
+	policy, err = LoadDefaultToolPolicy(noPolicyPath)
+	if policy != nil || err != nil {
+		t.Fatalf("LoadDefaultToolPolicy(no policy section) = %v, %v; want nil, nil", policy, err)
+	}
+
+	// Invalid rule -> error.
+	invalidPath := filepath.Join(baseDir, "invalid.yaml")
+	if err := os.WriteFile(invalidPath, []byte("tool_policy:\n  allow:\n    - \"fs read\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(invalid) error = %v", err)
+	}
+	policy, err = LoadDefaultToolPolicy(invalidPath)
+	if err == nil || policy != nil {
+		t.Fatalf("LoadDefaultToolPolicy(invalid) = %v, %v; want nil, error", policy, err)
+	}
+}

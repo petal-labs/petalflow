@@ -62,13 +62,83 @@ func NewPostgresStore(cfg PostgresStoreConfig) (*PostgresStore, error) {
 			return nil, fmt.Errorf("workflow postgres store: add schedule column %s: %w", addition.column, err)
 		}
 	}
+	if _, err := db.Exec("ALTER TABLE workflows ADD COLUMN IF NOT EXISTS tool_policy BYTEA"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("workflow postgres store: add tool_policy column: %w", err)
+	}
 
 	return &PostgresStore{db: db}, nil
 }
 
+func (s *PostgresStore) GetTenantPolicy(ctx context.Context, tenantID string) (TenantPolicyRecord, bool, error) {
+	row := s.db.QueryRowContext(ctx, sqldialect.Rebind(`
+SELECT tenant_id, policy, created_at, updated_at
+FROM tenant_tool_policies
+WHERE tenant_id = ?`), tenantID)
+	return scanTenantPolicyRecord(row)
+}
+
+func (s *PostgresStore) UpsertTenantPolicy(ctx context.Context, rec TenantPolicyRecord) (TenantPolicyRecord, error) {
+	if err := rec.Policy.Validate(); err != nil {
+		return TenantPolicyRecord{}, fmt.Errorf("workflow store tenant policy validation: %w", err)
+	}
+
+	now := time.Now().UTC()
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = now
+	}
+	rec.UpdatedAt = now
+	rec.Policy = rec.Policy.Normalized()
+
+	stored, found, err := s.GetTenantPolicy(ctx, rec.TenantID)
+	if err != nil {
+		return TenantPolicyRecord{}, err
+	}
+	if found {
+		prev := stored.Policy
+		if !tenantPolicyContentChanged(prev, rec.Policy) {
+			rec.Policy.Version = prev.Version
+		} else {
+			rec.Policy.Version = prev.Version + 1
+		}
+		rec.CreatedAt = stored.CreatedAt
+	} else {
+		rec.Policy.Version = 1
+	}
+
+	_, err = s.db.ExecContext(ctx, sqldialect.Rebind(`
+INSERT INTO tenant_tool_policies (tenant_id, policy, created_at, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(tenant_id) DO UPDATE
+SET policy = excluded.policy,
+    updated_at = excluded.updated_at`),
+		rec.TenantID, toolPolicyJSON(&rec.Policy), rec.CreatedAt.UTC().Format(time.RFC3339Nano), rec.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return TenantPolicyRecord{}, fmt.Errorf("workflow postgres store: upsert tenant policy: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *PostgresStore) DeleteTenantPolicy(ctx context.Context, tenantID string) error {
+	res, err := s.db.ExecContext(ctx, sqldialect.Rebind(`DELETE FROM tenant_tool_policies WHERE tenant_id = ?`), tenantID)
+	if err != nil {
+		return fmt.Errorf("workflow postgres store: delete tenant policy: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("workflow postgres store: delete tenant policy affected rows: %w", err)
+	}
+	if affected == 0 {
+		return ErrTenantPolicyNotFound
+	}
+	return nil
+}
+
+var _ TenantPolicyStore = (*PostgresStore)(nil)
+
 func (s *PostgresStore) List(ctx context.Context) ([]WorkflowRecord, error) {
 	rows, err := s.db.QueryContext(ctx, sqldialect.Rebind(`
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
+SELECT id, schema_kind, name, source, compiled, tool_policy, created_at, updated_at, tenant_id
 FROM workflows
 ORDER BY seq ASC`))
 	if err != nil {
@@ -94,7 +164,7 @@ ORDER BY seq ASC`))
 
 func (s *PostgresStore) Get(ctx context.Context, id string) (WorkflowRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, sqldialect.Rebind(`
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
+SELECT id, schema_kind, name, source, compiled, tool_policy, created_at, updated_at, tenant_id
 FROM workflows
 WHERE id = ?`), id)
 
@@ -139,8 +209,8 @@ func (s *PostgresStore) Create(ctx context.Context, rec WorkflowRecord) error {
 		}
 		return fmt.Errorf("workflow postgres store: create: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = $1 WHERE id = $2", rec.TenantID, rec.ID); err != nil {
-		return fmt.Errorf("workflow postgres store: set tenant: %w", err)
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = $1, tool_policy = $2 WHERE id = $3", rec.TenantID, toolPolicyJSON(rec.Policy), rec.ID); err != nil {
+		return fmt.Errorf("workflow postgres store: set tenant and policy: %w", err)
 	}
 	return nil
 }
@@ -177,8 +247,8 @@ func (s *PostgresStore) Update(ctx context.Context, rec WorkflowRecord) error {
 	if affected == 0 {
 		return ErrWorkflowNotFound
 	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = $1 WHERE id = $2", rec.TenantID, rec.ID); err != nil {
-		return fmt.Errorf("workflow postgres store: set tenant: %w", err)
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = $1, tool_policy = $2 WHERE id = $3", rec.TenantID, toolPolicyJSON(rec.Policy), rec.ID); err != nil {
+		return fmt.Errorf("workflow postgres store: set tenant and policy: %w", err)
 	}
 	return nil
 }

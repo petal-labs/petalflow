@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS workflows (
     name        TEXT,
     source      BYTEA NOT NULL,
     compiled    BYTEA,
+    tool_policy BYTEA,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -37,6 +38,13 @@ ON workflow_schedules(workflow_id);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due
 ON workflow_schedules(enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS tenant_tool_policies (
+    tenant_id  TEXT PRIMARY KEY,
+    policy     BYTEA NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS run_jobs (
     id               TEXT PRIMARY KEY,

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/internal/sqldialect"
 	"github.com/petal-labs/petalflow/loader"
+	"github.com/petal-labs/petalflow/tool"
 
 	_ "modernc.org/sqlite"
 )
@@ -25,6 +27,7 @@ CREATE TABLE IF NOT EXISTS workflows (
 	name TEXT,
 	source BLOB NOT NULL,
 	compiled BLOB,
+	tool_policy BLOB,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL
 );
@@ -55,6 +58,13 @@ ON workflow_schedules(workflow_id);
 
 CREATE INDEX IF NOT EXISTS idx_workflow_schedules_due
 ON workflow_schedules(enabled, next_run_at);
+
+CREATE TABLE IF NOT EXISTS tenant_tool_policies (
+	tenant_id TEXT PRIMARY KEY,
+	policy BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 
 ` + runJobsSQLiteSchema
 
@@ -167,6 +177,12 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if !workflowColumns["tool_policy"] {
+		if _, err := db.Exec("ALTER TABLE workflows ADD COLUMN tool_policy BLOB"); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("workflow sqlite store add tool_policy column: %w", err)
+		}
+	}
 
 	return &SQLiteStore{
 		db:                            db,
@@ -178,7 +194,7 @@ func NewSQLiteStore(cfg SQLiteStoreConfig) (*SQLiteStore, error) {
 
 func (s *SQLiteStore) List(ctx context.Context) ([]WorkflowRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
+SELECT id, schema_kind, name, source, compiled, tool_policy, created_at, updated_at, tenant_id
 FROM workflows
 ORDER BY seq ASC`)
 	if err != nil {
@@ -204,7 +220,7 @@ ORDER BY seq ASC`)
 
 func (s *SQLiteStore) Get(ctx context.Context, id string) (WorkflowRecord, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, schema_kind, name, source, compiled, created_at, updated_at, tenant_id
+SELECT id, schema_kind, name, source, compiled, tool_policy, created_at, updated_at, tenant_id
 FROM workflows
 WHERE id = ?`, id)
 
@@ -259,8 +275,8 @@ func (s *SQLiteStore) Create(ctx context.Context, rec WorkflowRecord) error {
 		}
 		return fmt.Errorf("workflow sqlite store create: %w", err)
 	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = ? WHERE id = ?", rec.TenantID, rec.ID); err != nil {
-		return fmt.Errorf("workflow sqlite store set tenant: %w", err)
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = ?, tool_policy = ? WHERE id = ?", rec.TenantID, toolPolicyJSON(rec.Policy), rec.ID); err != nil {
+		return fmt.Errorf("workflow sqlite store set tenant and policy: %w", err)
 	}
 	return nil
 }
@@ -308,8 +324,8 @@ func (s *SQLiteStore) Update(ctx context.Context, rec WorkflowRecord) error {
 	if affected == 0 {
 		return ErrWorkflowNotFound
 	}
-	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = ? WHERE id = ?", rec.TenantID, rec.ID); err != nil {
-		return fmt.Errorf("workflow sqlite store set tenant: %w", err)
+	if _, err := s.db.ExecContext(ctx, "UPDATE workflows SET tenant_id = ?, tool_policy = ? WHERE id = ?", rec.TenantID, toolPolicyJSON(rec.Policy), rec.ID); err != nil {
+		return fmt.Errorf("workflow sqlite store set tenant and policy: %w", err)
 	}
 	return nil
 }
@@ -585,11 +601,12 @@ func scanWorkflowRecord(scanner workflowScanner) (WorkflowRecord, error) {
 		name      sql.NullString
 		sourceRaw []byte
 		compRaw   []byte
+		policyRaw []byte
 		createdAt string
 		updatedAt string
 		tenantID  string
 	)
-	if err := scanner.Scan(&id, &kind, &name, &sourceRaw, &compRaw, &createdAt, &updatedAt, &tenantID); err != nil {
+	if err := scanner.Scan(&id, &kind, &name, &sourceRaw, &compRaw, &policyRaw, &createdAt, &updatedAt, &tenantID); err != nil {
 		return WorkflowRecord{}, err
 	}
 
@@ -620,7 +637,141 @@ func scanWorkflowRecord(scanner workflowScanner) (WorkflowRecord, error) {
 		rec.Compiled = &compiled
 	}
 
+	if len(policyRaw) > 0 {
+		var policy tool.ToolPolicy
+		if err := json.Unmarshal(policyRaw, &policy); err != nil {
+			return WorkflowRecord{}, fmt.Errorf("workflow sqlite store unmarshal tool policy: %w", err)
+		}
+		rec.Policy = &policy
+	}
+
 	return rec, nil
+}
+
+func toolPolicyJSON(policy *tool.ToolPolicy) []byte {
+	if policy == nil {
+		return nil
+	}
+	data, err := json.Marshal(*policy)
+	if err != nil {
+		// ToolPolicy contains only JSON-safe fields, so marshalling
+		// cannot fail; treat any error as unset to keep writes flowing.
+		return nil
+	}
+	return data
+}
+
+func (s *SQLiteStore) GetTenantPolicy(ctx context.Context, tenantID string) (TenantPolicyRecord, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT tenant_id, policy, created_at, updated_at
+FROM tenant_tool_policies
+WHERE tenant_id = ?`, tenantID)
+	return scanTenantPolicyRecord(row)
+}
+
+func (s *SQLiteStore) UpsertTenantPolicy(ctx context.Context, rec TenantPolicyRecord) (TenantPolicyRecord, error) {
+	if err := rec.Policy.Validate(); err != nil {
+		return TenantPolicyRecord{}, fmt.Errorf("workflow store tenant policy validation: %w", err)
+	}
+
+	now := time.Now().UTC()
+	if rec.CreatedAt.IsZero() {
+		rec.CreatedAt = now
+	}
+	rec.UpdatedAt = now
+	rec.Policy = rec.Policy.Normalized()
+
+	stored, found, err := s.GetTenantPolicy(ctx, rec.TenantID)
+	if err != nil {
+		return TenantPolicyRecord{}, err
+	}
+	if found {
+		prev := stored.Policy
+		if !tenantPolicyContentChanged(prev, rec.Policy) {
+			rec.Policy.Version = prev.Version
+		} else {
+			rec.Policy.Version = prev.Version + 1
+		}
+		rec.CreatedAt = stored.CreatedAt
+	} else {
+		rec.Policy.Version = 1
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO tenant_tool_policies (tenant_id, policy, created_at, updated_at)
+VALUES (?, ?, ?, ?)
+ON CONFLICT(tenant_id) DO UPDATE
+SET policy = excluded.policy,
+    updated_at = excluded.updated_at`,
+		rec.TenantID, toolPolicyJSON(&rec.Policy), rec.CreatedAt.UTC().Format(time.RFC3339Nano), rec.UpdatedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return TenantPolicyRecord{}, fmt.Errorf("workflow sqlite store upsert tenant policy: %w", err)
+	}
+	return rec, nil
+}
+
+func (s *SQLiteStore) DeleteTenantPolicy(ctx context.Context, tenantID string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM tenant_tool_policies WHERE tenant_id = ?`, tenantID)
+	if err != nil {
+		return fmt.Errorf("workflow sqlite store delete tenant policy: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("workflow sqlite store delete tenant policy affected rows: %w", err)
+	}
+	if affected == 0 {
+		return ErrTenantPolicyNotFound
+	}
+	return nil
+}
+
+func scanTenantPolicyRecord(scanner workflowScanner) (TenantPolicyRecord, bool, error) {
+	var (
+		tenantID  string
+		policyRaw []byte
+		createdAt string
+		updatedAt string
+	)
+	if err := scanner.Scan(&tenantID, &policyRaw, &createdAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return TenantPolicyRecord{}, false, nil
+		}
+		return TenantPolicyRecord{}, false, err
+	}
+
+	created, err := time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return TenantPolicyRecord{}, false, fmt.Errorf("workflow sqlite store parse tenant policy created_at: %w", err)
+	}
+	updated, err := time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return TenantPolicyRecord{}, false, fmt.Errorf("workflow sqlite store parse tenant policy updated_at: %w", err)
+	}
+
+	policy, err := unmarshalTenantPolicy(policyRaw)
+	if err != nil {
+		return TenantPolicyRecord{}, false, err
+	}
+	return TenantPolicyRecord{TenantID: tenantID, Policy: policy, CreatedAt: created, UpdatedAt: updated}, true, nil
+}
+
+func unmarshalTenantPolicy(raw []byte) (tool.ToolPolicy, error) {
+	var policy tool.ToolPolicy
+	if len(raw) == 0 {
+		return policy, nil
+	}
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return tool.ToolPolicy{}, fmt.Errorf("unmarshal tenant policy: %w", err)
+	}
+	return policy, nil
+}
+
+// tenantPolicyContentChanged compares policies ignoring Version and
+// UpdatedAt so a byte-equal re-upsert does not churn the version.
+func tenantPolicyContentChanged(a, b tool.ToolPolicy) bool {
+	a.Version, b.Version = 0, 0
+	a.UpdatedAt, b.UpdatedAt = time.Time{}, time.Time{}
+	return !reflect.DeepEqual(a.Normalized(), b.Normalized())
 }
 
 func scanWorkflowSchedule(scanner scheduleScanner) (WorkflowSchedule, error) {
@@ -975,4 +1126,5 @@ func sqliteTableColumns(db *sql.DB, table string) (map[string]bool, error) {
 }
 
 var _ WorkflowStore = (*SQLiteStore)(nil)
+var _ TenantPolicyStore = (*SQLiteStore)(nil)
 var _ WorkflowScheduleStore = (*SQLiteStore)(nil)
