@@ -123,3 +123,19 @@ func TestPostgresRunJobStoreConformance(t *testing.T) {
 		return s
 	})
 }
+
+func TestPostgresPolicyStoreConformance(t *testing.T) {
+	dsn := os.Getenv("PETALFLOW_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set PETALFLOW_TEST_POSTGRES_DSN to run postgres integration tests")
+	}
+	runPolicyStoreConformance(t, func(t *testing.T) policyStoreBackends {
+		schema := uniqueSchema(t, dsn)
+		s, err := NewPostgresStore(PostgresStoreConfig{DSN: schema})
+		if err != nil {
+			t.Fatalf("new postgres store: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		return s
+	})
+}

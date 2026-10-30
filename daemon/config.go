@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -24,6 +25,28 @@ const (
 type ToolConfigFile struct {
 	Tools         map[string]ToolDeclaration `yaml:"tools"`
 	Observability *ObservabilityConfig       `yaml:"observability,omitempty"`
+	// ToolPolicy declares the statically configured default tenant tool
+	// policy. It applies to every tenant unless a per-tenant override is
+	// stored through the API. See tool.ToolPolicy for the rule shape;
+	// YAML keys are allow / deny / require_approval.
+	ToolPolicy *ToolPolicyDeclaration `yaml:"tool_policy,omitempty"`
+}
+
+// ToolPolicyDeclaration is the YAML shape of the default tenant tool policy.
+type ToolPolicyDeclaration struct {
+	Allow           []string `yaml:"allow,omitempty" json:"allow,omitempty"`
+	Deny            []string `yaml:"deny,omitempty" json:"deny,omitempty"`
+	RequireApproval []string `yaml:"require_approval,omitempty" json:"require_approval,omitempty"`
+}
+
+// ToToolPolicy converts a config declaration into the shared policy model.
+func (d ToolPolicyDeclaration) ToToolPolicy() *tool.ToolPolicy {
+	policy := tool.ToolPolicy{
+		Allow:           slices.Clone(d.Allow),
+		Deny:            slices.Clone(d.Deny),
+		RequireApproval: slices.Clone(d.RequireApproval),
+	}
+	return &policy
 }
 
 // ObservabilityConfig holds settings for telemetry and tracing integrations.
@@ -553,4 +576,35 @@ func LoadObservabilityConfig(configPath string) (*ObservabilityConfig, error) {
 	}
 
 	return cfg.Observability, nil
+}
+
+// LoadDefaultToolPolicy loads the statically configured default tenant
+// tool policy from a config file. It returns nil when the config file
+// does not exist or does not declare a tool_policy section.
+func LoadDefaultToolPolicy(configPath string) (*tool.ToolPolicy, error) {
+	if strings.TrimSpace(configPath) == "" {
+		return nil, nil
+	}
+	info, err := os.Stat(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("checking config path %q: %w", configPath, err)
+	}
+	if info.IsDir() {
+		return nil, nil
+	}
+	cfg, err := loadToolConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ToolPolicy == nil {
+		return nil, nil
+	}
+	policy := cfg.ToolPolicy.ToToolPolicy()
+	if err := policy.Validate(); err != nil {
+		return nil, fmt.Errorf("config %q tool_policy: %w", configPath, err)
+	}
+	return policy, nil
 }

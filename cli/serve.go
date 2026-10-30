@@ -150,6 +150,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	var defaultToolPolicy *tool.ToolPolicy
 	if found {
 		registered, err := daemon.RegisterToolsFromConfig(cmd.Context(), daemonServer.Service(), configPath)
 		if err != nil {
@@ -159,6 +160,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("syncing registry after startup config load: %w", err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Loaded %d tool declaration(s) from %s\n", len(registered), configPath)
+
+		defaultToolPolicy, err = daemon.LoadDefaultToolPolicy(configPath)
+		if err != nil {
+			return fmt.Errorf("loading tenant tool policy: %w", err)
+		}
 	}
 
 	healthScheduler, err := tool.NewHealthScheduler(tool.HealthSchedulerConfig{
@@ -231,12 +237,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
 			return llmprovider.NewClient(name, cfg)
 		},
-		Bus:        eb,
-		EventStore: es,
-		RunStore:   runStore,
-		CORSOrigin: corsOrigin,
-		MaxBody:    maxBody,
-		JobStore:   workflowStore,
+		Bus:                 eb,
+		EventStore:          es,
+		RunStore:            runStore,
+		CORSOrigin:          corsOrigin,
+		MaxBody:             maxBody,
+		JobStore:            workflowStore,
+		DefaultTenantPolicy: defaultToolPolicy,
 		Security: server.SecurityConfig{
 			RequireAuth:   true,
 			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),
