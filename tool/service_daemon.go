@@ -298,6 +298,9 @@ func (s *DaemonToolService) UpdateConfig(ctx context.Context, name string, input
 }
 
 // TestAction invokes an action against one registration with provided inputs.
+// The invocation passes the policy gate first: with a policy evaluator in
+// the context, out-of-policy requests fail with a typed error before the
+// adapter is constructed.
 func (s *DaemonToolService) TestAction(ctx context.Context, name string, action string, inputs map[string]any) (ToolTestResult, error) {
 	reg, found, err := s.Get(ctx, name, true)
 	if err != nil {
@@ -308,6 +311,10 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 	}
 	if !reg.Enabled || reg.Status == StatusDisabled {
 		return ToolTestResult{}, fmt.Errorf("%w: %s", ErrToolDisabled, reg.Name)
+	}
+
+	if err := CheckPolicy(ctx, reg.Name); err != nil {
+		return ToolTestResult{}, err
 	}
 
 	adapter, err := s.adapterFactory.New(reg)

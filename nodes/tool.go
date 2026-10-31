@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	toolpolicy "github.com/petal-labs/petalflow/tool"
+
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -118,6 +120,21 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("tool_name", tool.Name()).
 		WithPayload("arguments", args))
+
+	// Policy gate: fails with a typed error before any side effect when
+	// the caller's effective policy denies the tool. Rejections are
+	// never retried. Without an installed evaluator, enforcement was
+	// not opted into and invocation proceeds.
+	gateName := tool.Name()
+	if gateErr := toolpolicy.CheckPolicy(ctx, gateName); gateErr != nil {
+		emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+			WithNode(n.ID(), n.Kind()).
+			WithPayload("tool_name", gateName).
+			WithPayload("is_error", true).
+			WithPayload("policy_rejected", true).
+			WithPayload("error_code", toolpolicy.PolicyErrorCode(gateErr)))
+		return nil, fmt.Errorf("tool %q rejected before invocation: %w", gateName, gateErr)
+	}
 
 	// Execute with retries
 	var result map[string]any

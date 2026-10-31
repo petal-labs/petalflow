@@ -22,6 +22,9 @@ type ServerConfig struct {
 	Service  *tool.DaemonToolService
 	Registry *registry.Registry
 	Security SecurityConfig
+	// ToolPolicy is the statically configured tool policy. When set,
+	// tool invocation requests run through the policy gate.
+	ToolPolicy *tool.ToolPolicy
 }
 
 type SecurityConfig struct {
@@ -34,6 +37,9 @@ type Server struct {
 	service  *tool.DaemonToolService
 	reg      *registry.Registry
 	security SecurityConfig
+	// toolPolicy is the statically configured policy; nil disables the
+	// request-side gate (embedded-library compatibility).
+	toolPolicy *tool.ToolPolicy
 
 	mu           sync.Mutex
 	dynamicTypes map[string]struct{}
@@ -74,6 +80,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		service:      service,
 		reg:          reg,
 		security:     cfg.Security,
+		toolPolicy:   cfg.ToolPolicy,
 		dynamicTypes: make(map[string]struct{}),
 	}
 	if err := s.syncRegistry(context.Background()); err != nil {
@@ -119,6 +126,12 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		// Statically configured policy applies to every tool invocation
+		// request, gated per tenant at service level.
+		if s.toolPolicy != nil {
+			policy := *s.toolPolicy
+			r = r.WithContext(tool.ContextWithPolicyEvaluator(r.Context(), tool.PolicyEvaluatorFunc(policy.Evaluate)))
+		}
 		if !s.security.RequireAuth || r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
 			return
@@ -557,6 +570,9 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, "NOT_MCP", err.Error(), nil)
 	case errors.Is(err, tool.ErrToolDisabled):
 		writeJSONError(w, http.StatusConflict, "TOOL_DISABLED", err.Error(), nil)
+	case tool.IsToolPolicyError(err):
+		code := tool.PolicyErrorCode(err)
+		writeJSONError(w, http.StatusForbidden, code, err.Error(), nil)
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 	}
