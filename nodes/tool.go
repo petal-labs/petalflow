@@ -228,10 +228,7 @@ func (n *ToolNode) requestToolApproval(
 		return false, "", "", fmt.Errorf("tool %q approval required but no approval flow is configured: %w", toolName, gateErr)
 	}
 
-	base, action := toolpolicy.ReferenceNames(toolName)
-	if action != "" {
-		action = strings.TrimPrefix(action, base+".")
-	}
+	base, action := parseApprovalReference(toolName)
 	req := &ToolApprovalRequest{
 		ID:           uuid.New().String(),
 		NodeID:       n.ID(),

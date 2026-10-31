@@ -311,3 +311,70 @@ func TestToolApprovalGuardianGrantClaim(t *testing.T) {
 		t.Fatalf("claim by tool failed: %v", err)
 	}
 }
+
+func TestApprovalLedgerStoreMergeAndReconcile(t *testing.T) {
+	base := runtime.NewMemoryRunStore()
+	store, ok := newApprovalLedgerStore(base)
+	if !ok {
+		t.Fatal("wrapper build must succeed for non-nil store")
+	}
+	ctx := context.Background()
+
+	record := &runtime.RunRecord{
+		ID: "ledger-run", WorkflowID: "wf", Status: runtime.RunStatusRunning,
+		StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := store.Create(ctx, record); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The bridge records a ledger entry + clears the pending slot; a
+	// stale runtime copy (no ledger, stale pending) must reconcile.
+	stored, err := base.Get(ctx, "ledger-run")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	stored.ApprovalRecords = append(stored.ApprovalRecords, runtime.ApprovalRecord{
+		ID: "appr-1", RunID: "ledger-run", ToolName: "email-send",
+		Decision: runtime.ToolApprovalApproved, DecisionBy: "operator",
+		CreatedAt: time.Now().UTC(),
+	})
+	stored.PendingAction = nil
+	stored.UpdatedAt = time.Now().UTC()
+	if err := base.Update(ctx, stored); err != nil {
+		t.Fatalf("store decision: %v", err)
+	}
+
+	stale := *stored
+	stale.ApprovalRecords = nil // runtime copy predates the ledger
+	pending := &runtime.PendingAction{
+		ID: "appr-1", RunID: "ledger-run", NodeID: "n",
+		Type: runtime.PendingActionTypeToolApproval,
+	}
+	stale.PendingAction = pending
+	if err := store.Update(ctx, &stale); err != nil {
+		t.Fatalf("stale update: %v", err)
+	}
+
+	check, err := base.Get(ctx, "ledger-run")
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if len(check.ApprovalRecords) != 1 || check.ApprovalRecords[0].ID != "appr-1" {
+		t.Fatalf("ledger clobbered: %#v", check.ApprovalRecords)
+	}
+	if check.PendingAction != nil {
+		t.Fatalf("pending slot resurrected: %#v", check.PendingAction)
+	}
+
+	// Late-recorded response reconciles to the runtime copy without
+	// deleting it: after the bridge clears the pending, the wrapper
+	// drops it. The storage semantics stay visible to callers via Get.
+	nilEntry, _ := newApprovalLedgerStore(nil)
+	if nilEntry != nil {
+		t.Fatal("nil store wrapper must build nil")
+	}
+	if err := store.Cancel(ctx, "ledger-run"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+}

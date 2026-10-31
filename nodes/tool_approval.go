@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/petal-labs/petalflow/runtime"
@@ -100,3 +101,16 @@ var ErrToolApprovalRejected = fmt.Errorf("tool approval rejected by operator")
 var ErrToolApprovalExpired = fmt.Errorf("tool approval expired")
 
 var _ runtime.PendingError = (*ToolApprovalPendingError)(nil)
+
+// parseApprovalReference splits an action reference into the registered
+// tool name and the invoked action ("tool.action" -> "tool", "action"),
+// mirroring tool.ReferenceNames so approval records use consistent
+// naming.
+func parseApprovalReference(reference string) (base, action string) {
+	base, action = reference, ""
+	if idx := strings.LastIndexByte(reference, '.'); idx > 0 && strings.IndexByte(reference[:idx], '.') < 0 {
+		base = reference[:idx]
+		action = reference[idx+1:]
+	}
+	return base, action
+}
