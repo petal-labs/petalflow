@@ -378,3 +378,53 @@ func TestApprovalLedgerStoreMergeAndReconcile(t *testing.T) {
 		t.Fatalf("cancel: %v", err)
 	}
 }
+
+// failingGetRunStore fails Reads underneath the wrapper for the
+// reconcile error paths.
+type failingGetRunStore struct {
+	runtime.RunStore
+}
+
+func (f *failingGetRunStore) Get(ctx context.Context, runID string) (*runtime.RunRecord, error) {
+	return nil, fmt.Errorf("store outage")
+}
+
+func TestApprovalLedgerStoreErrorPaths(t *testing.T) {
+	base := &failingGetRunStore{RunStore: runtime.NewMemoryRunStore()}
+	store, ok := newApprovalLedgerStore(base)
+	if !ok {
+		t.Fatal("wrapper build must succeed")
+	}
+	ctx := context.Background()
+
+	withLedger := &runtime.RunRecord{
+		ID: "e1", Status: runtime.RunStatusRunning,
+		StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		ApprovalRecords: []runtime.ApprovalRecord{{ID: "l", ToolName: "t", Decision: runtime.ToolApprovalApproved}},
+		PendingAction:   &runtime.PendingAction{ID: "l", Type: runtime.PendingActionTypeToolApproval},
+	}
+	// Reads fail underneath; the delegating store itself returns the
+	// store's failure for a record that was never stored.
+	if err := store.Update(ctx, withLedger); err == nil {
+		t.Fatal("failing store must surface its own error")
+	}
+
+	// Non-approval pending actions skip reconciliation untouched.
+	fresh := runtime.NewMemoryRunStore()
+	wrapper, _ := newApprovalLedgerStore(fresh)
+	human := &runtime.RunRecord{
+		ID: "e2", Status: runtime.RunStatusRunning,
+		StartedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		PendingAction: &runtime.PendingAction{ID: "p", Type: "human"},
+	}
+	if err := fresh.Create(ctx, human); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := wrapper.Update(ctx, human); err != nil {
+		t.Fatalf("update human pending: %v", err)
+	}
+	check, err := fresh.Get(ctx, "e2")
+	if err != nil || check.PendingAction == nil || check.PendingAction.ID != "p" {
+		t.Fatalf("human pending must survive wrapper writes: %#v err=%v", check.PendingAction, err)
+	}
+}
