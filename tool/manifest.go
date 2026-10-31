@@ -40,6 +40,9 @@ type ToolManifest struct {
 	Actions         map[string]ActionSpec `json:"actions"`
 	Config          map[string]FieldSpec  `json:"config,omitempty"`
 	Health          *HealthConfig         `json:"health,omitempty"`
+	// Safety classifies dangerous or side-effecting behavior. When nil
+	// the registration applies conservative origin defaults.
+	Safety *SafetyClassification `json:"safety,omitempty"`
 }
 
 // Manifest is kept as an alias for backward compatibility while the package
@@ -68,6 +71,9 @@ type ActionSpec struct {
 	Outputs     map[string]FieldSpec `json:"outputs,omitempty"`
 	LLMCallable *bool                `json:"llm_callable,omitempty"`
 	Idempotent  bool                 `json:"idempotent,omitempty"`
+	// Safety optionally overrides the tool-level classification for
+	// just this action; merges can only under-classify nothing.
+	Safety *SafetyClassification `json:"safety,omitempty"`
 }
 
 // FieldSpec is the v1 field/type descriptor used for inputs, outputs, and config.

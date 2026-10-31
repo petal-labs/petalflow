@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -57,6 +58,11 @@ type ToolPolicy struct {
 	// RequireApproval lists tools whose invocation is allowed but gated
 	// behind durable human approval.
 	RequireApproval []string `json:"require_approval,omitempty"`
+	// RequireApprovalClasses lists safety classifications (see
+	// tool.PolicyClasses) whose tools are approval-gated when allowed.
+	// Like RequireApproval, workflows can add classes but never remove
+	// tenant ones.
+	RequireApprovalClasses []string `json:"require_approval_classes,omitempty"`
 	// UpdatedAt records the last policy change.
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }
@@ -67,6 +73,9 @@ type EffectiveToolPolicy struct {
 	Allow           []string
 	Deny            []string
 	RequireApproval []string
+	// RequireApprovalClasses unions the tenant and workflow approval
+	// classification gates.
+	RequireApprovalClasses []string
 }
 
 // Evaluate returns the decision for the named tool under this policy
@@ -102,10 +111,12 @@ func ResolveEffectivePolicy(tenant, workflow *ToolPolicy) EffectiveToolPolicy {
 		effective.Deny = append(effective.Deny, tenant.Deny...)
 		effective.Allow = appendAllowIfSet(effective.Allow, tenant.Allow)
 		effective.RequireApproval = append(effective.RequireApproval, tenant.RequireApproval...)
+		effective.RequireApprovalClasses = append(effective.RequireApprovalClasses, tenant.RequireApprovalClasses...)
 	}
 	if workflow != nil {
 		effective.Deny = append(effective.Deny, workflow.Deny...)
 		effective.RequireApproval = append(effective.RequireApproval, workflow.RequireApproval...)
+		effective.RequireApprovalClasses = append(effective.RequireApprovalClasses, workflow.RequireApprovalClasses...)
 		// An explicitly set workflow allowlist replaces the tenant
 		// allowlist (including an empty list, which removes access).
 		if workflow.Allow != nil {
@@ -116,6 +127,7 @@ func ResolveEffectivePolicy(tenant, workflow *ToolPolicy) EffectiveToolPolicy {
 	effective.Allow = normalizeRuleList(effective.Allow)
 	effective.Deny = normalizeRuleList(effective.Deny)
 	effective.RequireApproval = normalizeRuleList(effective.RequireApproval)
+	effective.RequireApprovalClasses = normalizeRuleList(effective.RequireApprovalClasses)
 	return effective
 }
 
@@ -145,6 +157,81 @@ func (e EffectiveToolPolicy) Evaluate(toolName string) PolicyDecision {
 	return PolicyAllow
 }
 
+// EvaluateClassified extends Evaluate with the tool's safety
+// classification so classification-based approval gates apply. Denies
+// keep their terminal significance; classification only widens the
+// needs-approval outcome, never grants access.
+func (e EffectiveToolPolicy) EvaluateClassified(toolName string, class SafetyClassification) PolicyDecision {
+	if toolName == "" {
+		return PolicyDeny
+	}
+	if anyRuleMatches(e.Deny, toolName) {
+		return PolicyDeny
+	}
+	if !anyRuleMatches(e.Allow, toolName) {
+		return PolicyDeny
+	}
+	if anyRuleMatches(e.RequireApproval, toolName) {
+		return PolicyNeedsApproval
+	}
+	for _, className := range e.RequireApprovalClasses {
+		if class.MatchesClass(className) {
+			return PolicyNeedsApproval
+		}
+	}
+	return PolicyAllow
+}
+
+// EvaluateClassified is EvaluateClassified at a single policy level.
+func (p ToolPolicy) EvaluateClassified(toolName string, class SafetyClassification) PolicyDecision {
+	return EffectiveToolPolicy{
+		Allow:                  p.Allow,
+		Deny:                   p.Deny,
+		RequireApproval:        p.RequireApproval,
+		RequireApprovalClasses: p.RequireApprovalClasses,
+	}.EvaluateClassified(toolName, class)
+}
+
+// EvaluateClassifiedReferences evaluates one invocation across all its
+// reference names (tool.action plus the base tool name) with the tool's
+// safety classification. A deny match on any reference denies; a
+// require-approval or classification-gate match on any permitted
+// reference returns needs-approval; an allow match permits; no allow
+// match default-denies.
+func EvaluateClassifiedReferences(effective EffectiveToolPolicy, class SafetyClassification, names ...string) PolicyDecision {
+	permitted := false
+	gated := false
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		if anyRuleMatches(effective.Deny, name) {
+			return PolicyDeny
+		}
+		if !anyRuleMatches(effective.Allow, name) {
+			continue
+		}
+		if anyRuleMatches(effective.RequireApproval, name) {
+			gated = true
+		}
+		for _, className := range effective.RequireApprovalClasses {
+			if class.MatchesClass(className) {
+				gated = true
+				break
+			}
+		}
+		permitted = true
+	}
+	switch {
+	case gated:
+		return PolicyNeedsApproval
+	case permitted:
+		return PolicyAllow
+	default:
+		return PolicyDeny
+	}
+}
+
 // Validate checks structural policy integrity: list entries must be valid
 // patterns and the version non-negative.
 func (p ToolPolicy) Validate() error {
@@ -165,18 +252,28 @@ func (p ToolPolicy) Validate() error {
 			}
 		}
 	}
+	for _, entry := range p.RequireApprovalClasses {
+		if !validPolicyClass(entry) {
+			return fmt.Errorf("require_approval_classes: unknown classification %q (valid: %s)", entry, strings.Join(PolicyClasses, ", "))
+		}
+	}
 	return nil
+}
+
+func validPolicyClass(entry string) bool {
+	return slices.Contains(PolicyClasses, entry)
 }
 
 // Normalized returns a copy with each rule list deduplicated and sorted so
 // equal policies compare deterministically.
 func (p ToolPolicy) Normalized() ToolPolicy {
 	return ToolPolicy{
-		Version:         p.Version,
-		Allow:           normalizeRuleList(p.Allow),
-		Deny:            normalizeRuleList(p.Deny),
-		RequireApproval: normalizeRuleList(p.RequireApproval),
-		UpdatedAt:       p.UpdatedAt,
+		Version:                p.Version,
+		Allow:                  normalizeRuleList(p.Allow),
+		Deny:                   normalizeRuleList(p.Deny),
+		RequireApproval:        normalizeRuleList(p.RequireApproval),
+		RequireApprovalClasses: normalizeRuleList(p.RequireApprovalClasses),
+		UpdatedAt:              p.UpdatedAt,
 	}
 }
 

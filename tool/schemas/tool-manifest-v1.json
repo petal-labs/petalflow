@@ -183,6 +183,9 @@
         "$ref": "#/definitions/field"
       }
     },
+    "safety": {
+      "$ref": "#/definitions/safety"
+    },
     "health": {
       "type": "object",
       "properties": {
@@ -209,6 +212,33 @@
     }
   },
   "definitions": {
+    "safety": {
+      "type": "object",
+      "properties": {
+        "side_effect_level": {
+          "type": "string",
+          "enum": [
+            "readonly",
+            "side_effect",
+            "destructive",
+            ""
+          ]
+        },
+        "network": {
+          "type": "boolean"
+        },
+        "destructive": {
+          "type": "boolean"
+        },
+        "downstream_write": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
     "action": {
       "type": "object",
       "properties": {
@@ -226,6 +256,9 @@
           "additionalProperties": {
             "$ref": "#/definitions/field"
           }
+        },
+        "safety": {
+          "$ref": "#/definitions/safety"
         },
         "idempotent": {
           "type": "boolean"

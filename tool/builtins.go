@@ -73,6 +73,10 @@ func (templateRenderTool) Manifest() Manifest {
 	manifest.Tool.Description = "Render a Go template string with provided variables."
 	manifest.Tool.Version = "built-in"
 	manifest.Transport = NewNativeTransport()
+	manifest.Safety = &SafetyClassification{
+		Level: SideEffectReadOnly,
+		Notes: "pure string templating; no external effects",
+	}
 	manifest.Actions = map[string]ActionSpec{
 		"render": {
 			Description: "Render template content into a final string.",
@@ -141,6 +145,11 @@ func (httpFetchTool) Manifest() Manifest {
 	manifest.Tool.Description = "Fetch a URL over HTTP(S) and return status/body."
 	manifest.Tool.Version = "built-in"
 	manifest.Transport = NewNativeTransport()
+	manifest.Safety = &SafetyClassification{
+		Level:   SideEffectReadOnly,
+		Network: true,
+		Notes:   "performs outbound HTTP requests to arbitrary URLs",
+	}
 	manifest.Actions = map[string]ActionSpec{
 		"fetch": {
 			Description: "Execute an HTTP request and return response data.",
@@ -153,6 +162,11 @@ func (httpFetchTool) Manifest() Manifest {
 				"status_code": {Type: TypeInteger},
 				"body":        {Type: TypeString},
 				"headers":     {Type: TypeObject},
+			},
+			Safety: &SafetyClassification{
+				Level:   SideEffectSideEffect,
+				Network: true,
+				Notes:   "method and body inputs are caller-controlled, so this action may perform non-idempotent writes",
 			},
 			Idempotent: false,
 		},

@@ -175,3 +175,66 @@ func TestWorkflowToolPolicyEnforcement_RunLevel(t *testing.T) {
 		}
 	})
 }
+
+func TestWorkflowClassificationApprovalGate(t *testing.T) {
+	// The builtin http_fetch declares a network classification; a tenant
+	// policy that approves the network class must gate it even though
+	// the tool name itself is allow-listed.
+	handler, capturedEvents := newDaemonWorkflowLifecycleHandlerWithPolicy(t, &toolpkg.ToolPolicy{
+		Allow:                  []string{"http_fetch"},
+		RequireApprovalClasses: []string{toolpkg.PolicyClassNetwork},
+	})
+	createGraphWorkflow(t, handler, graphWorkflowPayload("policy_class_http", map[string]any{
+		"id":   "class_fetch",
+		"type": "tool",
+		"config": map[string]any{
+			"tool_name":  "http_fetch.fetch",
+			"output_key": "fetch_output",
+			"static_args": map[string]any{
+				"url":    "http://127.0.0.1:1/unreachable",
+				"method": "GET",
+			},
+		},
+	}))
+
+	body := mustJSON(t, RunRequest{Input: map[string]any{"name": "x"}, Options: RunReqOptions{Timeout: "30s"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/workflows/policy_class_http/run", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	// The approval gate must reject before any network attempt happens,
+	// so the run fails with the typed rejection rather than a transport
+	// error or status code from the endpoint.
+	rejected := findPolicyRejectedEvent(capturedEvents())
+	if rejected == nil {
+		t.Fatal("expected policy_rejected event for classification-gated tool")
+	}
+	if rejected.Payload["error_code"] != toolpkg.ToolErrorCodePolicyApprovalRequired {
+		t.Fatalf("error_code = %v, want %q", rejected.Payload["error_code"], toolpkg.ToolErrorCodePolicyApprovalRequired)
+	}
+
+	// A policy without the network class runs the fetch through to the
+	// (unreachable) endpoint, producing a transport failure - not a
+	// policy rejection.
+	handler2, capturedEvents2 := newDaemonWorkflowLifecycleHandlerWithPolicy(t, &toolpkg.ToolPolicy{
+		Allow: []string{"http_fetch"},
+	})
+	createGraphWorkflow(t, handler2, graphWorkflowPayload("policy_class_http_allowed", map[string]any{
+		"id":   "class_fetch_allowed",
+		"type": "tool",
+		"config": map[string]any{
+			"tool_name":  "http_fetch.fetch",
+			"output_key": "fetch_output",
+			"static_args": map[string]any{
+				"url":    "http://127.0.0.1:1/unreachable",
+				"method": "GET",
+			},
+		},
+	}))
+	body2 := mustJSON(t, RunRequest{Input: map[string]any{"name": "x"}, Options: RunReqOptions{Timeout: "30s"}})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/workflows/policy_class_http_allowed/run", bytes.NewReader(body2))
+	w2 := httptest.NewRecorder()
+	handler2.ServeHTTP(w2, req2)
+	if findPolicyRejectedEvent(capturedEvents2()) != nil {
+		t.Fatal("allow-listed tool without class gates must not be approval-gated")
+	}
+}

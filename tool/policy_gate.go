@@ -33,6 +33,16 @@ type PolicyEvaluator interface {
 	EvaluatePolicy(toolName string) PolicyDecision
 }
 
+// ClassifiedPolicyEvaluator is the optional capability of evaluators
+// whose decisions also consider a tool's effective safety
+// classification (dangerous tools gated to approval even when the
+// allowlist includes them). Implementing this interface means the
+// caller should prefer CheckPolicyClassified when classification is
+// known, and classification-only gates still apply throughEvaluatePolicy.
+type ClassifiedPolicyEvaluator interface {
+	EvaluatePolicyClassified(toolName string, class SafetyClassification) PolicyDecision
+}
+
 // PolicyEvaluatorFunc adapts a function to PolicyEvaluator.
 type PolicyEvaluatorFunc func(toolName string) PolicyDecision
 
@@ -51,11 +61,51 @@ type EffectivePolicyEvaluator struct {
 // EvaluatePolicy returns the most restrictive decision across the
 // tool-name references derived from toolName.
 func (e EffectivePolicyEvaluator) EvaluatePolicy(toolName string) PolicyDecision {
-	base := toolName
+	base, ref := ReferenceNames(toolName)
+	return EvaluatePolicyReferences(e.Effective, ref, base)
+}
+
+// EvaluatePolicyClassified applies the classification-aware evaluation to
+// both references.
+func (e EffectivePolicyEvaluator) EvaluatePolicyClassified(toolName string, class SafetyClassification) PolicyDecision {
+	base, ref := ReferenceNames(toolName)
+	if len(e.Effective.RequireApprovalClasses) == 0 {
+		return e.EvaluatePolicy(toolName)
+	}
+	return EvaluateClassifiedReferences(e.Effective, class, ref, base)
+}
+
+// ReferenceNames derives the reference pair for a tool invocation: the
+// full name as invoked ("tool.action") and the base registered tool
+// name ("tool").
+func ReferenceNames(toolName string) (base, ref string) {
+	base, ref = toolName, toolName
 	if idx := strings.LastIndexByte(toolName, '.'); idx > 0 && strings.IndexByte(toolName[:idx], '.') < 0 {
 		base = toolName[:idx]
 	}
-	return EvaluatePolicyReferences(e.Effective, toolName, base)
+	return base, ref
+}
+
+// MostRestrictiveDecision folds decisions: deny beats needs-approval
+// beats allow; the default verdict is deny.
+func MostRestrictiveDecision(decisions []PolicyDecision) PolicyDecision {
+	var decision PolicyDecision
+	for _, candidate := range decisions {
+		switch candidate {
+		case PolicyDeny:
+			return PolicyDeny
+		case PolicyNeedsApproval:
+			decision = PolicyNeedsApproval
+		case PolicyAllow:
+			if decision == "" {
+				decision = PolicyAllow
+			}
+		}
+	}
+	if decision == "" {
+		return PolicyDeny
+	}
+	return decision
 }
 
 // FromEffectivePolicy returns the evaluator for an effective policy.
@@ -132,6 +182,22 @@ func CheckPolicy(ctx context.Context, toolName string) error {
 	evaluator, ok := PolicyEvaluatorFromContext(ctx)
 	if !ok {
 		return nil
+	}
+	return checkPolicyDecision(evaluator.EvaluatePolicy(toolName), toolName)
+}
+
+// CheckPolicyClassified is the classification-aware gate for callers that
+// already hold the tool's effective safety classification (the daemon
+// service has its registration). Evaluators that do not implement
+// ClassifiedPolicyEvaluator fall back to name-only evaluation, which
+// cannot see classification gates.
+func CheckPolicyClassified(ctx context.Context, toolName string, class SafetyClassification) error {
+	evaluator, ok := PolicyEvaluatorFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if classified, implementsClassified := evaluator.(ClassifiedPolicyEvaluator); implementsClassified {
+		return checkPolicyDecision(classified.EvaluatePolicyClassified(toolName, class), toolName)
 	}
 	return checkPolicyDecision(evaluator.EvaluatePolicy(toolName), toolName)
 }
