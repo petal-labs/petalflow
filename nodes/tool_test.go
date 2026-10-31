@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	toolpolicy "github.com/petal-labs/petalflow/tool"
+
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/runtime"
 )
@@ -429,5 +431,89 @@ func (m *slowMockTool) Invoke(ctx context.Context, args map[string]any) (map[str
 		return nil, ctx.Err()
 	case <-time.After(m.delay):
 		return map[string]any{"status": "ok"}, nil
+	}
+}
+
+func TestToolNode_Run_PolicyRejection(t *testing.T) {
+	tool := &mockPetalTool{name: "email-send", result: map[string]any{"ok": true}}
+	node := NewToolNode("email_node", tool, ToolNodeConfig{OutputKey: "out"})
+
+	var events []runtime.Event
+	policyCtx := toolpolicy.ContextWithPolicyEvaluator(context.Background(),
+		toolpolicy.PolicyEvaluatorFunc(func(name string) toolpolicy.PolicyDecision {
+			return toolpolicy.PolicyDeny
+		}))
+	runCtx := runtime.ContextWithEmitter(policyCtx, func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	env := core.NewEnvelope()
+	_, err := node.Run(runCtx, env)
+	if err == nil {
+		t.Fatal("denied tool invocation must fail")
+	}
+	if !toolpolicy.IsToolPolicyError(err) {
+		t.Fatalf("rejection error not a policy error: %v", err)
+	}
+	if got := len(tool.calls); got != 0 {
+		t.Fatalf("tool invoked %d times, want 0 (no side effect)", got)
+	}
+
+	var resultEvent *runtime.Event
+	for i := range events {
+		if events[i].Kind == runtime.EventToolResult {
+			resultEvent = &events[i]
+		}
+	}
+	if resultEvent == nil {
+		t.Fatalf("no tool.result event emitted, got %d events", len(events))
+	}
+	if resultEvent.Payload["policy_rejected"] != true {
+		t.Fatalf("policy_rejected payload = %v, want true", resultEvent.Payload["policy_rejected"])
+	}
+	if resultEvent.Payload["error_code"] != toolpolicy.ToolErrorCodePolicyDenied {
+		t.Fatalf("error_code payload = %v, want %q", resultEvent.Payload["error_code"], toolpolicy.ToolErrorCodePolicyDenied)
+	}
+}
+
+func TestToolNode_Run_PolicyAllowUsesEvaluator(t *testing.T) {
+	tool := &mockPetalTool{name: "email-send", result: map[string]any{"ok": true}}
+	node := NewToolNode("email_node", tool, ToolNodeConfig{OutputKey: "out"})
+
+	var events []runtime.Event
+	policyCtx := toolpolicy.ContextWithPolicyEvaluator(context.Background(),
+		toolpolicy.PolicyEvaluatorFunc(func(name string) toolpolicy.PolicyDecision {
+			return toolpolicy.PolicyAllow
+		}))
+	runCtx := runtime.ContextWithEmitter(policyCtx, func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	env := core.NewEnvelope()
+	if _, err := node.Run(runCtx, env); err != nil {
+		t.Fatalf("allowed tool invocation failed: %v", err)
+	}
+	if len(tool.calls) != 1 {
+		t.Fatalf("tool invoked %d times, want 1", len(tool.calls))
+	}
+}
+
+func TestToolNode_Run_PolicyApprovalRequired(t *testing.T) {
+	tool := &mockPetalTool{name: "email-send", result: map[string]any{"ok": true}}
+	node := NewToolNode("email_node", tool, ToolNodeConfig{OutputKey: "out"})
+
+	policyCtx := toolpolicy.ContextWithPolicyEvaluator(context.Background(),
+		toolpolicy.PolicyEvaluatorFunc(func(name string) toolpolicy.PolicyDecision {
+			return toolpolicy.PolicyNeedsApproval
+		}))
+	runCtx := runtime.ContextWithEmitter(policyCtx, func(e runtime.Event) {})
+
+	env := core.NewEnvelope()
+	_, err := node.Run(runCtx, env)
+	if !toolpolicy.IsToolPolicyError(err) || toolpolicy.PolicyErrorCode(err) != toolpolicy.ToolErrorCodePolicyApprovalRequired {
+		t.Fatalf("needs-approval error = %v, want %q code", err, toolpolicy.ToolErrorCodePolicyApprovalRequired)
+	}
+	if len(tool.calls) != 0 {
+		t.Fatal("needs-approval invocation must not run until approval exists")
 	}
 }

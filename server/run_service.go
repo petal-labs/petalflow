@@ -16,6 +16,7 @@ import (
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/runtime"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 type runAPIError struct {
@@ -40,6 +41,32 @@ type workflowRunPlan struct {
 	resumeToken     string
 	idempotencyKey  string
 	tenantID        string
+	// workflowPolicy is the workflow-scoped tool policy override;
+	// nil means the tenant default policy applies.
+	workflowPolicy *tool.ToolPolicy
+}
+
+// runPolicyEvaluator resolves the effective tool policy for a run and
+// returns the evaluator installed into the run context. The workflow
+// record (via the plan) already carries the workflow-level override; the
+// tenant policy comes from the store override or the configured default.
+//
+// Governance is opt-in per policy source: when nothing is configured —
+// no stored tenant override, no configured default, no workflow policy —
+// the evaluator is nil and the run context stays ungoverned (parallel to
+// how server authentication is opt-in for embedded library use). As soon
+// as any policy source exists, the effective policy applies including
+// its secure-by-default rules.
+func (s *Server) runPolicyEvaluator(ctx context.Context, plan *workflowRunPlan) (tool.PolicyEvaluator, error) {
+	tenantPolicy, _, err := s.effectiveTenantPolicy(ctx, plan.tenantID)
+	if err != nil {
+		return nil, err
+	}
+	if tenantPolicy == nil && plan.workflowPolicy == nil && s.defaultTenantPolicy == nil {
+		return nil, nil
+	}
+	effective := tool.ResolveEffectivePolicy(tenantPolicy, plan.workflowPolicy)
+	return tool.FromEffectivePolicy(effective), nil
 }
 
 type scheduledRunMetadata struct {
@@ -78,6 +105,7 @@ func (s *Server) planWorkflowRunDefault(ctx context.Context, workflowID string, 
 	plan, err := s.planWorkflowRunWithDefinition(ctx, workflowID, rec.Compiled, req)
 	if err == nil {
 		plan.tenantID = rec.TenantID
+		plan.workflowPolicy = rec.Policy
 	}
 	return plan, err
 }
@@ -143,6 +171,14 @@ func (s *Server) executeWorkflowRunSync(
 	}
 	runCtx, cancel := context.WithTimeout(ctx, plan.timeout)
 	defer cancel()
+
+	evaluator, polErr := s.runPolicyEvaluator(ctx, plan)
+	if polErr != nil {
+		return RunResponse{}, &runAPIError{Status: http.StatusInternalServerError, Code: "POLICY_ERROR", Message: polErr.Error()}
+	}
+	if evaluator != nil {
+		runCtx = tool.ContextWithPolicyEvaluator(runCtx, evaluator)
+	}
 
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()

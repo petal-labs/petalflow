@@ -111,6 +111,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	explicitConfigPath, _ := cmd.Flags().GetString("config")
 
+	configPath, configFound, err := daemon.DiscoverToolConfigPath(explicitConfigPath)
+	if err != nil {
+		return err
+	}
+	var defaultToolPolicy *tool.ToolPolicy
+	if configFound {
+		defaultToolPolicy, err = daemon.LoadDefaultToolPolicy(configPath)
+		if err != nil {
+			return fmt.Errorf("loading tenant tool policy: %w", err)
+		}
+	}
+
 	dsn, backend, scope, err := resolveDatabaseDSN(cmd)
 	if err != nil {
 		return err
@@ -126,7 +138,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}()
 
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{
-		Store: toolStore,
+		Store:      toolStore,
+		ToolPolicy: defaultToolPolicy,
 		Security: daemon.SecurityConfig{
 			RequireAuth:   true,
 			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),
@@ -150,7 +163,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	var defaultToolPolicy *tool.ToolPolicy
 	if found {
 		registered, err := daemon.RegisterToolsFromConfig(cmd.Context(), daemonServer.Service(), configPath)
 		if err != nil {
@@ -160,11 +172,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("syncing registry after startup config load: %w", err)
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Loaded %d tool declaration(s) from %s\n", len(registered), configPath)
-
-		defaultToolPolicy, err = daemon.LoadDefaultToolPolicy(configPath)
-		if err != nil {
-			return fmt.Errorf("loading tenant tool policy: %w", err)
-		}
 	}
 
 	healthScheduler, err := tool.NewHealthScheduler(tool.HealthSchedulerConfig{

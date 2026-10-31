@@ -305,7 +305,7 @@ func writeError(w http.ResponseWriter, status int, code, message string, details
 
 func publicErrorMessage(code, message string) string {
 	switch code {
-	case "STORE_ERROR", "RUN_STORE_ERROR", "RUNTIME_ERROR", "TOOL_REGISTRY_ERROR", "HYDRATE_ERROR", "INTERNAL", "REGISTRY_SYNC_FAILED":
+	case "STORE_ERROR", "RUN_STORE_ERROR", "RUNTIME_ERROR", "TOOL_REGISTRY_ERROR", "HYDRATE_ERROR", "INTERNAL", "REGISTRY_SYNC_FAILED", "POLICY_ERROR":
 		return "internal server error"
 	default:
 		return message
