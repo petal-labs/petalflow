@@ -313,7 +313,7 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		return ToolTestResult{}, fmt.Errorf("%w: %s", ErrToolDisabled, reg.Name)
 	}
 
-	if err := CheckPolicy(ctx, reg.Name); err != nil {
+	if err := CheckPolicyClassified(ctx, reg.Name, reg.EffectiveRegistrationSafety()); err != nil {
 		return ToolTestResult{}, err
 	}
 
@@ -499,6 +499,7 @@ func (s *DaemonToolService) registrationFromRegisterInput(ctx context.Context, i
 		return ToolRegistration{}, err
 	}
 	reg.TenantID = strings.TrimSpace(input.TenantID)
+	applySafetyClassificationDefaults(&reg)
 
 	return finalizeRegistrationEnabledState(reg, input.Enabled), nil
 }
@@ -516,7 +517,21 @@ func (s *DaemonToolService) registrationFromUpdateInput(ctx context.Context, cur
 		return ToolRegistration{}, err
 	}
 
-	return s.finalizeUpdatedRegistration(ctx, current, next), nil
+	updated := s.finalizeUpdatedRegistration(ctx, current, next)
+	applySafetyClassificationDefaults(&updated)
+	return updated, nil
+}
+
+// applySafetyClassificationDefaults fills the manifest's classification
+// when the tool does not declare one. Declared classifications always
+// win, but stripped manifests fall back to the conservative origin
+// defaults so a re-registered rename cannot shed its class.
+func applySafetyClassificationDefaults(reg *ToolRegistration) {
+	if reg == nil || reg.Manifest.Safety != nil {
+		return
+	}
+	fallback := DefaultSafetyForOrigin(*reg)
+	reg.Manifest.Safety = &fallback
 }
 
 func resolveRegisterOrigin(input RegisterToolInput) ToolOrigin {
@@ -663,6 +678,7 @@ func (s *DaemonToolService) rebuildMCPRegistrationFromUpdate(
 	if !updated.Enabled {
 		updated.Status = StatusDisabled
 	}
+	applySafetyClassificationDefaults(&updated)
 	return updated, nil
 }
 

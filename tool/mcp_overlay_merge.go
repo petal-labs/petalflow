@@ -209,6 +209,10 @@ func cloneManifest(in Manifest) Manifest {
 		health := *in.Health
 		out.Health = &health
 	}
+	if in.Safety != nil {
+		safety := *in.Safety
+		out.Safety = &safety
+	}
 	out.Tool.Tags = slices.Clone(in.Tool.Tags)
 	return out
 }
@@ -220,6 +224,10 @@ func cloneActionSpec(in ActionSpec) ActionSpec {
 	if in.LLMCallable != nil {
 		value := *in.LLMCallable
 		out.LLMCallable = &value
+	}
+	if in.Safety != nil {
+		safety := *in.Safety
+		out.Safety = &safety
 	}
 	return out
 }

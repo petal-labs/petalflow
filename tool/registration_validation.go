@@ -100,6 +100,7 @@ func ValidateNewRegistration(ctx context.Context, reg Registration, opts Registr
 	var pipeline Pipeline
 	pipeline.AddManifestValidator(SchemaManifestValidator{})
 	pipeline.AddManifestValidator(V1TypeSystemValidator{})
+	pipeline.AddRegistrationValidator(SafetyClassificationValidator{})
 	pipeline.AddRegistrationValidator(RegistrationNameValidator{
 		Store:         opts.Store,
 		RequireUnique: !opts.AllowExistingName,
@@ -351,6 +352,14 @@ func (SensitiveFieldValidator) ValidateRegistration(reg Registration) []Diagnost
 // and header templates reference config fields declared as sensitive, so
 // credentials stay encrypted at rest and redacted in outputs.
 type MCPAuthReferenceValidator struct{}
+
+// SafetyClassificationValidator reviews declared tool and action
+// safety classifications for structural integrity.
+type SafetyClassificationValidator struct{}
+
+func (SafetyClassificationValidator) ValidateRegistration(reg Registration) []Diagnostic {
+	return ValidateSafetyClassifications(reg.Manifest)
+}
 
 func (MCPAuthReferenceValidator) ValidateRegistration(reg Registration) []Diagnostic {
 	transport, ok := reg.Manifest.Transport.AsMCP()

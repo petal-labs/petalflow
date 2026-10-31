@@ -121,6 +121,84 @@ petalflow tools test template_render render \
   --input name=Ada
 ```
 
+## Safety Classification
+
+Every tool carries a safety classification describing dangerous or
+side-effecting behavior. It lives in the manifest (`safety` block) and is
+part of the registry schema, so classifications survive MCP overlay
+merges and cannot be stripped by re-registering a rename — stripped
+manifests fall back to conservative defaults automatically.
+
+### Declaring a Classification
+
+In a manifest:
+
+```json
+{
+  "safety": {
+    "side_effect_level": "side_effect",
+    "network": true,
+    "downstream_write": true,
+    "notes": "sends emails on the customer table"
+  }
+}
+```
+
+Fields:
+
+- `side_effect_level`: `readonly` (computes without durable effects),
+  `side_effect` (durable writes or unverified external access), or
+  `destructive` (deletes or irreversibly overwrites).
+- `network`: the tool makes outbound network calls (egress).
+- `downstream_write`: the tool writes to downstream systems (email,
+  webhooks, records, payments).
+- `destructive`: the tool deletes or destroys targets.
+- `notes`: free-form context shown alongside the classification.
+
+An action may override the tool-level classification by declaring its
+own `safety` block on the action (`side_effect_level` replaces; boolean
+flags only upgrade — merges cannot under-classify).
+
+### Origin Defaults
+
+A manifest without `safety` is classified conservatively at
+registration:
+
+| Origin | Default classification |
+| ------ | ---------------------- |
+| `http` | `side_effect`, `network` |
+| `mcp`  | `side_effect` (`network` for SSE / streamable HTTP modes) |
+| `stdio` | `side_effect` (runs a local subprocess) |
+| `native` | `side_effect` (undeclared in-process effects) |
+
+Built-ins are classified out of the box: `template_render` is
+`readonly`, and `http_fetch` is `readonly` + `network` at the tool level
+with `side_effect` + `network` on the `fetch` action (methods and
+bodies are caller-controlled).
+
+### Requiring Approval
+
+Workflow and tenant tool policies can gate dangerous tools two ways:
+by exact/pattern tool name (`require_approval`) or by classification
+(`require_approval_classes` with `side_effect`, `destructive`,
+`network`, `downstream_write`, `readonly`). Both produce a
+`needs_approval` decision for allowed tools; nothing executes until
+durable approval exists, and deny rules always win. Blocking a
+classification outright is a `deny` on `require_approval_classes`
+semantics away: add matching tool names or use allowlists that exclude
+the class.
+
+Example `tool_policy` in `petalflow.yaml`:
+
+```yaml
+tool_policy:
+  allow:
+    - "*"
+  require_approval_classes:
+    - destructive
+    - downstream_write
+```
+
 ## Remove a Tool
 
 ```bash

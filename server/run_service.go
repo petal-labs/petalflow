@@ -46,6 +46,74 @@ type workflowRunPlan struct {
 	workflowPolicy *tool.ToolPolicy
 }
 
+// governedPolicyEvaluator resolves the effective tool policy for runs
+// and resolves a tool's safety classification from the tool store when a
+// policy uses classification-based approval gates.
+type governedPolicyEvaluator struct {
+	effective tool.EffectiveToolPolicy
+	store     tool.Store
+	cache     map[string]tool.SafetyClassification
+}
+
+// classification resolves and caches the classification for a base tool
+// name. Builtins resolve from the static registry; unresolved names
+// classify as dangerous so a broken store or unregistered reference
+// cannot widen access through the gate.
+func (e *governedPolicyEvaluator) classification(base string) tool.SafetyClassification {
+	if class, cached := e.cache[base]; cached {
+		return class
+	}
+	if builtin, ok := tool.BuiltinRegistration(base); ok {
+		class := builtin.EffectiveRegistrationSafety()
+		e.storeClassification(base, class)
+		return class
+	}
+	class := tool.SafetyClassification{
+		Level: tool.SideEffectSideEffect,
+		Notes: "unresolved classification",
+	}
+	if e.store != nil {
+		if reg, found, err := e.store.Get(context.Background(), base); err == nil && found {
+			class = reg.EffectiveRegistrationSafety()
+		}
+	}
+	e.storeClassification(base, class)
+	return class
+}
+
+func (e *governedPolicyEvaluator) storeClassification(base string, class tool.SafetyClassification) {
+	if e.cache == nil {
+		e.cache = make(map[string]tool.SafetyClassification)
+	}
+	e.cache[base] = class
+}
+
+// EvaluatePolicy evaluates name rules; classification-based approval
+// gates resolve the tool's classification from the tool store.
+func (e *governedPolicyEvaluator) EvaluatePolicy(toolName string) tool.PolicyDecision {
+	if len(e.effective.RequireApprovalClasses) == 0 {
+		return tool.FromEffectivePolicy(e.effective).EvaluatePolicy(toolName)
+	}
+	base, ref := tool.ReferenceNames(toolName)
+	return tool.EvaluateClassifiedReferences(e.effective, e.classification(base), ref, base)
+}
+
+// EvaluatePolicyClassified evaluates with a caller-provided classification
+// for the referenced tool when the caller knows it (e.g. the daemon
+// service carries its registration); the base-name classification still
+// resolves from the store.
+func (e *governedPolicyEvaluator) EvaluatePolicyClassified(toolName string, class tool.SafetyClassification) tool.PolicyDecision {
+	if len(e.effective.RequireApprovalClasses) == 0 {
+		return tool.FromEffectivePolicy(e.effective).EvaluatePolicy(toolName)
+	}
+	base, ref := tool.ReferenceNames(toolName)
+	refClass := class
+	if base != ref {
+		refClass = e.classification(base)
+	}
+	return tool.EvaluateClassifiedReferences(e.effective, refClass, ref, base)
+}
+
 // runPolicyEvaluator resolves the effective tool policy for a run and
 // returns the evaluator installed into the run context. The workflow
 // record (via the plan) already carries the workflow-level override; the
@@ -66,7 +134,10 @@ func (s *Server) runPolicyEvaluator(ctx context.Context, plan *workflowRunPlan) 
 		return nil, nil
 	}
 	effective := tool.ResolveEffectivePolicy(tenantPolicy, plan.workflowPolicy)
-	return tool.FromEffectivePolicy(effective), nil
+	return &governedPolicyEvaluator{
+		effective: effective,
+		store:     s.toolStore,
+	}, nil
 }
 
 type scheduledRunMetadata struct {

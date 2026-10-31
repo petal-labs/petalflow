@@ -339,3 +339,72 @@ func TestToolPolicyJSONRoundTripExplicitEmpty(t *testing.T) {
 		t.Fatalf("explicit empty allow must deny everything, got %q", got)
 	}
 }
+
+func TestPolicyRequireApprovalClasses(t *testing.T) {
+	tenant := &ToolPolicy{
+		Allow:                  []string{"mail-send", "template_render"},
+		RequireApprovalClasses: []string{PolicyClassDownstreamWrite},
+	}
+	workflow := &ToolPolicy{
+		Allow:                  []string{"mail-send", "template_render"},
+		RequireApprovalClasses: []string{PolicyClassNetwork},
+	}
+
+	effective := ResolveEffectivePolicy(tenant, workflow)
+	mailClass := SafetyClassification{DownstreamWrite: true}
+	if got := effective.EvaluateClassified("mail-send", mailClass); got != PolicyNeedsApproval {
+		t.Fatalf("downstream_write tool = %q, want %q", got, PolicyNeedsApproval)
+	}
+	networkClass := SafetyClassification{Network: true}
+	if got := effective.EvaluateClassified("mail-send", networkClass); got != PolicyNeedsApproval {
+		t.Fatalf("network tool = %q, want %q", got, PolicyNeedsApproval)
+	}
+	safeClass := SafetyClassification{Level: SideEffectReadOnly}
+	if got := effective.EvaluateClassified("template_render", safeClass); got != PolicyAllow {
+		t.Fatalf("readonly tool = %q, want %q", got, PolicyAllow)
+	}
+
+	// Deny always wins regardless of classification gating.
+	denying := ResolveEffectivePolicy(&ToolPolicy{
+		Allow:                  []string{"mail-send"},
+		Deny:                   []string{"mail-send"},
+		RequireApprovalClasses: []string{PolicyClassDownstreamWrite},
+	}, nil)
+	if got := denying.EvaluateClassified("mail-send", mailClass); got != PolicyDeny {
+		t.Fatalf("denied tool = %q, want %q", got, PolicyDeny)
+	}
+
+	// Unmatched allowlist still default-denies with a dangerous class.
+	if got := effective.EvaluateClassified("fs/write", SafetyClassification{Level: SideEffectDestructive}); got != PolicyDeny {
+		t.Fatalf("unlisted dangerous tool = %q, want %q", got, PolicyDeny)
+	}
+
+	if err := (ToolPolicy{RequireApprovalClasses: []string{"bogus"}}).Validate(); err == nil {
+		t.Fatal("unknown classification class must fail validation")
+	}
+	if err := (ToolPolicy{RequireApprovalClasses: []string{PolicyClassNetwork}}).Validate(); err != nil {
+		t.Fatalf("valid class rejected: %v", err)
+	}
+}
+
+func TestEffectivePolicyEvaluatorClassified(t *testing.T) {
+	evaluator := FromEffectivePolicy(EffectiveToolPolicy{
+		Allow:                  []string{"mail-send"},
+		RequireApprovalClasses: []string{PolicyClassDownstreamWrite},
+	}).(EffectivePolicyEvaluator)
+
+	gated := evaluator.EvaluatePolicyClassified("mail-send", SafetyClassification{DownstreamWrite: true})
+	if gated != PolicyNeedsApproval {
+		t.Fatalf("classified = %q, want %q", gated, PolicyNeedsApproval)
+	}
+
+	actionRef := evaluator.EvaluatePolicyClassified("mail-send.send", SafetyClassification{DownstreamWrite: true})
+	if actionRef != PolicyNeedsApproval {
+		t.Fatalf("action reference classified = %q, want %q", actionRef, PolicyNeedsApproval)
+	}
+
+	plain := evaluator.EvaluatePolicyClassified("mail-send", SafetyClassification{Level: SideEffectReadOnly})
+	if plain != PolicyAllow {
+		t.Fatalf("readonly classification = %q, want %q", plain, PolicyAllow)
+	}
+}
