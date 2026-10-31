@@ -141,6 +141,15 @@ type RunOptions struct {
 	// durable approval service. It is called before a node's configured handler.
 	HumanRequestHandler HumanRequestHandler
 
+	// ToolApprovalHandler routes tool-approval requests through the
+	// durable approval flow. When nil, approval-required tools are
+	// blocked with their typed policy error instead of pausing.
+	ToolApprovalHandler ToolApprovalHandler
+
+	// ToolApprovalVerifier validates and claims approval grants for
+	// nodes that check grants (e.g. Guardian approval checks).
+	ToolApprovalVerifier ToolApprovalVerifier
+
 	// MaxHops protects against infinite cycles (default: 100).
 	MaxHops int
 
@@ -1227,6 +1236,12 @@ func (r *BasicRuntime) executeNode(
 	nodeCtx = ContextWithIdempotencyKey(nodeCtx, opts.IdempotencyKey)
 	if opts.HumanRequestHandler != nil {
 		nodeCtx = ContextWithHumanRequestHandler(nodeCtx, opts.HumanRequestHandler)
+	}
+	if opts.ToolApprovalHandler != nil {
+		nodeCtx = ContextWithToolApprovalHandler(nodeCtx, opts.ToolApprovalHandler)
+	}
+	if opts.ToolApprovalVerifier != nil {
+		nodeCtx = ContextWithToolApprovalVerifier(nodeCtx, opts.ToolApprovalVerifier)
 	}
 
 	// Execute node with panic recovery so a misbehaving node cannot crash

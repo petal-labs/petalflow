@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/petal-labs/petalflow/core"
+	"github.com/petal-labs/petalflow/runtime"
 )
 
 // GuardianCheckType specifies the type of validation check.
@@ -44,6 +45,13 @@ const (
 
 	// GuardianCheckCustom uses a custom validation function.
 	GuardianCheckCustom GuardianCheckType = "custom"
+
+	// GuardianCheckApproval validates that the field value carries a
+	// durable approval grant for the named tool (see ApprovalTool).
+	// Grants are verified and consumed exactly once against the run's
+	// approval-record ledger, so config-driven and Guardian-declared
+	// approvals share the same records.
+	GuardianCheckApproval GuardianCheckType = "approval"
 )
 
 // GuardianAction defines what happens when validation fails.
@@ -115,6 +123,11 @@ type GuardianCheck struct {
 
 	// Schema for GuardianCheckSchema (simplified JSON schema).
 	Schema map[string]any
+
+	// ApprovalTool for GuardianCheckApproval: the registered tool name
+	// whose invocation this check gates. Empty accepts grants for any
+	// tool recorded with the given approval ID.
+	ApprovalTool string
 
 	// CustomFunc for GuardianCheckCustom.
 	// Returns (passed, message, error).
@@ -328,6 +341,8 @@ func (n *GuardianNode) runCheck(ctx context.Context, check GuardianCheck, input 
 		return n.checkSchema(check, value)
 	case GuardianCheckCustom:
 		return n.checkCustom(ctx, check, value, env)
+	case GuardianCheckApproval:
+		return n.checkApproval(ctx, check, value, env)
 	default:
 		return nil, fmt.Errorf("unknown check type: %s", check.Type)
 	}
@@ -902,3 +917,65 @@ func stringify(v any) string {
 
 // Ensure interface compliance at compile time.
 var _ core.Node = (*GuardianNode)(nil)
+
+// checkApproval validates that the checked value carries a durable
+// approval grant (an approval ID, optionally with its tool reference)
+// and consumes the grant exactly once via the runtime's approval
+// verifier. Without an installed verifier the check fails closed: a
+// declared approval gate cannot pass invisibly.
+func (n *GuardianNode) checkApproval(ctx context.Context, check GuardianCheck, value any, env *core.Envelope) ([]GuardianFailure, error) {
+	approvalID, toolRef, extractErr := extractApprovalGrant(value)
+	if extractErr != nil {
+		return []GuardianFailure{{
+			CheckName: check.Name,
+			CheckType: string(check.Type),
+			Field:     check.Field,
+			Message:   extractErr.Error(),
+		}}, nil
+	}
+
+	verifier := runtime.ToolApprovalVerifierFromContext(ctx)
+	if verifier == nil {
+		return []GuardianFailure{{
+			CheckName: check.Name,
+			CheckType: string(check.Type),
+			Field:     check.Field,
+			Message:   fmt.Sprintf("approval grant %q cannot be verified: no approval verifier is configured", approvalID),
+		}}, nil
+	}
+
+	targetTool := check.ApprovalTool
+	if toolRef != "" && targetTool == "" {
+		targetTool = toolRef
+	}
+	if err := verifier(ctx, env.Trace.RunID, approvalID, targetTool); err != nil {
+		return []GuardianFailure{{
+			CheckName: check.Name,
+			CheckType: string(check.Type),
+			Field:     check.Field,
+			Message:   fmt.Sprintf("approval grant %q is not valid: %v", approvalID, err),
+		}}, nil
+	}
+	return nil, nil
+}
+
+// extractApprovalGrant parses an approval grant value: either an
+// approval ID string or an object {"approval_id": "...", "tool": "..."}.
+func extractApprovalGrant(value any) (approvalID, toolRef string, err error) {
+	switch typed := value.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return "", "", fmt.Errorf("approval grant is empty")
+		}
+		return strings.TrimSpace(typed), "", nil
+	case map[string]any:
+		raw, ok := typed["approval_id"].(string)
+		if !ok || strings.TrimSpace(raw) == "" {
+			return "", "", fmt.Errorf("approval grant object requires a non-empty approval_id")
+		}
+		tool, _ := typed["tool"].(string)
+		return strings.TrimSpace(raw), tool, nil
+	default:
+		return "", "", fmt.Errorf("approval grant value must be an approval ID string or an object with approval_id")
+	}
+}

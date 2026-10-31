@@ -48,6 +48,50 @@ func HumanRequestHandlerFromContext(ctx context.Context) HumanRequestHandler {
 	return nil
 }
 
+type toolApprovalHandlerKey struct{}
+
+type toolApprovalVerifierKey struct{}
+
+// ToolApprovalHandler bridges a node's tool-approval request to a durable
+// owner. The request and response are intentionally any to keep runtime
+// independent from the nodes package (see nodes.ToolApprovalRequest).
+// Implementations return a sentinel PendingError to pause the run while
+// the decision is outstanding.
+type ToolApprovalHandler func(context.Context, any) (any, error)
+
+// ContextWithToolApprovalHandler attaches a tool-approval bridge.
+func ContextWithToolApprovalHandler(ctx context.Context, handler ToolApprovalHandler) context.Context {
+	return context.WithValue(ctx, toolApprovalHandlerKey{}, handler)
+}
+
+// ToolApprovalHandlerFromContext retrieves a tool-approval bridge.
+func ToolApprovalHandlerFromContext(ctx context.Context) ToolApprovalHandler {
+	if handler, ok := ctx.Value(toolApprovalHandlerKey{}).(ToolApprovalHandler); ok {
+		return handler
+	}
+	return nil
+}
+
+// ToolApprovalVerifier validates and single-use-claims an approval grant
+// against the durable approval records for a run. Implementations return
+// an error when the grant is unknown, not approved, expired, or already
+// consumed.
+type ToolApprovalVerifier func(ctx context.Context, runID, approvalID, toolName string) error
+
+// ContextWithToolApprovalVerifier attaches a grant verifier for nodes
+// that check approval grants (e.g. Guardian approval checks).
+func ContextWithToolApprovalVerifier(ctx context.Context, verifier ToolApprovalVerifier) context.Context {
+	return context.WithValue(ctx, toolApprovalVerifierKey{}, verifier)
+}
+
+// ToolApprovalVerifierFromContext retrieves a grant verifier.
+func ToolApprovalVerifierFromContext(ctx context.Context) ToolApprovalVerifier {
+	if verifier, ok := ctx.Value(toolApprovalVerifierKey{}).(ToolApprovalVerifier); ok {
+		return verifier
+	}
+	return nil
+}
+
 // ContextWithIdempotencyKey attaches the caller's stable idempotency key to a
 // node execution. Side-effecting nodes should pass this value to their
 // provider so a replay after a worker failure is safe.

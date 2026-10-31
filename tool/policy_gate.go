@@ -224,6 +224,40 @@ func IsToolPolicyError(err error) bool {
 	return errors.Is(err, ErrToolPolicyDenied) || errors.Is(err, ErrToolApprovalRequired)
 }
 
+// IsApprovalRequired reports whether err is specifically an approval
+// requirement (as opposed to an outright denial).
+func IsApprovalRequired(err error) bool {
+	return errors.Is(err, ErrToolApprovalRequired)
+}
+
+// ApprovalGrant is the invocation-scoped grant produced by a durable
+// approval decision. Nodes that replay an approval install it so the
+// service-level gate lets this one invocation through.
+type ApprovalGrant struct {
+	ToolName   string
+	ApprovalID string
+	// DecidedBy records who approved for the invocation trail.
+	DecidedBy string
+}
+
+type approvalGrantKey struct{}
+
+// ContextWithApprovalGrant attaches a validated approval grant for the
+// named tool to the invocation context.
+func ContextWithApprovalGrant(ctx context.Context, grant ApprovalGrant) context.Context {
+	return context.WithValue(ctx, approvalGrantKey{}, grant)
+}
+
+// ApprovalGrantForTool returns the attached grant when it matches the given
+// the tool name.
+func ApprovalGrantForTool(ctx context.Context, toolName string) (ApprovalGrant, bool) {
+	grant, ok := ctx.Value(approvalGrantKey{}).(ApprovalGrant)
+	if !ok || grant.ToolName != toolName {
+		return ApprovalGrant{}, false
+	}
+	return grant, true
+}
+
 // PolicyErrorCode maps a gate rejection to its stable error code; empty
 // for non-policy errors.
 func PolicyErrorCode(err error) string {

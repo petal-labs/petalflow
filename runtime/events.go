@@ -54,6 +54,16 @@ const (
 	// EventToolResult is emitted when a tool invocation completes.
 	EventToolResult EventKind = "tool.result"
 
+	// EventApprovalRequested is emitted when a tool invocation pauses
+	// waiting for durable approval. Payload includes: approval_id,
+	// tool_name, action, policy_source, expires_at.
+	EventApprovalRequested EventKind = "approval.requested"
+
+	// EventApprovalDecided is emitted when a durable approval lands a
+	// decision (approved/rejected/expired). Payload includes:
+	// approval_id, tool_name, decision, decided_by, note.
+	EventApprovalDecided EventKind = "approval.decided"
+
 	// EventNodeOutputDelta is emitted for incremental streaming output from a node.
 	EventNodeOutputDelta EventKind = "node.output.delta"
 

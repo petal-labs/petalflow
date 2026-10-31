@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -201,15 +202,58 @@ func TestWorkflowClassificationApprovalGate(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/workflows/policy_class_http/run", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	// The approval gate must reject before any network attempt happens,
-	// so the run fails with the typed rejection rather than a transport
-	// error or status code from the endpoint.
-	rejected := findPolicyRejectedEvent(capturedEvents())
-	if rejected == nil {
-		t.Fatal("expected policy_rejected event for classification-gated tool")
+	// The durable approval flow now routes the classification gate to a
+	// paused run waiting for an operator decision; no side effect may
+	// have happened yet.
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("run status=%d, want %d body=%s", w.Code, http.StatusAccepted, w.Body.String())
 	}
-	if rejected.Payload["error_code"] != toolpkg.ToolErrorCodePolicyApprovalRequired {
-		t.Fatalf("error_code = %v, want %q", rejected.Payload["error_code"], toolpkg.ToolErrorCodePolicyApprovalRequired)
+	var resp RunResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Status != "paused" {
+		t.Fatalf("resp = %+v err=%v, want paused run", w.Body.String(), err)
+	}
+	if resp.RunID == "" {
+		t.Fatalf("expected run ID in %v", resp)
+	}
+
+	// Approving executes the invocation: the unreachable endpoint
+	// produces a transport failure, not a policy rejection.
+	approvals := pendingApprovals(capturedEvents())
+	if len(approvals) != 1 {
+		t.Fatalf("expected exactly one approval request event, got %d", len(approvals))
+	}
+	approvalID, _ := approvals[0].Payload["approval_id"].(string)
+	if approvalID == "" {
+		t.Fatalf("approval event payload missing approval_id: %v", approvals[0].Payload)
+	}
+
+	resumeBody := mustJSON(t, map[string]any{"response": map[string]any{
+		"decision":   "rejected",
+		"decided_by": "policy-test",
+		"note":       "blocked by test",
+	}})
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/runs/"+resp.RunID+"/pending-actions/"+approvalID, bytes.NewReader(resumeBody))
+	completeW := httptest.NewRecorder()
+	handler.ServeHTTP(completeW, completeReq)
+	if completeW.Code != http.StatusOK {
+		t.Fatalf("complete pending action status=%d body=%s", completeW.Code, completeW.Body.String())
+	}
+
+	// Resume after rejection must fail the invocation deterministically.
+	resumeReq := httptest.NewRequest(http.MethodPost, "/api/runs/"+resp.RunID+"/resume", bytes.NewReader([]byte(fmt.Sprintf(`{"resume_token": %q}`, resp.ResumeToken))))
+	resumeW := httptest.NewRecorder()
+	handler.ServeHTTP(resumeW, resumeReq)
+	if resumeW.Code != http.StatusInternalServerError {
+		t.Fatalf("resume-after-rejection status=%d body=%s, want deterministic failure", resumeW.Code, resumeW.Body.String())
+	}
+	incidents := 0
+	for _, e := range capturedEvents() {
+		if e.Kind == runtime.EventApprovalDecided && e.Payload["decision"] == "rejected" {
+			incidents++
+		}
+	}
+	if incidents != 1 {
+		t.Fatalf("expected one approval.decided(rejected) event, got %d", incidents)
 	}
 
 	// A policy without the network class runs the fetch through to the
@@ -237,4 +281,16 @@ func TestWorkflowClassificationApprovalGate(t *testing.T) {
 	if findPolicyRejectedEvent(capturedEvents2()) != nil {
 		t.Fatal("allow-listed tool without class gates must not be approval-gated")
 	}
+}
+
+// pendingApprovals extracts approval.requested events from a captured
+// stream.
+func pendingApprovals(events []runtime.Event) []runtime.Event {
+	var approvals []runtime.Event
+	for _, e := range events {
+		if e.Kind == runtime.EventApprovalRequested {
+			approvals = append(approvals, e)
+		}
+	}
+	return approvals
 }

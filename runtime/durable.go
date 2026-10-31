@@ -90,6 +90,50 @@ type PendingAction struct {
 	Completed   bool           `json:"completed,omitempty"`
 }
 
+// PendingActionTypeToolApproval marks pending actions created for durable
+// tool-approval flows.
+const PendingActionTypeToolApproval = "tool_approval"
+
+// ToolApprovalDecision is the settled verdict recorded for a tool
+// approval request.
+type ToolApprovalDecision string
+
+const (
+	// ToolApprovalPending marks a decision not yet made.
+	ToolApprovalPending ToolApprovalDecision = "pending"
+	// ToolApprovalApproved marks an operator-approved request.
+	ToolApprovalApproved ToolApprovalDecision = "approved"
+	// ToolApprovalRejected marks an operator-rejected request.
+	ToolApprovalRejected ToolApprovalDecision = "rejected"
+	// ToolApprovalExpired marks a request whose decision window passed.
+	ToolApprovalExpired ToolApprovalDecision = "expired"
+)
+
+// ApprovalRecord is the durable ledger entry for one tool-approval
+// request. Completed records survive the cleared PendingAction slot so
+// audit queries and grant verification (e.g. Guardian approval checks)
+// can consult decisions after the run resumed.
+type ApprovalRecord struct {
+	ID           string               `json:"id"`
+	RunID        string               `json:"run_id"`
+	WorkflowID   string               `json:"workflow_id,omitempty"`
+	NodeID       string               `json:"node_id"`
+	TenantID     string               `json:"tenant_id,omitempty"`
+	ToolName     string               `json:"tool_name"`
+	Action       string               `json:"action,omitempty"`
+	Reference    string               `json:"reference,omitempty"`
+	PolicySource string               `json:"policy_source,omitempty"`
+	Decision     ToolApprovalDecision `json:"decision"`
+	DecisionBy   string               `json:"decision_by,omitempty"`
+	Note         string               `json:"note,omitempty"`
+	CreatedAt    time.Time            `json:"created_at"`
+	DecidedAt    time.Time            `json:"decided_at,omitempty"`
+	ExpiresAt    time.Time            `json:"expires_at,omitempty"`
+	// Executed marks the single-use grant consumed by whichever flow
+	// acted on the approval (tool execution or Guardian grant claim).
+	Executed bool `json:"executed,omitempty"`
+}
+
 // RunRecord is the durable state of a run. Records are updated with
 // compare-and-preserve semantics by stores: cancellation cannot be replaced
 // by a late worker result.
@@ -113,6 +157,10 @@ type RunRecord struct {
 	LastSeq         uint64         `json:"last_seq,omitempty"`
 	Checkpoint      *Checkpoint    `json:"checkpoint,omitempty"`
 	PendingAction   *PendingAction `json:"pending_action,omitempty"`
+	// ApprovalRecords is the durable ledger of tool-approval decisions
+	// for this run (see ApprovalRecord). Runtime grafting starts empty;
+	// append-only by convention.
+	ApprovalRecords []ApprovalRecord `json:"approval_records,omitempty"`
 }
 
 // RunStore persists run records and checkpoints.

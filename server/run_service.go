@@ -265,7 +265,16 @@ func (s *Server) executeWorkflowRunSync(
 	opts.ResumeToken = plan.resumeToken
 	opts.IdempotencyKey = plan.idempotencyKey
 	if s.runStore != nil {
+		// The ledger wrapper keeps durable tool-approval records intact
+		// while runtime workers write with progressively older copies.
+		governedStore := s.runStore
+		if wrapped, ok := newApprovalLedgerStore(s.runStore); ok {
+			governedStore = wrapped
+		}
+		opts.RunStore = governedStore
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
+		opts.ToolApprovalHandler = s.durableToolApprovalHandler()
+		opts.ToolApprovalVerifier = s.toolApprovalVerifier()
 	}
 	opts.EventEmitterDecorator = combineEmitDecorators(s.emitDecorator, extraDecorator)
 
@@ -472,5 +481,254 @@ func webhookRunMetadataDecorator(meta webhookRunMetadata) runtime.EventEmitterDe
 			}
 			next(e)
 		}
+	}
+}
+
+// toolApprovalTTL is the default fail-closed decision window for a
+// tool-approval request that does not carry its own deadline.
+const toolApprovalTTL = 24 * time.Hour
+
+// durableToolApprovalHandler routes tool-approval requests through the
+// run store so they pause the run, survive restarts, and land decisions
+// in the durable approval-record ledger. Behavior mirrors
+// durableHumanRequestHandler: no answered decision for the same node
+// re-pauses the run, a decided pending action is consumed exactly once,
+// and expired requests fail closed with a ledger record.
+func (s *Server) durableToolApprovalHandler() runtime.ToolApprovalHandler {
+	return func(ctx context.Context, value any) (any, error) {
+		s.pendingMu.Lock()
+		defer s.pendingMu.Unlock()
+
+		req, ok := value.(*nodes.ToolApprovalRequest)
+		if !ok || req == nil {
+			return nil, fmt.Errorf("tool approval bridge received %T, want *nodes.ToolApprovalRequest", value)
+		}
+		if s.runStore == nil {
+			return nil, fmt.Errorf("tool approval requires a durable run store")
+		}
+		record, err := s.runStore.Get(ctx, req.RunID)
+		if err != nil {
+			return nil, err
+		}
+
+		now := time.Now().UTC()
+		req.CreatedAt = req.CreatedAt.Truncate(0).UTC()
+		if req.ExpiresAt.IsZero() {
+			req.ExpiresAt = req.CreatedAt.Add(toolApprovalTTL)
+		}
+		req.WorkflowID = record.WorkflowID
+		req.TenantID = record.TenantID
+
+		if record.PendingAction != nil && record.PendingAction.Type == runtime.PendingActionTypeToolApproval {
+			pending := record.PendingAction
+			if pending.NodeID == req.NodeID {
+				if pending.Completed || pending.Response != nil {
+					// Consume the decision exactly once.
+					response, ledger := decodeToolApprovalDecision(pending)
+					if ledger != nil {
+						record.ApprovalRecords = append(record.ApprovalRecords, *ledger)
+					}
+					record.PendingAction = nil
+					record.Status = runtime.RunStatusRunning
+					record.UpdatedAt = now
+					if err := s.runStore.Update(ctx, record); err != nil {
+						return nil, err
+					}
+					return response, nil
+				}
+				// No decision yet (resume during a still-open window).
+				if err := s.enforceToolApprovalExpiry(record, pending, now); err != nil {
+					return nil, err
+				}
+				return nil, &nodes.ToolApprovalPendingError{Request: req}
+			}
+			return nil, fmt.Errorf("run already has a pending action %q for node %q", pending.ID, pending.NodeID)
+		}
+
+		if record.PendingAction != nil {
+			return nil, fmt.Errorf("run already has a pending action for node %q", record.PendingAction.NodeID)
+		}
+
+		// The decision window can expire while the run waits without a
+		// stored pending action (paused here twice across restarts).
+		if !req.ExpiresAt.After(now) {
+			record.ApprovalRecords = append(record.ApprovalRecords, runtime.ApprovalRecord{
+				ID: req.ID, RunID: req.RunID, WorkflowID: record.WorkflowID, NodeID: req.NodeID,
+				TenantID: record.TenantID, ToolName: req.ToolName, Action: req.Action,
+				Reference: req.Reference, PolicySource: req.PolicySource,
+				Decision: runtime.ToolApprovalExpired, Note: "decision window expired",
+				CreatedAt: req.CreatedAt, DecidedAt: now, ExpiresAt: req.ExpiresAt,
+			})
+			record.UpdatedAt = now
+			if err := s.runStore.Update(ctx, record); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: approval %q for %q expired at %s",
+				nodes.ErrToolApprovalExpired, req.ID, req.ToolName, req.ExpiresAt.Format(time.RFC3339))
+		}
+
+		record.PendingAction = &runtime.PendingAction{
+			ID:        req.ID,
+			RunID:     req.RunID,
+			NodeID:    req.NodeID,
+			Type:      runtime.PendingActionTypeToolApproval,
+			Prompt:    fmt.Sprintf("Approve invocation of tool %q", req.ToolName),
+			Data:      req,
+			CreatedAt: req.CreatedAt,
+		}
+		record.UpdatedAt = now
+		if err := s.runStore.Update(ctx, record); err != nil {
+			return nil, err
+		}
+		return nil, &nodes.ToolApprovalPendingError{Request: req}
+	}
+}
+
+// decodeToolApprovalDecision parses the stored response of a completed
+// tool-approval pending action and builds its ledger entry. Unknown
+// payloads fail closed.
+func decodeToolApprovalDecision(pending *runtime.PendingAction) (*nodes.ToolApprovalResponse, *runtime.ApprovalRecord) {
+	encoded, err := json.Marshal(pending.Response)
+	if err != nil {
+		return &nodes.ToolApprovalResponse{Decision: nodes.ToolApprovalDecisionRejected, Note: "undecodable decision"}, nil
+	}
+	var response nodes.ToolApprovalResponse
+	if err := json.Unmarshal(encoded, &response); err != nil {
+		response = nodes.ToolApprovalResponse{Decision: nodes.ToolApprovalDecisionRejected, Note: "undecodable decision"}
+	}
+	if response.Decision != nodes.ToolApprovalDecisionApproved && response.Decision != nodes.ToolApprovalDecisionRejected {
+		response = nodes.ToolApprovalResponse{Decision: nodes.ToolApprovalDecisionRejected, Note: "invalid decision"}
+	}
+
+	request := decodeToolApprovalRequestData(pending.Data)
+	ledger := &runtime.ApprovalRecord{
+		ID: pending.ID, RunID: pending.RunID, NodeID: pending.NodeID,
+		WorkflowID: request.WorkflowID, TenantID: request.TenantID,
+		ToolName: request.ToolName, Action: request.Action, Reference: request.Reference,
+		PolicySource: request.PolicySource,
+		Decision:     runtime.ToolApprovalRejected,
+		DecisionBy:   response.DecisionBy, Note: response.Note,
+		CreatedAt: pending.CreatedAt, DecidedAt: response.DecisionAt,
+		ExpiresAt: request.ExpiresAt,
+	}
+	if response.Approved() {
+		ledger.Decision = runtime.ToolApprovalApproved
+	}
+	return &response, ledger
+}
+
+// decodeToolApprovalRequestData recovers the originating request from the
+// pending action payload. A missing or corrupt payload leaves fields
+// empty rather than failing the decision.
+func decodeToolApprovalRequestData(data any) nodes.ToolApprovalRequest {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return nodes.ToolApprovalRequest{}
+	}
+	var request nodes.ToolApprovalRequest
+	if err := json.Unmarshal(encoded, &request); err != nil {
+		return nodes.ToolApprovalRequest{}
+	}
+	return request
+}
+
+// enforceToolApprovalExpiry fails a still-open approval window when the
+// pause outlasted its TTL: the ledger records expiry and the invocation
+// fails deterministically.
+func (s *Server) enforceToolApprovalExpiry(record *runtime.RunRecord, pending *runtime.PendingAction, now time.Time) error {
+	request := decodeToolApprovalRequestData(pending.Data)
+	if request.ExpiresAt.IsZero() || request.ExpiresAt.After(now) {
+		return nil
+	}
+	record.ApprovalRecords = append(record.ApprovalRecords, runtime.ApprovalRecord{
+		ID: pending.ID, RunID: pending.RunID, NodeID: pending.NodeID,
+		WorkflowID: record.WorkflowID, TenantID: record.TenantID,
+		ToolName: request.ToolName, Action: request.Action, Reference: request.Reference,
+		PolicySource: request.PolicySource,
+		Decision:     runtime.ToolApprovalExpired, Note: "decision window expired",
+		CreatedAt: pending.CreatedAt, DecidedAt: now, ExpiresAt: request.ExpiresAt,
+	})
+	record.PendingAction = nil
+	record.UpdatedAt = now
+	if err := s.runStore.Update(context.Background(), record); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: approval %q for %q expired at %s",
+		nodes.ErrToolApprovalExpired, pending.ID, request.ToolName, request.ExpiresAt.Format(time.RFC3339))
+}
+
+// toolApprovalVerifier validates and single-use-claims an approval grant
+// against the run's durable approval ledger for Guardian-declared checks.
+// An empty approvalID claims the tool's unconsumed approval by tool
+// name.
+func (s *Server) toolApprovalVerifier() runtime.ToolApprovalVerifier {
+	return func(ctx context.Context, runID, approvalID, toolName string) error {
+		if s.runStore == nil {
+			return fmt.Errorf("approval grants require a durable run store")
+		}
+		s.pendingMu.Lock()
+		defer s.pendingMu.Unlock()
+
+		record, err := s.runStore.Get(ctx, runID)
+		if err != nil {
+			return err
+		}
+		now := time.Now().UTC()
+		findEntry := func() *runtime.ApprovalRecord {
+			if approvalID == "" {
+				for i := range record.ApprovalRecords {
+					entry := &record.ApprovalRecords[i]
+					if entry.Executed || entry.Decision != runtime.ToolApprovalApproved {
+						continue
+					}
+					if toolName != "" && entry.ToolName != toolName && entry.Reference != toolName {
+						continue
+					}
+					return entry
+				}
+				return nil
+			}
+			for i := range record.ApprovalRecords {
+				if record.ApprovalRecords[i].ID == approvalID {
+					return &record.ApprovalRecords[i]
+				}
+			}
+			return nil
+		}
+
+		entry := findEntry()
+		if entry == nil {
+			if approvalID == "" {
+				return fmt.Errorf("no unconsumed approved approval for tool %q in run %q", toolName, runID)
+			}
+			return fmt.Errorf("approval %q not found in run %q", approvalID, runID)
+		}
+		if approvalID != "" && entry.ID != approvalID {
+			return fmt.Errorf("approval %q not found in run %q", approvalID, runID)
+		}
+		if entry.Decision != runtime.ToolApprovalApproved {
+			if approvalID == "" {
+				return fmt.Errorf("no unconsumed approved approval for tool %q in run %q", toolName, runID)
+			}
+			return fmt.Errorf("approval %q is not approved (decision %q)", entry.ID, entry.Decision)
+		}
+		if entry.Executed {
+			if approvalID == "" {
+				return fmt.Errorf("no unconsumed approved approval for tool %q in run %q", toolName, runID)
+			}
+			return fmt.Errorf("approval %q was already consumed", entry.ID)
+		}
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			return fmt.Errorf("approval %q expired at %s", entry.ID, entry.ExpiresAt.Format(time.RFC3339))
+		}
+		if toolName != "" && entry.ToolName != "" && entry.ToolName != toolName && entry.Reference != toolName {
+			return fmt.Errorf("approval %q was issued for tool %q, not %q", entry.ID, entry.ToolName, toolName)
+		}
+		entry.Executed = true
+		record.UpdatedAt = now
+		if err := s.runStore.Update(ctx, record); err != nil {
+			return err
+		}
+		return nil
 	}
 }

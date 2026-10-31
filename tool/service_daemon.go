@@ -313,8 +313,17 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		return ToolTestResult{}, fmt.Errorf("%w: %s", ErrToolDisabled, reg.Name)
 	}
 
-	if err := CheckPolicyClassified(ctx, reg.Name, reg.EffectiveRegistrationSafety()); err != nil {
-		return ToolTestResult{}, err
+	gateErr := CheckPolicyClassified(ctx, reg.Name, reg.EffectiveRegistrationSafety())
+	if gateErr != nil && IsApprovalRequired(gateErr) {
+		// A durable approval grant replays through the invocation
+		// context after the operator decision was recorded; it authorizes
+		// exactly this invocation.
+		if _, granted := ApprovalGrantForTool(ctx, reg.Name); granted {
+			gateErr = nil
+		}
+	}
+	if gateErr != nil {
+		return ToolTestResult{}, gateErr
 	}
 
 	adapter, err := s.adapterFactory.New(reg)

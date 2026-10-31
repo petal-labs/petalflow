@@ -229,6 +229,40 @@ func (s *Server) handleCompletePendingAction(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "PARSE_ERROR", "human response must be a JSON object")
 		return
 	}
+	if pending.Type == runtime.PendingActionTypeToolApproval {
+		var approvalResponse nodes.ToolApprovalResponse
+		if err := json.Unmarshal(responseBytes, &approvalResponse); err != nil {
+			writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid tool approval response")
+			return
+		}
+		if approvalResponse.Decision != nodes.ToolApprovalDecisionApproved && approvalResponse.Decision != nodes.ToolApprovalDecisionRejected {
+			writeError(w, http.StatusBadRequest, "PARSE_ERROR", "tool approval decision must be \"approved\" or \"rejected\"")
+			return
+		}
+		if approvalResponse.DecisionAt.IsZero() {
+			approvalResponse.DecisionAt = time.Now().UTC()
+		}
+		if completer, ok := s.runStore.(runtime.PendingActionCompleter); ok {
+			completed, err := completer.CompletePendingAction(r.Context(), record.ID, pending.ID, approvalResponse)
+			if err != nil {
+				s.writePendingActionError(w, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, runStatusResponse(completed))
+			return
+		}
+		pending.Response = approvalResponse
+		pending.RespondedAt = approvalResponse.DecisionAt
+		record.PendingAction = pending
+		record.UpdatedAt = time.Now().UTC()
+		if err := s.runStore.Update(r.Context(), record); err != nil {
+			s.writeRunStoreError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, runStatusResponse(record))
+		return
+	}
+
 	var response nodes.HumanResponse
 	if err := json.Unmarshal(responseBytes, &response); err != nil {
 		writeError(w, http.StatusBadRequest, "PARSE_ERROR", "invalid human response")
