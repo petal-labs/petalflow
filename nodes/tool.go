@@ -2,10 +2,13 @@ package nodes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	toolpolicy "github.com/petal-labs/petalflow/tool"
 
@@ -126,14 +129,37 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 	// never retried. Without an installed evaluator, enforcement was
 	// not opted into and invocation proceeds.
 	gateName := tool.Name()
+	baseName, _ := toolpolicy.ReferenceNames(gateName)
 	if gateErr := toolpolicy.CheckPolicy(ctx, gateName); gateErr != nil {
-		emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
-			WithNode(n.ID(), n.Kind()).
-			WithPayload("tool_name", gateName).
-			WithPayload("is_error", true).
-			WithPayload("policy_rejected", true).
-			WithPayload("error_code", toolpolicy.PolicyErrorCode(gateErr)))
-		return nil, fmt.Errorf("tool %q rejected before invocation: %w", gateName, gateErr)
+		// Durable approval flow: an approval requirement pauses the run
+		// for an operator decision when the runtime provides a bridge;
+		// without one the requirement stays a hard block.
+		if toolpolicy.IsApprovalRequired(gateErr) {
+			approved, approvalID, decidedBy, approvalErr := n.requestToolApproval(ctx, emit, env, gateName, gateErr)
+			if approvalErr != nil {
+				var pendingErr *ToolApprovalPendingError
+				if errors.As(approvalErr, &pendingErr) {
+					return nil, approvalErr
+				}
+				return nil, approvalErr
+			}
+			if approved {
+				// Replayed approval authorizes exactly this invocation.
+				ctx = toolpolicy.ContextWithApprovalGrant(ctx, toolpolicy.ApprovalGrant{
+					ToolName:   baseName,
+					ApprovalID: approvalID,
+					DecidedBy:  decidedBy,
+				})
+			}
+		} else {
+			emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+				WithNode(n.ID(), n.Kind()).
+				WithPayload("tool_name", gateName).
+				WithPayload("is_error", true).
+				WithPayload("policy_rejected", true).
+				WithPayload("error_code", toolpolicy.PolicyErrorCode(gateErr)))
+			return nil, fmt.Errorf("tool %q rejected before invocation: %w", gateName, gateErr)
+		}
 	}
 
 	// Execute with retries
@@ -176,6 +202,99 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 	env.SetVar(n.config.OutputKey, result)
 
 	return env, nil
+}
+
+// requestToolApproval runs the durable approval flow for an
+// approval-gated tool. Behavior by bridge outcome:
+//   - no bridge → hard block with the typed policy error,
+//   - pending → approval.requested event and a run pause,
+//   - approved → proceed to invocation,
+//   - rejected/expired → deterministic typed failure.
+func (n *ToolNode) requestToolApproval(
+	ctx context.Context,
+	emit runtime.EventEmitter,
+	env *core.Envelope,
+	toolName string,
+	gateErr error,
+) (bool, string, string, error) {
+	handler := runtime.ToolApprovalHandlerFromContext(ctx)
+	if handler == nil {
+		emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+			WithNode(n.ID(), n.Kind()).
+			WithPayload("tool_name", toolName).
+			WithPayload("is_error", true).
+			WithPayload("policy_rejected", true).
+			WithPayload("error_code", toolpolicy.ToolErrorCodePolicyApprovalRequired))
+		return false, "", "", fmt.Errorf("tool %q approval required but no approval flow is configured: %w", toolName, gateErr)
+	}
+
+	base, action := parseApprovalReference(toolName)
+	req := &ToolApprovalRequest{
+		ID:           uuid.New().String(),
+		NodeID:       n.ID(),
+		RunID:        env.Trace.RunID,
+		ToolName:     base,
+		Action:       action,
+		Reference:    toolName,
+		PolicySource: ToolApprovalSourcePolicy,
+		CreatedAt:    time.Now(),
+	}
+
+	emit(runtime.NewEvent(runtime.EventApprovalRequested, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("approval_id", req.ID).
+		WithPayload("tool_name", req.ToolName).
+		WithPayload("action", req.Action).
+		WithPayload("policy_source", req.PolicySource).
+		WithPayload("expires_at", req.ExpiresAt))
+
+	value, handlerErr := handler(ctx, req)
+	if handlerErr != nil {
+		// Pending requests pause the run instead of failing it.
+		var pendingErr *ToolApprovalPendingError
+		if errors.As(handlerErr, &pendingErr) {
+			return false, "", "", handlerErr
+		}
+		return false, "", "", fmt.Errorf("tool %q approval flow failed: %w", toolName, handlerErr)
+	}
+
+	var response *ToolApprovalResponse
+	switch typed := value.(type) {
+	case *ToolApprovalResponse:
+		response = typed
+	case ToolApprovalResponse:
+		response = &typed
+	default:
+		return false, "", "", fmt.Errorf("tool %q approval bridge returned %T, want *ToolApprovalResponse", toolName, value)
+	}
+	if response == nil {
+		return false, "", "", fmt.Errorf("tool %q approval bridge returned nil decision", toolName)
+	}
+
+	emit(runtime.NewEvent(runtime.EventApprovalDecided, env.Trace.RunID).
+		WithNode(n.ID(), n.Kind()).
+		WithPayload("approval_id", req.ID).
+		WithPayload("tool_name", req.ToolName).
+		WithPayload("decision", response.Decision).
+		WithPayload("decided_by", response.DecisionBy).
+		WithPayload("note", response.Note))
+
+	if !response.Approved() {
+		decisionErr := ErrToolApprovalRejected
+		if response.Decision != ToolApprovalDecisionRejected && response.Decision != "" {
+			// Unrecognized explicit decisions fail closed as well.
+			decisionErr = ErrToolApprovalExpired
+		}
+		emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+			WithNode(n.ID(), n.Kind()).
+			WithPayload("tool_name", toolName).
+			WithPayload("is_error", true).
+			WithPayload("policy_rejected", true).
+			WithPayload("error_code", toolpolicy.ToolErrorCodePolicyApprovalRequired).
+			WithPayload("approval_decision", response.Decision))
+		return false, "", "", fmt.Errorf("tool %q invocation blocked: approval %w", toolName, decisionErr)
+	}
+	return true, req.ID, response.DecisionBy, nil
 }
 
 // getTool retrieves the tool to execute.

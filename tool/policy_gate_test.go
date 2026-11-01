@@ -255,3 +255,78 @@ func TestDaemonToolServiceTestActionReregisteredName(t *testing.T) {
 		t.Fatalf("unlisted clone TestAction = %v, want ErrToolPolicyDenied", err)
 	}
 }
+
+func TestPolicyGateBranches(t *testing.T) {
+	// MostRestrictiveDecision folds empty and mixed inputs.
+	if got := MostRestrictiveDecision(nil); got != PolicyDeny {
+		t.Fatalf("empty folds to deny, got %q", got)
+	}
+	if got := MostRestrictiveDecision([]PolicyDecision{PolicyAllow, PolicyNeedsApproval}); got != PolicyNeedsApproval {
+		t.Fatalf("allow+needs_approval = %q, want %q", got, PolicyNeedsApproval)
+	}
+
+	// ReferenceNames keep plain names and dotted references straight.
+	base, ref := ReferenceNames("plain")
+	if base != "plain" || ref != "plain" {
+		t.Fatalf("plain reference = %q/%q", base, ref)
+	}
+	base, ref = ReferenceNames("tool.action.detail")
+	if base != "tool.action.detail" || ref != "tool.action.detail" {
+		t.Fatalf("multi-dot reference stays whole: %q/%q", base, ref)
+	}
+
+	// Class-less classified evaluation falls back to name-only paths.
+	classless := FromEffectivePolicy(EffectiveToolPolicy{Allow: []string{"a"}}).(EffectivePolicyEvaluator)
+	if got := classless.EvaluatePolicyClassified("a", SafetyClassification{Level: SideEffectDestructive}); got != PolicyAllow {
+		t.Fatalf("class-less classified = %q, want allow", got)
+	}
+
+	// evaluatePolicyClassified most-restrictive fold across references.
+	gated := EffectivePolicyEvaluator{Effective: EffectiveToolPolicy{
+		Allow:                  []string{"tool.action", "tool"},
+		RequireApprovalClasses: []string{PolicyClassDestructive},
+	}}
+	if got := gated.EvaluatePolicyClassified("tool.action", SafetyClassification{Level: SideEffectDestructive}); got != PolicyNeedsApproval {
+		t.Fatalf("classified reference = %q, want needs_approval", got)
+	}
+	if got := gated.EvaluatePolicyClassified("tool.action", SafetyClassification{}); got != PolicyAllow {
+		t.Fatalf("unclassified reference = %q, want allow", got)
+	}
+
+	// CheckPolicyClassified falls back for non-classified evaluators:
+	// the plain evaluator cannot see class gates and returns its
+	// name-only verdict.
+	nameOnly := PolicyEvaluatorFunc(EffectiveToolPolicy{Allow: []string{"a"}}.Evaluate)
+	ctx := ContextWithPolicyEvaluator(context.Background(), nameOnly)
+	if err := CheckPolicyClassified(ctx, "a", SafetyClassification{Network: true}); err != nil {
+		t.Fatalf("name-only evaluator allow = %v", err)
+	}
+	if err := CheckPolicyEvaluator(nameOnly, "a"); err != nil {
+		t.Fatalf("CheckPolicyEvaluator allow = %v", err)
+	}
+
+	// Grants match only the same tool name.
+	ctx = ContextWithApprovalGrant(ctx, ApprovalGrant{ToolName: "granted-tool", ApprovalID: "id-1"})
+	if _, ok := ApprovalGrantForTool(ctx, "granted-tool"); !ok {
+		t.Fatal("grant should be visible for the matching tool")
+	}
+	if _, ok := ApprovalGrantForTool(ctx, "other-tool"); ok {
+		t.Fatal("grant must not leak to other tool names")
+	}
+
+	// Reference parsing keeps action records consistent.
+	grantBase, _ := ReferenceNames("tool.action")
+	if grantBase != "tool" {
+		t.Fatalf("grant base = %q", grantBase)
+	}
+}
+
+func sameGoErr(a, b error) bool {
+	if (a == nil) != (b == nil) {
+		return false
+	}
+	if a == nil {
+		return true
+	}
+	return a.Error() == b.Error()
+}
