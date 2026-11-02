@@ -155,9 +155,10 @@ func (c *ChainClient) Complete(ctx context.Context, req core.LLMRequest) (core.L
 				return core.LLMResponse{}, ctx.Err()
 			}
 
-			// Budget: every dispatch attempt checks and records against the
+			// Budget: every dispatch attempt holds and commits against the
 			// run ledger, so fallback attempts cannot bypass a ceiling.
-			if err := c.budgetCheck(ctx, req); err != nil {
+			hold, err := c.budgetReserve(ctx, req)
+			if err != nil {
 				return core.LLMResponse{}, err
 			}
 
@@ -168,9 +169,10 @@ func (c *ChainClient) Complete(ctx context.Context, req core.LLMRequest) (core.L
 			resp, err := target.client.Complete(ctx, dispatched)
 			if err == nil {
 				c.health.RecordSuccess(target.config.Provider, target.config.Model)
-				c.budgetRecord(ctx, resp.Usage)
+				c.budgetRecord(ctx, hold, resp.Usage)
 				return c.withRoutingMeta(resp, target, attempted), nil
 			}
+			hold.Release()
 
 			// Caller cancellation is not a fallback trigger.
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
@@ -317,11 +319,16 @@ func (c *ChainClient) CompleteStream(ctx context.Context, req core.LLMRequest) (
 			continue
 		}
 
+		hold, err := c.budgetReserve(ctx, req)
+		if err != nil {
+			return nil, err
+		}
 		dispatched := req
 		dispatched.Model = target.config.Model
 
 		stream, err := streaming.CompleteStream(ctx, dispatched)
 		if err != nil {
+			hold.Release()
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return nil, ctx.Err()
 			}
@@ -334,7 +341,7 @@ func (c *ChainClient) CompleteStream(ctx context.Context, req core.LLMRequest) (
 		}
 		c.health.RecordSuccess(target.config.Provider, target.config.Model)
 		// Routing metadata rides on the final chunk via a wrapper stream.
-		return c.wrapStream(stream, target), nil
+		return c.wrapStream(stream, target, hold), nil
 	}
 
 	if lastErr == nil {
@@ -343,15 +350,24 @@ func (c *ChainClient) CompleteStream(ctx context.Context, req core.LLMRequest) (
 	return nil, lastErr
 }
 
-// wrapStream forwards chunks while tagging the terminal chunk with routing
-// metadata.
-func (c *ChainClient) wrapStream(stream <-chan core.StreamChunk, selected *chainTarget) <-chan core.StreamChunk {
+// wrapStream forwards chunks while tagging the terminal chunk with
+// routing metadata; when the stream ends, the budget hold settles with
+// the terminal usage chunk.
+func (c *ChainClient) wrapStream(stream <-chan core.StreamChunk, selected *chainTarget, hold *budget.Reservation) <-chan core.StreamChunk {
 	out := make(chan core.StreamChunk, 1)
 	go func() {
 		defer close(out)
 		for chunk := range stream {
 			if chunk.Done {
 				chunk.Meta = chunkMetaWithRouting(chunk.Meta, selected.config)
+				if chunk.Usage != nil {
+					// Settle the dispatch hold with the terminal usage
+					// chunk. A nil hold only exists when no ledger was
+					// configured for the run.
+					if hold != nil {
+						_ = hold.Commit(chunk.Usage.TotalTokens, chunk.Usage.CostUSD)
+					}
+				}
 			}
 			out <- chunk
 		}
@@ -368,26 +384,28 @@ func chunkMetaWithRouting(meta map[string]any, config ModelTarget) map[string]an
 	return meta
 }
 
-// budgetCheck preflights the run ledger against the estimated prompt size
-// before each dispatch attempt. Cost estimates are unavailable here when
-// the model's price is unknown (#206): the token gate applies, the cost
-// gate applies to recorded actuals.
-func (c *ChainClient) budgetCheck(ctx context.Context, req core.LLMRequest) error {
+// budgetReserve atomically holds the estimated prompt size against the
+// run ledger before each dispatch attempt. Cost estimates are
+// unavailable here when the model's price is unknown (#206): the token
+// gate applies, the cost gate applies to recorded actuals.
+func (c *ChainClient) budgetReserve(ctx context.Context, req core.LLMRequest) (*budget.Reservation, error) {
 	ledger := budget.LedgerFromContext(ctx)
 	if ledger == nil {
-		return nil
+		return nil, nil
 	}
 	estimate := memory.EstimateTokens(req.System) + memory.EstimateTokens(req.InputText)
-	if err := ledger.Check("run", estimate, 0); err != nil {
-		return fmt.Errorf("routing: %w", err)
+	hold, err := ledger.Reserve("run", estimate, 0)
+	if err != nil {
+		return nil, fmt.Errorf("routing: %w", err)
 	}
-	return nil
+	return hold, nil
 }
 
-// budgetRecord commits the actual spend of a dispatch attempt.
-func (c *ChainClient) budgetRecord(ctx context.Context, usage core.LLMTokenUsage) {
-	if ledger := budget.LedgerFromContext(ctx); ledger != nil {
-		_ = ledger.Record(usage.TotalTokens, usage.CostUSD)
+// budgetRecord settles a hold with the actual spend of a dispatch
+// attempt.
+func (c *ChainClient) budgetRecord(ctx context.Context, hold *budget.Reservation, usage core.LLMTokenUsage) {
+	if ledger := budget.LedgerFromContext(ctx); ledger != nil && hold != nil {
+		_ = hold.Commit(usage.TotalTokens, usage.CostUSD)
 	}
 }
 

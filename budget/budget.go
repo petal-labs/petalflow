@@ -99,6 +99,13 @@ type Ledger struct {
 	mu      sync.Mutex
 	ceiling Ceiling
 	spent   Spend
+
+	// reserved holds the sum of outstanding reservation estimates; the
+	// reservation gate projects spent + reserved before granting.
+	reserved Spend
+	// holds maps reservation IDs to their estimated spend.
+	holds           map[uint64]Spend
+	nextReservation uint64
 }
 
 // NewLedger creates a ledger bounded by the ceiling. Malformed ceilings
@@ -107,7 +114,73 @@ func NewLedger(ceiling Ceiling) (*Ledger, error) {
 	if err := ceiling.Validate(); err != nil {
 		return nil, err
 	}
-	return &Ledger{ceiling: ceiling}, nil
+	return &Ledger{ceiling: ceiling, holds: make(map[uint64]Spend)}, nil
+}
+
+// Reserve atomically verifies and holds the predicted spend against the
+// ceiling (projected = recorded spend + outstanding reservations +
+// this estimate) before a dispatch happens. Callers commit actuals via
+// the returned Reservation after the dispatch succeeded, or Release it
+// when the dispatch did not happen, so parallel branches and retries
+// cannot collectively slip committed spend past a ceiling.
+//
+// Cost reservations only apply to positive cost estimates; token
+// reservations count whenever the token ceiling is configured.
+func (l *Ledger) Reserve(scope string, estimateTokens int, estimateCostUSD float64) (*Reservation, error) {
+	if estimateTokens < 0 || estimateCostUSD < 0 {
+		return nil, fmt.Errorf("%w: negative estimate (tokens=%d, cost_usd=%.4f)", ErrMalformedBudget, estimateTokens, estimateCostUSD)
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	estimate := Spend{TotalTokens: estimateTokens, CostUSD: estimateCostUSD}
+	if !l.ceiling.unbounded() {
+		projectedTokens := l.spent.TotalTokens + l.reserved.TotalTokens + estimateTokens
+		if l.ceiling.MaxTotalTokens > 0 && projectedTokens > l.ceiling.MaxTotalTokens {
+			return nil, &BudgetExceededError{
+				Scope:     scope,
+				Gate:      "total_tokens",
+				Ceiling:   float64(l.ceiling.MaxTotalTokens),
+				Projected: float64(projectedTokens),
+				Spent:     l.spent,
+				Estimate:  estimate,
+			}
+		}
+		if estimateCostUSD > 0 && l.ceiling.MaxCostUSD > 0 {
+			projectedCost := l.spent.CostUSD + l.reserved.CostUSD + estimateCostUSD
+			if projectedCost > l.ceiling.MaxCostUSD {
+				return nil, &BudgetExceededError{
+					Scope:     scope,
+					Gate:      "cost_usd",
+					Ceiling:   l.ceiling.MaxCostUSD,
+					Projected: projectedCost,
+					Spent:     l.spent,
+					Estimate:  estimate,
+				}
+			}
+		}
+	}
+
+	l.nextReservation++
+	id := l.nextReservation
+	l.holds[id] = estimate
+	l.reserved.TotalTokens += estimateTokens
+	l.reserved.CostUSD += estimateCostUSD
+
+	return &Reservation{
+		ledger:   l,
+		id:       id,
+		scope:    scope,
+		estimate: estimate,
+	}, nil
+}
+
+// Reserved returns the sum of outstanding reservation estimates.
+func (l *Ledger) Reserved() Spend {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.reserved
 }
 
 // Spent returns the recorded spend.
@@ -117,9 +190,12 @@ func (l *Ledger) Spent() Spend {
 	return l.spent
 }
 
-// Check validates a predicted spend (estimate) against the remaining
-// budget without recording anything. costUSD may be 0 when the cost is
-// unknown (#206): the token gate still applies, the cost gate cannot.
+// Check validates a predicted spend (estimate) against the recorded
+// spend without holding anything: concurrent records can still move
+// spend between a passing Check and the caller's dispatch, so
+// enforcement paths that must be race-safe (parallel branches, retries)
+// use Reserve instead. costUSD may be 0 when the cost is unknown
+// (#206): the token gate still applies, the cost gate cannot.
 func (l *Ledger) Check(scope string, estimateTokens int, estimateCostUSD float64) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -156,9 +232,10 @@ func (l *Ledger) Check(scope string, estimateTokens int, estimateCostUSD float64
 	return nil
 }
 
-// Record commits actual spend after a dispatch. Actuals may exceed the
-// ceiling (the spend already happened); enforcement happens in Check
-// before dispatch. Negative values are malformed and rejected.
+// Record commits actual spend after a dispatch without settling any
+// reservation. Actuals may exceed the ceiling (the spend already
+// happened); ceiling enforcement happens before dispatch (Check, or
+// atomically via Reserve). Negative values are malformed and rejected.
 func (l *Ledger) Record(tokens int, costUSD float64) error {
 	if tokens < 0 || costUSD < 0 {
 		return fmt.Errorf("%w: negative spend (tokens=%d, cost_usd=%.4f)", ErrMalformedBudget, tokens, costUSD)
