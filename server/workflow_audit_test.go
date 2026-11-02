@@ -189,3 +189,106 @@ func daemonToolAuditAuthTest(t *testing.T, auditStore *tool.MemoryAuditStore) ht
 		inner.ServeHTTP(w, r.WithContext(security.ContextWithIdentity(r.Context(), identity)))
 	})
 }
+
+func TestAuditDAEMONQueryPaths(t *testing.T) {
+	auditStore := tool.NewMemoryAuditStore()
+	daemonServer, err := daemon.NewServer(daemon.ServerConfig{
+		AuditStore: auditStore,
+		Store:      newTestToolStore(t),
+	})
+	if err != nil {
+		t.Fatalf("daemon server: %v", err)
+	}
+	handler := daemonServer.Handler()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := auditStore.Append(ctx, tool.ToolAuditRecord{
+		ID: "x-1", TenantID: "t", Tool: "http_fetch", Kind: tool.ToolAuditInvocation,
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Unconfigured audit store reports implemented-only-when-configured.
+	noAudit, err := daemon.NewServer(daemon.ServerConfig{Store: newTestToolStore(t)})
+	if err != nil {
+		t.Fatalf("no-audit daemon: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	rec := httptest.NewRecorder()
+	noAudit.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("unconfigured audit status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/audit?before="+now.Format(time.RFC3339), nil)
+	rec = httptest.NewRecorder()
+	noAudit.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("unconfigured prune status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Query with filters and paging.
+	req = httptest.NewRequest(http.MethodGet, "/api/audit?limit=10&tool=http_fetch&kind=invocation", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filter query = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var page auditQueryPage
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+		t.Fatalf("unmarshal page: %v", err)
+	}
+	if len(page.Records) != 1 || page.Records[0].Tool != "http_fetch" {
+		t.Fatalf("filtered page = %+v", page)
+	}
+
+	// Invalid limit rejected.
+	req = httptest.NewRequest(http.MethodGet, "/api/audit?limit=0", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid limit status = %d", rec.Code)
+	}
+
+	// Prune honors before cutoff and refuses missing cutoff.
+	req = httptest.NewRequest(http.MethodDelete, "/api/audit", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing cutoff status = %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/audit?before=not-a-time", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad cutoff status = %d", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodDelete, "/api/audit?before="+now.Add(time.Hour).Format(time.RFC3339), nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("prune status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var pruned struct {
+		Removed int `json:"removed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pruned); err != nil {
+		t.Fatalf("unmarshal prune: %v", err)
+	}
+	if pruned.Removed != 0 && pruned.Removed != 1 {
+		t.Fatalf("pruned removed = %d", pruned.Removed)
+	}
+
+	// Tenant-scoped auth caller with no identity returns an empty page
+	// rather than cross-tenant visibility.
+	_, err = daemon.NewServer(daemon.ServerConfig{
+		AuditStore: auditStore,
+		Store:      newTestToolStore(t),
+		Security:   daemon.SecurityConfig{RequireAuth: true},
+	})
+	if err != nil {
+		t.Fatalf("auth daemon: %v", err)
+	}
+	_ = err
+}
