@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -193,5 +194,106 @@ func TestToolAuditDecisionsClassify(t *testing.T) {
 				t.Fatalf("DefaultToolAuditReason = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAuditRecorderGuardPaths(t *testing.T) {
+	var recorder *ToolAuditRecorder
+	// Nil recorders are no-ops, including their Store access.
+	if recorder.Store() != nil {
+		t.Fatal("nil recorder must expose a nil store")
+	}
+	recorder.Record(context.Background(), ToolAuditRecord{ID: "nil-risk"})
+
+	// Nil stores inside a recorder drop writes silently.
+	shifted := NewToolAuditRecorder(nil)
+	if shifted.Store() != nil {
+		t.Fatal("nil store recorder")
+	}
+	shifted.Record(context.Background(), ToolAuditRecord{ID: "nil-store"})
+}
+
+func TestAuditPayloadSummaryEdgeShapes(t *testing.T) {
+	// Malformed payloads simply produce no summary.
+	if summary := AuditPayloadSummary(make(chan int)); summary != nil {
+		t.Fatalf("unmarshalable payloads must return nil, got %+v", summary)
+	}
+	// Non-object payloads produce no summary.
+	if summary := AuditPayloadSummary("string"); summary != nil {
+		t.Fatalf("non-object payloads must return nil, got %+v", summary)
+	}
+
+	// Long key names are truncated to 64 chars and summary caps at 16 keys.
+	payload := map[string]any{}
+	for i := 0; i < 20; i++ {
+		payload[fmt.Sprintf("%062d", i)+"suffix"] = i
+	}
+	summary := AuditPayloadSummary(payload)
+	if len(summary) != 16 {
+		t.Fatalf("summary size = %d, want 16", len(summary))
+	}
+	for name := range summary {
+		if len(name) > 64 {
+			t.Fatalf("key %q longer than 64", name)
+		}
+	}
+}
+
+func TestAuditRedactionBoundaryBranches(t *testing.T) {
+	// The key-prefix branch preserves the prefix up to the value.
+	if got := RedactAuditText("passwd = value"); got != "passwd = **********" {
+		t.Fatalf("passwd redaction = %q", got)
+	}
+	// The malformed branch falls back to the source match text.
+	if got := RedactAuditText(""); got != "" {
+		t.Fatalf("empty redaction = %q", got)
+	}
+	// Value-kind enumeration for unions (JSON shapes only).
+	if summary := AuditPayloadSummary(map[string]any{
+		"flag": true, "list": []any{"a"}, "obj": map[string]any{"x": 1},
+	}); summary["flag"] != "boolean" || summary["list"] != "array" || summary["obj"] != "object" {
+		t.Fatalf("kind summary = %+v", summary)
+	}
+}
+
+func TestAuditStoreSQLiteErrorsAndSchemaPaths(t *testing.T) {
+	if _, err := NewSQLiteAuditStore(SQLiteStoreConfig{DSN: ""}); err == nil {
+		t.Fatal("empty DSN must be rejected")
+	}
+	// Bad sql.Filename paths fail cleanly.
+	if _, err := NewSQLiteAuditStore(SQLiteStoreConfig{DSN: filepath.Join(t.TempDir(), "miss", "audit.db")}); err == nil {
+		t.Fatal("bad paths must error on schema setup")
+	}
+
+	store, err := NewSQLiteAuditStore(SQLiteStoreConfig{DSN: filepath.Join(t.TempDir(), "audit.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteAuditStore: %v", err)
+	}
+	ctx := context.Background()
+
+	// Record ID is required.
+	if err := store.Append(ctx, ToolAuditRecord{TenantID: "t"}); err == nil || !strings.Contains(err.Error(), "record id is required") {
+		t.Fatalf("id-less append = %v", err)
+	}
+
+	// No rows error paths: empty scans fail null-safety gracefully.
+	if records, _, err := store.List(ctx, ToolAuditFilter{TenantID: "absent", Cursor: ""}); len(records) != 0 || err != nil {
+		t.Fatalf("absent filter = %d records %v", len(records), err)
+	}
+
+	// Prune honors tenant scoping strictly.
+	now := time.Now().UTC()
+	if err := store.Append(ctx, ToolAuditRecord{ID: "p-a", TenantID: "pa", Tool: "t", Kind: ToolAuditInvocation, CreatedAt: now}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.Append(ctx, ToolAuditRecord{ID: "p-b", TenantID: "pb", Tool: "t", Kind: ToolAuditInvocation, CreatedAt: now.Add(time.Hour)}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	removed, err := store.Prune(ctx, ToolAuditFilter{TenantID: "pa"}, now.Add(time.Minute))
+	if err != nil || removed != 1 {
+		t.Fatalf("pruned = %d err = %v, want 1", removed, err)
+	}
+	if records, _, _ := store.List(ctx, ToolAuditFilter{TenantID: "pb", Cursor: ""}); len(records) != 1 {
+		t.Fatalf("tenant-scope prune touched tenant pb: %#v", records)
 	}
 }
