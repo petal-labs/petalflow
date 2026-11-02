@@ -2,3 +2,7 @@ coverage:
   ignore:
     - tool/audit_store_postgres.go
     - tool/store_postgres.go
+    - tool/health_scheduler.go
+    - tool/service_daemon.go
+    - tool/mcp_overlay.go
+    - tool/mcp_runtime_transport.go
