@@ -152,6 +152,8 @@ func (s *SQLiteAuditStore) Prune(ctx context.Context, filter ToolAuditFilter, be
 	}
 	filter.Before = &before
 	filter.Cursor = ""
+	// #nosec G201 -- expressions come from fixed toolAuditFilterConditions
+	// column placeholders only; values are always parameterized.
 	conditions, args := toolAuditFilterConditions(filter)
 	res, err := s.db.ExecContext(ctx, "DELETE FROM tool_audit_records WHERE "+strings.Join(conditions, " AND "), args...)
 	if err != nil {

@@ -135,6 +135,8 @@ func (s *PostgresAuditStore) Prune(ctx context.Context, filter ToolAuditFilter, 
 	}
 	filter.Before = &before
 	filter.Cursor = ""
+	// #nosec G201 -- expressions come from fixed toolAuditFilterConditions
+	// column placeholders only; values are always parameterized.
 	conditions, args := toolAuditFilterConditions(filter)
 	res, err := s.db.ExecContext(ctx, sqldialect.Rebind("DELETE FROM tool_audit_records WHERE "+strings.Join(conditions, " AND ")), args...)
 	if err != nil {
