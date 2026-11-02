@@ -127,3 +127,13 @@ func toolErrorCodeOrDefault(err error, fallback string) string {
 	}
 	return fallback
 }
+
+// ToolErrorStatusCode extracts the stable ToolError code for rejection
+// trails and run-event recording; empty for non-ToolError failures.
+func ToolErrorStatusCode(err error) string {
+	var toolErr *ToolError
+	if errors.As(err, &toolErr) {
+		return toolErr.Code
+	}
+	return ""
+}

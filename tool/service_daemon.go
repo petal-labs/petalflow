@@ -37,6 +37,12 @@ type DaemonToolServiceConfig struct {
 	MCPBuilder          MCPRegistrationBuilder
 	MCPRefresher        MCPRegistrationRefresher
 	MCPHealthEvaluator  MCPHealthEvaluator
+	// PayloadLimits bounds invocation payload sizes; the documented
+	// defaults apply when unset.
+	PayloadLimits *PayloadLimits
+	// InvocationLimits bounds per-tool concurrency, per-tool rate, and
+	// per-scope concurrency; nil keeps invocation unlimited.
+	InvocationLimits *InvocationLimits
 }
 
 // RegisterToolInput defines a registration request consumed by daemon services.
@@ -90,6 +96,8 @@ type DaemonToolService struct {
 	mcpBuilder          MCPRegistrationBuilder
 	mcpRefresher        MCPRegistrationRefresher
 	mcpHealthEvaluator  MCPHealthEvaluator
+	payloadLimits       PayloadLimits
+	governor            *invocationGovernor
 }
 
 // NewDaemonToolService creates a daemon tool service with defaults.
@@ -118,6 +126,19 @@ func NewDaemonToolService(cfg DaemonToolServiceConfig) (*DaemonToolService, erro
 		mcpHealthEvaluator = EvaluateMCPHealth
 	}
 
+	payloadLimits := DefaultPayloadLimits()
+	if cfg.PayloadLimits != nil {
+		payloadLimits = *cfg.PayloadLimits
+	}
+	if err := payloadLimits.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg.InvocationLimits != nil {
+		if err := cfg.InvocationLimits.Validate(); err != nil {
+			return nil, fmt.Errorf("tool: %w", err)
+		}
+	}
+
 	return &DaemonToolService{
 		store:               cfg.Store,
 		adapterFactory:      adapterFactory,
@@ -125,6 +146,8 @@ func NewDaemonToolService(cfg DaemonToolServiceConfig) (*DaemonToolService, erro
 		mcpBuilder:          mcpBuilder,
 		mcpRefresher:        mcpRefresher,
 		mcpHealthEvaluator:  mcpHealthEvaluator,
+		payloadLimits:       payloadLimits,
+		governor:            newInvocationGovernor(cfg.InvocationLimits),
 	}, nil
 }
 
@@ -326,19 +349,48 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		return ToolTestResult{}, gateErr
 	}
 
+	// Invocation budgets: rate and concurrency holds are checked and
+	// incurred atomically before any side effect; the release always
+	// runs. This bounds retries and parallel branches as well.
+	release, err := s.governor.acquire(reg.Name, ctx)
+	if err != nil {
+		return ToolTestResult{}, err
+	}
+	defer release()
+
+	// Payload validation: unknown actions and schema-invalid inputs fail
+	// before any adapter is constructed, so rejections cannot leak
+	// payloads or trigger side effects.
+	if err := ValidateInputs(reg, action, inputs, s.payloadLimits); err != nil {
+		return ToolTestResult{}, err
+	}
+
+	// Per-call deadline from the registration transport (mirrors the
+	// adapter defaults; adapters keep their own typed timeout handling,
+	// the service deadline is the uniform backstop for all origins,
+	// including native in-process tools).
+	deadline, cancel := context.WithTimeout(ctx, invocationDeadline(reg))
+	defer cancel()
+
 	adapter, err := s.adapterFactory.New(reg)
 	if err != nil {
 		return ToolTestResult{}, err
 	}
 	defer adapter.Close(ctx)
 
-	response, err := adapter.Invoke(ctx, InvokeRequest{
+	response, err := adapter.Invoke(deadline, InvokeRequest{
 		ToolName: reg.Name,
 		Action:   action,
 		Inputs:   cloneAnyMap(inputs),
 		Config:   configAsAnyMap(reg.Config),
 	})
 	if err != nil {
+		return ToolTestResult{}, err
+	}
+
+	// Output checks before results are handed back: registered schema
+	// conformance and the configured output size limit.
+	if err := ValidateOutputs(reg, action, response.Outputs, s.payloadLimits); err != nil {
 		return ToolTestResult{}, err
 	}
 

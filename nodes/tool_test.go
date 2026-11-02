@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -515,5 +516,83 @@ func TestToolNode_Run_PolicyApprovalRequired(t *testing.T) {
 	}
 	if len(tool.calls) != 0 {
 		t.Fatal("needs-approval invocation must not run until approval exists")
+	}
+}
+
+func TestToolNode_InvalidPayloadRecordedSafely(t *testing.T) {
+	tool := &mockPetalTool{
+		name: "sized-tool",
+		err:  fmt.Errorf("%w: required input %q is missing", toolpolicy.ErrInvalidPayload, "q"),
+	}
+	node := NewToolNode("sized_node", tool, ToolNodeConfig{OutputKey: "out", RetryPolicy: core.RetryPolicy{MaxAttempts: 1}})
+
+	var events []runtime.Event
+	runCtx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	env := core.NewEnvelope()
+	_, err := node.Run(runCtx, env)
+	if err == nil {
+		t.Fatal("invalid payload must fail the invocation")
+	}
+	if !contains(err.Error(), "required input") || contains(err.Error(), "payload-value") {
+		t.Fatalf("rejection message names fields only: %v", err)
+	}
+
+	var resultEvent *runtime.Event
+	for i := range events {
+		if events[i].Kind == runtime.EventToolResult {
+			resultEvent = &events[i]
+		}
+	}
+	if resultEvent == nil {
+		t.Fatal("missing tool.result event")
+	}
+	if resultEvent.Payload["is_error"] != true {
+		t.Fatalf("is_error = %v", resultEvent.Payload["is_error"])
+	}
+	if resultEvent.Payload["error_code"] != toolpolicy.ToolErrorCodeInvalidPayload {
+		t.Fatalf("error_code payload = %v, want %q", resultEvent.Payload["error_code"], toolpolicy.ToolErrorCodeInvalidPayload)
+	}
+	for key, value := range resultEvent.Payload {
+		// Rejection events must not echo payload contents or values.
+		if s, ok := value.(string); ok && contains(s, "@") {
+			t.Fatalf("event payload %q may leak values: %v", key, s)
+		}
+	}
+	if len(tool.calls) != 1 {
+		t.Fatalf("typed rejections must not retry: invoked %d times, want 1", len(tool.calls))
+	}
+}
+
+func TestToolNode_RateLimitRecorded(t *testing.T) {
+	tool := &mockPetalTool{
+		name: "fluent-tool",
+		err:  fmt.Errorf("%w: tool %q issued %d invocations in the last minute (limit %d)", toolpolicy.ErrToolRateLimited, "fluent-tool", 5, 5),
+	}
+	node := NewToolNode("fluent_node", tool, ToolNodeConfig{OutputKey: "out", RetryPolicy: core.RetryPolicy{MaxAttempts: 1}})
+
+	var events []runtime.Event
+	runCtx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	env := core.NewEnvelope()
+	_, err := node.Run(runCtx, env)
+	if err == nil {
+		t.Fatal("rate limit must fail the invocation")
+	}
+	var resultEvent *runtime.Event
+	for i := range events {
+		if events[i].Kind == runtime.EventToolResult {
+			resultEvent = &events[i]
+		}
+	}
+	if resultEvent == nil || resultEvent.Payload["error_code"] != toolpolicy.ToolErrorCodeRateLimited {
+		t.Fatalf("rate limit error_code payload missing: %#v", resultEvent)
+	}
+	if len(tool.calls) != 1 {
+		t.Fatalf("typed rejections must not retry: invoked %d times, want 1", len(tool.calls))
 	}
 }
