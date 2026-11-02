@@ -172,6 +172,13 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 			break
 		}
 
+		// Typed payload and budget rejections are deterministic: they
+		// fail immediately instead of burning retries (budgets cannot
+		// be bypassed or multiplied by retries).
+		if code := toolpayloadRejectedCode(lastErr); code != "" {
+			break
+		}
+
 		// Check if context is done
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
@@ -187,11 +194,15 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 		}
 	}
 
-	// Emit tool.result event (always, even on failure)
+	// Emit tool.result event (always, even on failure); typed payload
+	// and budget rejections surface their stable error codes without
+	// echoing payload contents to untrusted consumers.
+	errCode := toolpayloadRejectedCode(lastErr)
 	emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("tool_name", tool.Name()).
-		WithPayload("is_error", lastErr != nil))
+		WithPayload("is_error", lastErr != nil).
+		WithPayload("error_code", errCode))
 
 	if lastErr != nil {
 		return nil, fmt.Errorf("tool %q failed after %d attempts: %w",
@@ -360,3 +371,29 @@ func (n *ToolNode) Config() ToolNodeConfig {
 
 // Ensure interface compliance at compile time.
 var _ core.Node = (*ToolNode)(nil)
+
+// toolpayloadRejectedCode extracts the typed rejection code from an
+// invocation failure for run-event recording; an empty string means the
+// failure was not a typed payload or budget rejection.
+func toolpayloadRejectedCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	for _, mapper := range []func(error) string{
+		toolpolicy.InvalidPayloadErrorCode,
+		toolpolicy.LimitErrorCode,
+		toolpolicy.PolicyErrorCode,
+		TokenErrorCodes,
+	} {
+		if code := mapper(err); code != "" {
+			return code
+		}
+	}
+	return ""
+}
+
+// TokenErrorCodes maps tool adapter errors to their stable code for the
+// rejection trail (delegates to the tool package's tool errors).
+func TokenErrorCodes(err error) string {
+	return toolpolicy.ToolErrorStatusCode(err)
+}

@@ -573,6 +573,16 @@ func (s *Server) writeServiceError(w http.ResponseWriter, err error) {
 	case tool.IsToolPolicyError(err):
 		code := tool.PolicyErrorCode(err)
 		writeJSONError(w, http.StatusForbidden, code, err.Error(), nil)
+	case tool.LimitErrorCode(err) != "":
+		code := tool.LimitErrorCode(err)
+		writeJSONError(w, http.StatusTooManyRequests, code, err.Error(), nil)
+	case tool.InvalidPayloadErrorCode(err) != "":
+		code := tool.InvalidPayloadErrorCode(err)
+		status := http.StatusBadRequest
+		if code == tool.ToolErrorCodePayloadTooLarge || code == tool.ToolErrorCodeActionNotFound {
+			status = http.StatusUnprocessableEntity
+		}
+		writeJSONError(w, status, code, err.Error(), nil)
 	default:
 		writeJSONError(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
 	}

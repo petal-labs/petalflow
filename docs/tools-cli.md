@@ -199,6 +199,34 @@ tool_policy:
     - downstream_write
 ```
 
+## Payload Limits and Validation
+
+Every invocation validates its inputs against the registered action
+schema before any side effect: unknown actions (`ACTION_NOT_FOUND`),
+missing required fields and type mismatches (`INVALID_PAYLOAD`) fail
+before the adapter engages, and error messages name fields and expected
+types only — never payload values.
+
+Payloads are also size-bounded (defaults: 4 MiB input, 16 MiB output):
+
+- `PAYLOAD_TOO_LARGE` for oversized inputs (before side effects) and
+  oversized outputs (before results are handed back). Set explicit
+  limits per deployment via the tool service configuration
+  (`PayloadLimits.MaxInputBytes` / `MaxOutputBytes`).
+
+Invocation budgets (all opt-in, enforced at the invocation gate before
+adapters run, counting retries and parallel branches):
+
+| Limit | Meaning |
+| ----- | ------- |
+| `MaxConcurrentPerTool` (with `ToolConcurrency` overrides) | in-flight invocations per tool (`TOOL_CONCURRENCY_LIMIT`) |
+| `MaxPerMinutePerTool` (with `ToolRatePerMinute` overrides) | dispatch starts per tool per rolling minute (`TOOL_RATE_LIMITED`) |
+| `MaxConcurrentPerScope` | in-flight invocations per workflow run (scope from the run ID) |
+
+Per-call deadlines come from the manifest transport `timeout_ms`
+(adapter defaults: 30s; the service adds a uniform wall-clock backstop
+above the adapter deadline so misbehaving tools cannot hang).
+
 ## Remove a Tool
 
 ```bash
