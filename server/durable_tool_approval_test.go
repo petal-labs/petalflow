@@ -39,7 +39,7 @@ func approvedFetchWorkflowPayload(workflowID string, target string) map[string]a
 // run store plus the network-class approval policy. The returned store
 // is shared so a second handler can simulate a daemon restart on the
 // same durable state.
-func newToolApprovalTestHandler(t *testing.T) (http.Handler, runtime.RunStore) {
+func newToolApprovalTestHandler(t *testing.T) (http.Handler, runtime.RunStore, *tool.MemoryAuditStore) {
 	t.Helper()
 
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -59,11 +59,12 @@ func newToolApprovalTestHandler(t *testing.T) (http.Handler, runtime.RunStore) {
 		}
 	}
 
+	auditStore := tool.NewMemoryAuditStore()
 	workflowServer := NewServer(ServerConfig{
 		Store: workflowStore, ScheduleStore: workflowStore,
 		ToolStore: toolStore,
 		Providers: hydrate.ProviderMap{},
-		RunStore:  runStore,
+		RunStore:  runStore, AuditStore: auditStore,
 		DefaultTenantPolicy: &toolpkg.ToolPolicy{
 			Allow:                  []string{"http_fetch", "template_render"},
 			RequireApprovalClasses: []string{toolpkg.PolicyClassNetwork},
@@ -72,7 +73,7 @@ func newToolApprovalTestHandler(t *testing.T) (http.Handler, runtime.RunStore) {
 	t.Cleanup(func() { _ = workflowStore.Close() })
 
 	createGraphWorkflow(t, workflowServer.Handler(), approvedFetchWorkflowPayload("tool_approval_wf", target.URL))
-	return workflowServer.Handler(), runStore
+	return workflowServer.Handler(), runStore, auditStore
 }
 
 func approvalTestRun(t *testing.T, handler http.Handler) RunResponse {
@@ -137,7 +138,7 @@ func resumeRun(t *testing.T, handler http.Handler, resp RunResponse, wantStatus 
 }
 
 func TestDurableToolApproval_LifecycleAndRestartSurvival(t *testing.T) {
-	handler, runStore := newToolApprovalTestHandler(t)
+	handler, runStore, _ := newToolApprovalTestHandler(t)
 	paused := approvalTestRun(t, handler)
 
 	// Restart simulation: a fresh server over the same run store sees
@@ -183,7 +184,7 @@ func TestDurableToolApproval_LifecycleAndRestartSurvival(t *testing.T) {
 }
 
 func TestDurableToolApproval_RejectionFailsClosed(t *testing.T) {
-	handler, runStore := newToolApprovalTestHandler(t)
+	handler, runStore, _ := newToolApprovalTestHandler(t)
 	paused := approvalTestRun(t, handler)
 
 	approvePending(t, handler, paused, nodes.ToolApprovalDecisionRejected, "")

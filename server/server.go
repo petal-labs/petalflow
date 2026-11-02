@@ -37,6 +37,9 @@ type ServerConfig struct {
 	// DefaultTenantPolicy is the statically configured tenant tool
 	// policy used when a tenant has no stored override.
 	DefaultTenantPolicy *tool.ToolPolicy
+	// AuditStore records the tool lifecycle trail (approvals, denials,
+	// failures). A nil store disables audit recording.
+	AuditStore tool.ToolAuditStore
 }
 
 // SecurityConfig controls authentication, CORS, and request concurrency.
@@ -78,11 +81,22 @@ type Server struct {
 	jobStore      RunJobStore
 	// defaultTenantPolicy is the statically configured tenant tool policy.
 	defaultTenantPolicy *tool.ToolPolicy
+	// audit records the tool lifecycle trail; nil disables recording.
+	audit *tool.ToolAuditRecorder
 	// planHook, when set, overrides run planning. It is a test seam.
 	planHook func(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error)
 }
 
 // NewServer creates a new Server with the given configuration.
+// auditStore returns the configured audit store, or nil when audit
+// recording is disabled.
+func (s *Server) auditStore() tool.ToolAuditStore {
+	if s.audit == nil {
+		return nil
+	}
+	return s.audit.Store()
+}
+
 func NewServer(cfg ServerConfig) *Server {
 	logger := cfg.Logger
 	if logger == nil {
@@ -124,6 +138,7 @@ func NewServer(cfg ServerConfig) *Server {
 		replayedHooks:       make(map[string]time.Time),
 		jobStore:            cfg.JobStore,
 		defaultTenantPolicy: cfg.DefaultTenantPolicy,
+		audit:               tool.NewToolAuditRecorder(cfg.AuditStore),
 	}
 }
 

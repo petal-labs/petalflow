@@ -158,3 +158,14 @@ func closeIfCloser(v any) error {
 	}
 	return nil
 }
+
+// openAuditStore opens the tenant-scoped tool audit store for the given
+// database backend, sharing the tool store's database.
+func openAuditStore(dsn string, backend databaseBackend, scope string) (tool.ToolAuditStore, error) {
+	switch backend {
+	case backendPostgres:
+		return tool.NewPostgresAuditStore(tool.PostgresAuditStoreConfig{DSN: dsn})
+	default:
+		return tool.NewSQLiteAuditStore(tool.SQLiteStoreConfig{DSN: dsn, Scope: scope})
+	}
+}

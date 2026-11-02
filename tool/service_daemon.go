@@ -43,6 +43,9 @@ type DaemonToolServiceConfig struct {
 	// InvocationLimits bounds per-tool concurrency, per-tool rate, and
 	// per-scope concurrency; nil keeps invocation unlimited.
 	InvocationLimits *InvocationLimits
+	// AuditStore records the tool lifecycle trail (tenant-scoped,
+	// redacted). A nil store disables recording.
+	AuditStore ToolAuditStore
 }
 
 // RegisterToolInput defines a registration request consumed by daemon services.
@@ -98,6 +101,7 @@ type DaemonToolService struct {
 	mcpHealthEvaluator  MCPHealthEvaluator
 	payloadLimits       PayloadLimits
 	governor            *invocationGovernor
+	audit               *ToolAuditRecorder
 }
 
 // NewDaemonToolService creates a daemon tool service with defaults.
@@ -148,7 +152,34 @@ func NewDaemonToolService(cfg DaemonToolServiceConfig) (*DaemonToolService, erro
 		mcpHealthEvaluator:  mcpHealthEvaluator,
 		payloadLimits:       payloadLimits,
 		governor:            newInvocationGovernor(cfg.InvocationLimits),
+		audit:               NewToolAuditRecorder(cfg.AuditStore),
 	}, nil
+}
+
+// auditInvocation records one lifecycle observation on the invocation
+// path. It is a best-effort, always-safe call site for policy, limit,
+// payload, timeout, and success outcomes.
+func (s *DaemonToolService) auditInvocation(ctx context.Context, reg Registration, action string, kind ToolAuditKind, decision, reason string) {
+	if s.audit == nil {
+		return
+	}
+	record := ToolAuditRecord{
+		TenantID: reg.TenantID,
+		Tool:     reg.Name,
+		Action:   action,
+		Kind:     kind,
+		Decision: decision,
+		Reason:   reason,
+	}
+	if meta, ok := AuditContextFromContext(ctx); ok {
+		record.WorkflowID = meta.WorkflowID
+		record.NodeID = meta.NodeID
+	}
+	summary := AuditPayloadSummary(map[string]any{"tool": reg.Name, "action": action})
+	if len(summary) > 0 {
+		record.PayloadSummary = summary
+	}
+	s.audit.Record(ctx, record)
 }
 
 // List returns registrations, optionally merged with built-ins and filtered.
@@ -221,7 +252,11 @@ func (s *DaemonToolService) Register(ctx context.Context, input RegisterToolInpu
 	if err := s.store.Upsert(ctx, reg); err != nil {
 		return ToolRegistration{}, err
 	}
-	return s.mustGetStored(ctx, reg.Name)
+	stored, err := s.mustGetStored(ctx, reg.Name)
+	if err == nil {
+		s.auditInvocation(ctx, stored, "", ToolAuditDiscovery, ToolAuditRegistered, "tool registered")
+	}
+	return stored, err
 }
 
 // Update mutates an existing registration and validates the resulting state.
@@ -330,9 +365,11 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		return ToolTestResult{}, err
 	}
 	if !found {
+		s.auditInvocation(ctx, Registration{Name: strings.TrimSpace(name)}, action, ToolAuditRejection, ToolAuditNotFound, "registration not found")
 		return ToolTestResult{}, fmt.Errorf("%w: %s", ErrToolNotFound, strings.TrimSpace(name))
 	}
 	if !reg.Enabled || reg.Status == StatusDisabled {
+		s.auditInvocation(ctx, reg, action, ToolAuditRejection, ToolAuditDisabled, "registration disabled")
 		return ToolTestResult{}, fmt.Errorf("%w: %s", ErrToolDisabled, reg.Name)
 	}
 
@@ -341,11 +378,14 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		// A durable approval grant replays through the invocation
 		// context after the operator decision was recorded; it authorizes
 		// exactly this invocation.
-		if _, granted := ApprovalGrantForTool(ctx, reg.Name); granted {
+		if grant, granted := ApprovalGrantForTool(ctx, reg.Name); granted {
 			gateErr = nil
+			s.auditInvocation(ctx, reg, action, ToolAuditApproval, ToolAuditApproved,
+				fmt.Sprintf("approval %q replayed by %q", grant.ApprovalID, grant.DecidedBy))
 		}
 	}
 	if gateErr != nil {
+		s.auditInvocation(ctx, reg, action, ToolAuditRejection, DefaultToolAuditReason(gateErr), "policy gate rejected the invocation")
 		return ToolTestResult{}, gateErr
 	}
 
@@ -354,6 +394,7 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 	// runs. This bounds retries and parallel branches as well.
 	release, err := s.governor.acquire(reg.Name, ctx)
 	if err != nil {
+		s.auditInvocation(ctx, reg, action, ToolAuditFailure, DefaultToolAuditReason(err), "invocation budget exhausted")
 		return ToolTestResult{}, err
 	}
 	defer release()
@@ -362,6 +403,7 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 	// before any adapter is constructed, so rejections cannot leak
 	// payloads or trigger side effects.
 	if err := ValidateInputs(reg, action, inputs, s.payloadLimits); err != nil {
+		s.auditInvocation(ctx, reg, action, ToolAuditFailure, DefaultToolAuditReason(err), "payload rejected before invocation")
 		return ToolTestResult{}, err
 	}
 
@@ -374,6 +416,7 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 
 	adapter, err := s.adapterFactory.New(reg)
 	if err != nil {
+		s.auditInvocation(ctx, reg, action, ToolAuditFailure, ToolAuditError, "adapter construction failed")
 		return ToolTestResult{}, err
 	}
 	defer adapter.Close(ctx)
@@ -385,14 +428,22 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 		Config:   configAsAnyMap(reg.Config),
 	})
 	if err != nil {
+		reason := ToolErrorStatusCode(err)
+		if reason == "" {
+			reason = DefaultToolAuditReason(err)
+		}
+		s.auditInvocation(ctx, reg, action, ToolAuditFailure, reason, "invocation failed")
 		return ToolTestResult{}, err
 	}
 
 	// Output checks before results are handed back: registered schema
 	// conformance and the configured output size limit.
 	if err := ValidateOutputs(reg, action, response.Outputs, s.payloadLimits); err != nil {
+		s.auditInvocation(ctx, reg, action, ToolAuditFailure, DefaultToolAuditReason(err), "output rejected after invocation")
 		return ToolTestResult{}, err
 	}
+
+	s.auditInvocation(ctx, reg, action, ToolAuditInvocation, ToolAuditAllowed, "")
 
 	return ToolTestResult{
 		Success:    true,
@@ -486,7 +537,11 @@ func (s *DaemonToolService) Refresh(ctx context.Context, name string) (ToolRegis
 	if err := s.store.Upsert(ctx, updated); err != nil {
 		return ToolRegistration{}, err
 	}
-	return s.mustGetStored(ctx, updated.Name)
+	stored, err := s.mustGetStored(ctx, updated.Name)
+	if err == nil {
+		s.auditInvocation(ctx, stored, "", ToolAuditDiscovery, ToolAuditRefreshed, "MCP discovery refreshed")
+	}
+	return stored, err
 }
 
 // UpdateOverlay mutates an MCP overlay reference then refreshes discovery.

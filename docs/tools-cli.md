@@ -227,6 +227,38 @@ Per-call deadlines come from the manifest transport `timeout_ms`
 (adapter defaults: 30s; the service adds a uniform wall-clock backstop
 above the adapter deadline so misbehaving tools cannot hang).
 
+## Audit Trail
+
+Tool lifecycle events — discovery (registration, MCP refresh), 
+invocations, approval decisions, rejections (policy denials), and 
+failures (invalid payloads, budget limits, timeouts) — are written to a
+tenant-scoped, redacted audit trail when the audit store is configured
+(petalflow databases include it by default via `petalflow serve`).
+
+Query from a running daemon:
+
+```bash
+# Tenant-scoped page (auth deployment; records of other tenants are
+# never visible at any query path)
+curl -H "Authorization: Bearer $PETALFLOW_API_TOKEN" \
+  "http://localhost:8080/api/audit?limit=50"
+
+# Filters: tool, workflow_id, run_id, kind (discovery|invocation|
+# approval|rejection|failure), cursor pagination
+curl -H "Authorization: Bearer $PETALFLOW_API_TOKEN" \
+  "http://localhost:8080/api/audit?tool=http_fetch&kind=failure&cursor=..."
+
+# Retention pruning (records strictly before the cutoff)
+curl -X DELETE -H "Authorization: Bearer $PETALFLOW_API_TOKEN" \
+  "http://localhost:8080/api/audit?before=2026-01-01T00:00:00Z"
+```
+
+Redaction is enforced on the write path: audit records contain typed
+reason codes and redacted payload summaries (key names and value kinds,
+never values). Free-form reasons pass a credential scrubber (bearer
+tokens, `sk-…` keys, `password:`/`api_key:` assignments) as a final
+backstop.
+
 ## Remove a Tool
 
 ```bash

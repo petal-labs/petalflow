@@ -11,6 +11,7 @@ import (
 
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/runtime"
+	"github.com/petal-labs/petalflow/tool"
 )
 
 // RunStatusResponse is the public, non-sensitive subset of a durable run
@@ -242,6 +243,7 @@ func (s *Server) handleCompletePendingAction(w http.ResponseWriter, r *http.Requ
 		if approvalResponse.DecisionAt.IsZero() {
 			approvalResponse.DecisionAt = time.Now().UTC()
 		}
+		s.recordApprovalAudit(r, record, pending, approvalResponse)
 		if completer, ok := s.runStore.(runtime.PendingActionCompleter); ok {
 			completed, err := completer.CompletePendingAction(r.Context(), record.ID, pending.ID, approvalResponse)
 			if err != nil {
@@ -359,4 +361,29 @@ func (s *Server) writeRunStoreError(w http.ResponseWriter, err error) {
 	default:
 		writeError(w, http.StatusInternalServerError, "RUN_STORE_ERROR", fmt.Sprintf("run store operation failed: %v", err))
 	}
+}
+
+// recordApprovalAudit writes the operator decision for a durable tool
+// approval into the tenant-scoped audit trail (best effort).
+func (s *Server) recordApprovalAudit(r *http.Request, record *runtime.RunRecord, pending *runtime.PendingAction, decision nodes.ToolApprovalResponse) {
+	if s.audit == nil {
+		return
+	}
+	request := decodeToolApprovalRequestData(pending.Data)
+	actor := "operator"
+	if decision.DecisionBy != "" {
+		actor = "operator:" + decision.DecisionBy
+	}
+	s.audit.Record(r.Context(), tool.ToolAuditRecord{
+		TenantID:   record.TenantID,
+		WorkflowID: record.WorkflowID,
+		RunID:      record.ID,
+		NodeID:     pending.NodeID,
+		Actor:      actor,
+		Tool:       request.ToolName,
+		Action:     request.Action,
+		Kind:       tool.ToolAuditApproval,
+		Decision:   decision.Decision,
+		Reason:     decision.Note,
+	})
 }
