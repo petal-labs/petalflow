@@ -4,22 +4,38 @@ Part of the capability-aware routing, fallback, and budget controls work
 ([#174](https://github.com/petal-labs/petalflow/issues/174)). This document
 covers cumulative budget enforcement (#207), building on cost metadata and
 preflight estimates (#206, see `docs/capabilities.md`) and interacting with
-fallback chains (#205, see `docs/routing.md`).
+fallback chains (#205, see `docs/routing.md`). The reservation semantics
+below are race-safe enforcement from #222.
 
 ## Overview
 
 The `budget` package accounts cumulative spend (tokens and USD) against
 ceilings with a concurrency-safe **ledger**. Every provider dispatch:
 
-1. **Checks** the ledger against the predicted spend (the preflight token
-   estimate, plus cost when the model's price is known) — a predicted
-   breach rejects the call **before dispatch** with
-   `budget.ErrBudgetExceeded`.
-2. **Records** the actual spend after the call.
+1. **Reserves** its predicted spend (the preflight token estimate, plus
+   cost when the model's price is known) against the ceiling atomically —
+   a predicted breach rejects the call **before dispatch** with
+   `budget.ErrBudgetExceeded`. The hold counts towards the ceiling while
+   the dispatch is in flight, so parallel branches cannot each slip
+   committed spend past a ceiling (race-safe enforcement, see #222).
+2. **Commits** the actual spend after the call (settling the hold), or
+   **releases** the hold when the dispatch did not happen. Actuals may
+   exceed both the estimate and the ceiling — the spend already happened;
+   committed actuals are the accounting truth.
+
+The legacy `Check`/`Record` pair remains available for callers that only
+want a non-mutating estimate (and previously-powered dispatch points);
+it is **not** race-safe against concurrent records — paths that enforce
+ceilings (LLM nodes, fallback chains per #205) reserve instead.
 
 Because every dispatch draws from one shared ledger, retries, parallel
-branches, and map fan-outs cannot multiply spend past a ceiling: the check
-runs per attempt and the ceiling is enforced atomically.
+branches, and map fan-outs cannot multiply spend past a ceiling: the
+hold is granted per attempt and ceilings project
+`spent + outstanding reservations + estimate`.
+
+A reservation settles exactly once: a second `Commit` or `Release` (or
+any call after either) returns `budget.ErrReservationSettled`; that
+makes retry double-counting fail loudly instead of silently.
 
 ## Scopes
 
@@ -55,8 +71,8 @@ opts.BudgetLedger = ledger
 
 ## Interaction with other subsystems
 
-- **Fallback chains (#205)**: the chain checks the run ledger before every
-  target attempt and records actuals per attempt — a fallback that would
+- **Fallback chains (#205)**: the chain reserves the run ledger before every
+  target attempt and commits actuals per attempt — a fallback that would
   breach the ceiling is rejected like any other call, and the chain
   declares `budget.SelfRecorder` so outer layers do not double-count.
 - **Cost-unknown models (#206)**: when a model's price is not registered,

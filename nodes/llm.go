@@ -153,7 +153,7 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 	// budget (from config) are re-checked before every dispatch attempt
 	// and recorded after — retries cannot bypass a ceiling that a parallel
 	// branch drained mid-run.
-	checkBudgetSpend, recordSpend, err := n.prepareBudget(ctx, env, emit, req)
+	reserveBudgetSpend, err := n.prepareBudget(ctx, env, emit, req)
 	if err != nil {
 		return nil, err
 	}
@@ -161,15 +161,21 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 	// Execute with retries
 	var resp core.LLMResponse
 	var lastErr error
+	var spendHold *budgetHold
 
 	for attempt := 1; attempt <= n.config.RetryPolicy.MaxAttempts; attempt++ {
-		if err := checkBudgetSpend(); err != nil {
-			return nil, err
+		// Each dispatch attempt holds its estimate atomically; failed
+		// attempts release the hold before the next one.
+		hold, reserveErr := reserveBudgetSpend()
+		if reserveErr != nil {
+			return nil, reserveErr
 		}
 		resp, lastErr = n.client.Complete(ctx, req)
 		if lastErr == nil {
+			spendHold = hold
 			break
 		}
+		hold.release()
 
 		// Check if context is done
 		if ctx.Err() != nil {
@@ -191,8 +197,8 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 	}
 
 	// Record actual spend after a successful dispatch.
-	if recordSpend != nil {
-		recordSpend(resp.Usage)
+	if spendHold != nil {
+		spendHold.commit(resp.Usage)
 	}
 
 	// Per-call budget limits (input/output caps) still apply post-call.
@@ -249,17 +255,19 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 	req := n.buildLLMRequest(env, prompt)
 
 	// Budget enforcement (mirrors the sync path).
-	checkBudgetSpend, recordSpend, err := n.prepareBudget(ctx, env, emit, req)
+	reserveBudgetSpend, err := n.prepareBudget(ctx, env, emit, req)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkBudgetSpend(); err != nil {
-		return nil, err
+	spendHold, reserveErr := reserveBudgetSpend()
+	if reserveErr != nil {
+		return nil, reserveErr
 	}
 
 	// Start streaming
 	ch, err := streamClient.CompleteStream(ctx, req)
 	if err != nil {
+		spendHold.release()
 		return nil, fmt.Errorf("streaming LLM call failed: %w", err)
 	}
 
@@ -273,6 +281,7 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 		// closes the channel) cannot hang the node past its timeout/cancel.
 		select {
 		case <-ctx.Done():
+			spendHold.release()
 			return nil, ctx.Err()
 		case chunk, ok := <-ch:
 			if !ok {
@@ -282,6 +291,7 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 
 			// Handle chunk errors
 			if chunk.Error != nil {
+				spendHold.release()
 				return nil, fmt.Errorf("streaming error: %w", chunk.Error)
 			}
 
@@ -308,8 +318,8 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 	text := accumulated.String()
 
 	// Record actual spend after a successful dispatch.
-	if recordSpend != nil {
-		recordSpend(usage)
+	if spendHold != nil {
+		spendHold.commit(usage)
 	}
 
 	// Per-call budget limits (input/output caps) still apply post-call.
@@ -398,13 +408,17 @@ func (n *LLMNode) executeTemplate(env *core.Envelope) (string, error) {
 
 // prepareBudget resolves budget enforcement for one LLM call: the run
 // ledger (from context, if any) and the node budget (from config, if any)
-// are preflighted against the estimated prompt size, and the returned
-// function records actual spend after a successful dispatch.
+// are atomically reserved against the estimated prompt size, and the
+// returned holder either commits actual spend after a successful
+// dispatch or releases the hold when the dispatch does not happen.
+//
+// Reservations (not plain checks) make the preflight race-safe: parallel
+// branches and retries cannot each slip committed spend past a ceiling.
 //
 // Cost estimates are unavailable at the node layer when the model's price
 // is unknown (#206): the token gate always applies, the cost gate applies
 // when actual usage carries a cost.
-func (n *LLMNode) prepareBudget(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, req core.LLMRequest) (func() error, func(core.LLMTokenUsage), error) {
+func (n *LLMNode) prepareBudget(ctx context.Context, env *core.Envelope, emit runtime.EventEmitter, req core.LLMRequest) (func() (*budgetHold, error), error) {
 	estimate := memory.EstimateTokens(req.System) + memory.EstimateTokens(req.InputText)
 
 	// Node-scoped ledger from the configured budget.
@@ -413,30 +427,12 @@ func (n *LLMNode) prepareBudget(ctx context.Context, env *core.Envelope, emit ru
 		ceiling := budget.Ceiling{MaxTotalTokens: b.MaxTotalTokens, MaxCostUSD: b.MaxCostUSD}
 		ledger, err := budget.NewLedger(ceiling)
 		if err != nil {
-			return nil, nil, fmt.Errorf("node %s: %w", n.ID(), err)
+			return nil, fmt.Errorf("node %s: %w", n.ID(), err)
 		}
 		nodeLedger = ledger
 	}
 
 	runLedger := budget.LedgerFromContext(ctx)
-
-	// Pre-dispatch checks: reject before the provider request is spent.
-	type scopedLedger struct {
-		scope  string
-		ledger *budget.Ledger
-	}
-	for _, sl := range []scopedLedger{
-		{scope: "run", ledger: runLedger},
-		{scope: "node:" + n.ID(), ledger: nodeLedger},
-	} {
-		if sl.ledger == nil {
-			continue
-		}
-		if err := sl.ledger.Check(sl.scope, estimate, 0); err != nil {
-			emit(n.budgetExceededEvent(env, err))
-			return nil, nil, fmt.Errorf("node %s: %w", n.ID(), err)
-		}
-	}
 
 	// Self-recording clients (fallback chains) account for spend per
 	// target attempt themselves; the node would double-count.
@@ -445,32 +441,80 @@ func (n *LLMNode) prepareBudget(ctx context.Context, env *core.Envelope, emit ru
 		selfRecording = recorder.RecordsOwnSpend()
 	}
 
-	check := func() error {
-		for _, sl := range []scopedLedger{
-			{scope: "run", ledger: runLedger},
-			{scope: "node:" + n.ID(), ledger: nodeLedger},
-		} {
+	type scopedLedger struct {
+		scope  string
+		ledger *budget.Ledger
+	}
+	scoped := []scopedLedger{
+		{scope: "run", ledger: runLedger},
+		{scope: "node:" + n.ID(), ledger: nodeLedger},
+	}
+
+	reserve := func() (*budgetHold, error) {
+		hold := &budgetHold{selfRecording: selfRecording}
+		for _, sl := range scoped {
 			if sl.ledger == nil {
 				continue
 			}
-			if err := sl.ledger.Check(sl.scope, estimate, 0); err != nil {
+			reservation, err := sl.ledger.Reserve(sl.scope, estimate, 0)
+			if err != nil {
+				hold.release()
 				emit(n.budgetExceededEvent(env, err))
-				return fmt.Errorf("node %s: %w", n.ID(), err)
+				return nil, fmt.Errorf("node %s: %w", n.ID(), err)
 			}
+			hold.attach(sl.ledger, reservation)
 		}
-		return nil
+		return hold, nil
 	}
+	return reserve, nil
+}
 
-	record := func(usage core.LLMTokenUsage) {
-		cost := usage.CostUSD
-		if nodeLedger != nil {
-			_ = nodeLedger.Record(usage.TotalTokens, cost)
-		}
-		if runLedger != nil && !selfRecording {
-			_ = runLedger.Record(usage.TotalTokens, cost)
-		}
+// budgetHold tracks the reservations one dispatch attempt holds across
+// the run and node ledgers.
+type budgetHold struct {
+	run           *budget.Reservation
+	node          *budget.Reservation
+	selfRecording bool
+}
+
+func (h *budgetHold) attach(ledger *budget.Ledger, reservation *budget.Reservation) {
+	if ledger == nil || reservation == nil {
+		return
 	}
-	return check, record, nil
+	// Attach by scope identity: whichever ledger produced this
+	// reservation. attach is called once per ledger in reserve().
+	switch reservation.Scope() {
+	case "run":
+		h.run = reservation
+	default:
+		h.node = reservation
+	}
+}
+
+// release abandons every outstanding hold (failed dispatch attempt).
+func (h *budgetHold) release() {
+	if h == nil {
+		return
+	}
+	if h.run != nil {
+		_ = h.run.Release()
+	}
+	if h.node != nil {
+		_ = h.node.Release()
+	}
+}
+
+// commit records the actual dispatch spend, settling both holds.
+func (h *budgetHold) commit(usage core.LLMTokenUsage) {
+	if h == nil {
+		return
+	}
+	if h.node != nil {
+		_ = h.node.Commit(usage.TotalTokens, usage.CostUSD)
+	}
+	if h.run != nil && !h.selfRecording {
+		_ = h.run.Commit(usage.TotalTokens, usage.CostUSD)
+	}
 }
 
 // budgetExceededEvent renders a budget rejection observably: the gate that

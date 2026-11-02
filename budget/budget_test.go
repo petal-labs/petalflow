@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -149,27 +150,195 @@ func TestLedgerActualCanExceedCeilingAfterDispatch(t *testing.T) {
 	}
 }
 
+// TestLedgerConcurrentAccess is a deterministic stress test: parallel
+// branches drawing on one ledger can never push committed spend above
+// the ceiling because pre-dispatch holds are granted atomically (run
+// with -race, repeatedly in CI).
 func TestLedgerConcurrentAccess(t *testing.T) {
-	// Parallel branches drawing on one ledger: the ceiling cannot be
-	// bypassed (run with -race).
 	ledger, _ := NewLedger(Ceiling{MaxTotalTokens: 1000})
 
-	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	const (
+		goroutines   = 50
+		estimate     = 100
+		wantGranted  = 10 // checks to spend exactly the ceiling
+		wantRejected = goroutines - wantGranted
+	)
+
+	var (
+		granted  int64
+		rejected int64
+		wg       sync.WaitGroup
+	)
+	for i := 0; i < goroutines; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := ledger.Check("run", 100, 0); err != nil {
+			hold, err := ledger.Reserve("run", estimate, 0)
+			if err != nil {
+				if !errors.Is(err, ErrBudgetExceeded) {
+					t.Errorf("unexpected rejection error = %v", err)
+				}
+				atomic.AddInt64(&rejected, 1)
 				return
 			}
-			_ = ledger.Record(100, 0)
+			if err := hold.Commit(estimate, 0); err != nil {
+				t.Errorf("Commit on granted hold: %v", err)
+				atomic.AddInt64(&rejected, 1)
+				return
+			}
+			atomic.AddInt64(&granted, 1)
 		}()
 	}
 	wg.Wait()
 
+	if got := atomic.LoadInt64(&granted); int(got) != wantGranted {
+		t.Errorf("granted = %d, want %d", got, wantGranted)
+	}
+	if got := atomic.LoadInt64(&rejected); int(got) != wantRejected {
+		t.Errorf("rejected = %d, want %d", got, wantRejected)
+	}
+	if reserved := ledger.Reserved(); reserved.TotalTokens != 0 || reserved.CostUSD != 0 {
+		t.Errorf("reservations must all settle: reserved = %+v", reserved)
+	}
 	if spent := ledger.Spent().TotalTokens; spent > 1000 {
 		t.Errorf("spent = %d, exceeds ceiling 1000", spent)
 	}
+	if spent := ledger.Spent().TotalTokens; spent != wantGranted*estimate {
+		t.Errorf("spent = %d, want exactly %d", spent, wantGranted*estimate)
+	}
+}
+
+// TestLedgerReservationAtomicity pins the fail-forecast semantics under
+// heavy contention: holds serialize commits so the ceiling stays exact.
+func TestLedgerReservationAtomicity(t *testing.T) {
+	ledger, _ := NewLedger(Ceiling{MaxTotalTokens: 500})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hold, err := ledger.Reserve("run", 7, 0)
+			if err != nil {
+				return
+			}
+			_ = hold.Commit(7, 0)
+		}()
+	}
+	wg.Wait()
+
+	if spent := ledger.Spent().TotalTokens; spent%7 != 0 {
+		t.Fatalf("partial hold: spent = %d", spent)
+	}
+	if spent := ledger.Spent().TotalTokens; spent > 500 {
+		t.Errorf("spent = %d exceeds ceiling 500", spent)
+	}
+}
+
+// TestLedgerReleaseRegrants: abandoned dispatches free their holds, so
+// a released reservation does not permanently drain the ledger.
+func TestLedgerReleaseRegrants(t *testing.T) {
+	ledger, _ := NewLedger(Ceiling{MaxTotalTokens: 100})
+
+	first, err := ledger.Reserve("run", 100, 0)
+	if err != nil {
+		t.Fatalf("first reserve: %v", err)
+	}
+	if _, err := ledger.Reserve("run", 1, 0); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("contended reserve should be rejected, got %v", err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	// The freed hold is available again.
+	if _, err := ledger.Reserve("run", 100, 0); err != nil {
+		t.Fatalf("release must regrant: %v", err)
+	}
+	if reserved := ledger.Reserved().TotalTokens; reserved != 100 {
+		t.Fatalf("reserved = %d, want 100", reserved)
+	}
+
+}
+
+// TestLedgerCostDimensionGate covers the cost gate across reservations.
+func TestLedgerCostDimensionGate(t *testing.T) {
+	ledger, _ := NewLedger(Ceiling{MaxCostUSD: 10})
+
+	hold, err := ledger.Reserve("run", 0, 4)
+	if err != nil {
+		t.Fatalf("reserve cost: %v", err)
+	}
+	if _, err := ledger.Reserve("run", 0, 7); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatalf("cost projection must include holds, got %v", err)
+	}
+
+	if err := hold.Commit(0, 3.25); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if actual := ledger.Spent().CostUSD; actual != 3.25 {
+		t.Fatalf("spent cost = %.4f, want 3.25", actual)
+	}
+}
+
+// TestLedgerReservationSettleSemantics: one reservation settles exactly
+// once; hold accounting reconciles on both paths.
+func TestLedgerReservationSettleSemantics(t *testing.T) {
+	ledger, _ := NewLedger(Ceiling{MaxTotalTokens: 100})
+
+	// Double commit.
+	commitHold, err := ledger.Reserve("run", 10, 0)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if err := commitHold.Commit(8, 0); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := commitHold.Commit(8, 0); !errors.Is(err, ErrReservationSettled) {
+		t.Fatalf("second commit = %v, want ErrReservationSettled", err)
+	}
+	if err := commitHold.Release(); !errors.Is(err, ErrReservationSettled) {
+		t.Fatalf("commit then release = %v, want ErrReservationSettled", err)
+	}
+	if committed := commitHold.Committed(); !committed {
+		t.Fatal("Committed() must reflect the settled commit")
+	}
+	if reserved := ledger.Reserved().TotalTokens; reserved != 0 {
+		t.Fatalf("reserved after commit = %d, want 0", reserved)
+	}
+
+	// Double release.
+	releaseHold, err := ledger.Reserve("run", 10, 0)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if err := releaseHold.Release(); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := releaseHold.Release(); !errors.Is(err, ErrReservationSettled) {
+		t.Fatalf("second release = %v, want ErrReservationSettled", err)
+	}
+
+	// A fresh hold stays open after a malformed commit attempt.
+	pending, err := ledger.Reserve("run", 5, 0)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if pending.Committed() {
+		t.Fatal("fresh reservation must not be committed")
+	}
+
+	// Negative actuals are malformed.
+	if err := pending.Commit(-1, 0); !errors.Is(err, ErrMalformedBudget) {
+		t.Fatalf("negative commit = %v, want ErrMalformedBudget", err)
+	}
+	if _, err := ledger.Reserve("run", -5, 0); !errors.Is(err, ErrMalformedBudget) {
+		t.Fatalf("negative estimate = %v, want ErrMalformedBudget", err)
+	}
+	// The malformed commit did not settle the hold.
+	if reserved := ledger.Reserved().TotalTokens; reserved != 5 {
+		t.Fatalf("reserved after malformed commit = %d, want 5", reserved)
+	}
+	pending.Release()
 }
 
 func TestLedgerContextPropagation(t *testing.T) {
