@@ -14,8 +14,8 @@ func TestParseCaptureMode(t *testing.T) {
 		{"minimal", CaptureMinimal},
 		{"standard", CaptureStandard},
 		{"full", CaptureFull},
-		{"unknown", CaptureStandard}, // Default
-		{"", CaptureStandard},        // Default
+		{"unknown", CaptureMinimal}, // Fails closed: metadata only
+		{"", CaptureMinimal},        // Fails closed: metadata only
 	}
 
 	for _, tt := range tests {
@@ -97,8 +97,8 @@ func TestNewAdapterWithEndpoint(t *testing.T) {
 	if adapter.Endpoint != endpoint {
 		t.Errorf("Endpoint = %q, want %q", adapter.Endpoint, endpoint)
 	}
-	if adapter.CaptureMode != CaptureStandard {
-		t.Errorf("CaptureMode = %v, want %v", adapter.CaptureMode, CaptureStandard)
+	if adapter.CaptureMode != CaptureMinimal {
+		t.Errorf("CaptureMode = %v, want %v (metadata-only default)", adapter.CaptureMode, CaptureMinimal)
 	}
 	if adapter.SampleRate != 1.0 {
 		t.Errorf("SampleRate = %v, want 1.0", adapter.SampleRate)
@@ -110,10 +110,10 @@ func TestNewAdapterWithEndpoint(t *testing.T) {
 
 func TestAdapterShouldCapture(t *testing.T) {
 	tests := []struct {
-		mode              CaptureMode
-		llmContent        bool
-		edgeData          bool
-		snapshots         bool
+		mode       CaptureMode
+		llmContent bool
+		edgeData   bool
+		snapshots  bool
 	}{
 		{CaptureMinimal, false, false, false},
 		{CaptureStandard, true, false, false},
@@ -162,5 +162,22 @@ func TestRunSnapshotStorage(t *testing.T) {
 	}
 	if string(snapshot.GraphDefinition) != `{"id":"test"}` {
 		t.Error("GraphDefinition not stored correctly")
+	}
+}
+
+func TestAdapterContentCaptureLadder(t *testing.T) {
+	tests := []struct {
+		mode    CaptureMode
+		enabled bool
+	}{
+		{CaptureMinimal, false},
+		{CaptureStandard, true},
+		{CaptureFull, true},
+	}
+	for _, tt := range tests {
+		adapter := &Adapter{CaptureMode: tt.mode}
+		if got := adapter.ContentCapture().Enabled; got != tt.enabled {
+			t.Errorf("ContentCapture(%v).Enabled = %v, want %v", tt.mode, got, tt.enabled)
+		}
 	}
 }

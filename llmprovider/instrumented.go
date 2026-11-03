@@ -21,6 +21,12 @@ type LLMEventContext struct {
 	// events and computed cost accounting for llm.response events. When
 	// nil, events carry actual usage only.
 	Estimator *CostEstimator
+	// Capture optionally overrides the content capture policy for
+	// emitters wired outside a runtime run. When the client runs inside
+	// a runtime run, the run-scoped policy from the node context takes
+	// precedence. Nil means the default metadata-only policy: no
+	// prompts, messages, completions, or tool calls in events.
+	Capture *runtime.ContentCapture
 }
 
 // InstrumentedClient wraps an LLMClient to emit runtime events for observability.
@@ -47,7 +53,7 @@ func (c *InstrumentedClient) Complete(ctx context.Context, req core.LLMRequest) 
 
 	// Emit LLM call event before the request
 	if c.emitter != nil {
-		c.emitLLMCallEvent(req, startTime)
+		c.emitLLMCallEvent(ctx, req, startTime)
 	}
 
 	// Execute the actual LLM call
@@ -58,14 +64,32 @@ func (c *InstrumentedClient) Complete(ctx context.Context, req core.LLMRequest) 
 
 	// Emit LLM response event after the request
 	if c.emitter != nil {
-		c.emitLLMResponseEvent(req, resp, err, latencyMs, endTime)
+		c.emitLLMResponseEvent(ctx, req, resp, err, latencyMs, endTime)
 	}
 
 	return resp, err
 }
 
-// emitLLMCallEvent emits an event before the LLM call.
-func (c *InstrumentedClient) emitLLMCallEvent(req core.LLMRequest, startTime time.Time) {
+// resolveCapture returns the content capture policy for one call: the
+// run-scoped policy from the node context when the client runs inside a
+// runtime run, else the client's configured override, else the default
+// metadata-only policy.
+func (c *InstrumentedClient) resolveCapture(ctx context.Context) runtime.ContentCapture {
+	if capture, ok := runtime.ContentCaptureFromContext(ctx); ok {
+		return capture
+	}
+	if c.ctx.Capture != nil {
+		return *c.ctx.Capture
+	}
+	return runtime.ContentCapture{}
+}
+
+// emitLLMCallEvent emits an event before the LLM call. Content fields
+// (system prompt, instructions, messages, input text, JSON schema) are
+// classified per the capture policy: shape descriptors by default,
+// bounded redacted content when capture is opted in.
+func (c *InstrumentedClient) emitLLMCallEvent(ctx context.Context, req core.LLMRequest, startTime time.Time) {
+	capture := c.resolveCapture(ctx)
 	event := runtime.Event{
 		Kind:     runtime.EventLLMCall,
 		RunID:    c.ctx.RunID,
@@ -77,21 +101,21 @@ func (c *InstrumentedClient) emitLLMCallEvent(req core.LLMRequest, startTime tim
 
 	// Add request details to payload
 	event.Payload["model"] = req.Model
-	event.Payload["system_prompt"] = req.System
+	event = event.WithContentPayload("system_prompt", req.System, capture)
 
 	if req.Instructions != "" {
-		event.Payload["instructions"] = req.Instructions
+		event = event.WithContentPayload("instructions", req.Instructions, capture)
 	}
 
 	// Serialize messages
 	if len(req.Messages) > 0 {
 		if messagesJSON, err := json.Marshal(req.Messages); err == nil {
-			event.Payload["messages"] = string(messagesJSON)
+			event = event.WithContentPayload("messages", string(messagesJSON), capture)
 		}
 	}
 
 	if req.InputText != "" {
-		event.Payload["input_text"] = req.InputText
+		event = event.WithContentPayload("input_text", req.InputText, capture)
 	}
 
 	if req.Temperature != nil {
@@ -110,15 +134,18 @@ func (c *InstrumentedClient) emitLLMCallEvent(req core.LLMRequest, startTime tim
 
 	if req.JSONSchema != nil {
 		if schemaJSON, err := json.Marshal(req.JSONSchema); err == nil {
-			event.Payload["json_schema"] = string(schemaJSON)
+			event = event.WithContentPayload("json_schema", string(schemaJSON), capture)
 		}
 	}
 
 	c.emitter(event)
 }
 
-// emitLLMResponseEvent emits an event after the LLM response.
-func (c *InstrumentedClient) emitLLMResponseEvent(req core.LLMRequest, resp core.LLMResponse, err error, latencyMs int64, endTime time.Time) {
+// emitLLMResponseEvent emits an event after the LLM response. The
+// completion, tool calls, and reasoning summary are content-classified;
+// failures carry a typed error code and a scrubbed message.
+func (c *InstrumentedClient) emitLLMResponseEvent(ctx context.Context, req core.LLMRequest, resp core.LLMResponse, err error, latencyMs int64, endTime time.Time) {
+	capture := c.resolveCapture(ctx)
 	event := runtime.Event{
 		Kind:     runtime.EventLLMResponse,
 		RunID:    c.ctx.RunID,
@@ -132,13 +159,14 @@ func (c *InstrumentedClient) emitLLMResponseEvent(req core.LLMRequest, resp core
 	event.Payload["model"] = req.Model
 
 	if err != nil {
-		event.Payload["error"] = err.Error()
+		event.Payload["error"] = runtime.RedactText(err.Error())
+		event.Payload["error_code"] = runtime.ErrorCodeFor(err)
 		event.Payload["status"] = "error"
 	} else {
 		event.Payload["status"] = "success"
 		event.Payload["provider"] = resp.Provider
 		event.Payload["response_model"] = resp.Model
-		event.Payload["completion"] = resp.Text
+		event = event.WithContentPayload("completion", resp.Text, capture)
 		event.Payload["stop_reason"] = resp.Status
 
 		// Token usage
@@ -160,7 +188,7 @@ func (c *InstrumentedClient) emitLLMResponseEvent(req core.LLMRequest, resp core
 		// Tool calls
 		if len(resp.ToolCalls) > 0 {
 			if toolCallsJSON, err := json.Marshal(resp.ToolCalls); err == nil {
-				event.Payload["tool_calls"] = string(toolCallsJSON)
+				event = event.WithContentPayload("tool_calls", string(toolCallsJSON), capture)
 			}
 		}
 
@@ -174,7 +202,7 @@ func (c *InstrumentedClient) emitLLMResponseEvent(req core.LLMRequest, resp core
 		// Reasoning output
 		if resp.Reasoning != nil {
 			event.Payload["reasoning_id"] = resp.Reasoning.ID
-			event.Payload["reasoning_summary"] = resp.Reasoning.Summary
+			event = event.WithContentPayload("reasoning_summary", resp.Reasoning.Summary, capture)
 		}
 	}
 
@@ -198,10 +226,11 @@ func NewInstrumentedStreamingClient(client core.StreamingLLMClient, emitter runt
 // CompleteStream sends a streaming completion request and emits observability events.
 func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req core.LLMRequest) (<-chan core.StreamChunk, error) {
 	startTime := time.Now()
+	capture := c.resolveCapture(ctx)
 
 	// Emit LLM call event before the request
 	if c.emitter != nil {
-		c.emitLLMCallEvent(req, startTime)
+		c.emitLLMCallEvent(ctx, req, startTime)
 	}
 
 	// Execute the actual streaming LLM call
@@ -211,7 +240,7 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 		if c.emitter != nil {
 			endTime := time.Now()
 			latencyMs := endTime.Sub(startTime).Milliseconds()
-			c.emitLLMResponseEvent(req, core.LLMResponse{}, err, latencyMs, endTime)
+			c.emitLLMResponseEvent(ctx, req, core.LLMResponse{}, err, latencyMs, endTime)
 		}
 		return nil, err
 	}
@@ -266,14 +295,15 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 
 					event.Payload["latency_ms"] = latencyMs
 					event.Payload["model"] = req.Model
-					event.Payload["completion"] = chunk.Accumulated
+					event = event.WithContentPayload("completion", chunk.Accumulated, capture)
 
 					if ttftMs > 0 {
 						event.Payload["ttft_ms"] = ttftMs
 					}
 
 					if chunk.Error != nil {
-						event.Payload["error"] = chunk.Error.Error()
+						event.Payload["error"] = runtime.RedactText(chunk.Error.Error())
+						event.Payload["error_code"] = runtime.ErrorCodeFor(chunk.Error)
 						event.Payload["status"] = "error"
 					} else {
 						event.Payload["status"] = "success"

@@ -396,6 +396,82 @@ func TestToolNode_Run_EmitsToolEvents(t *testing.T) {
 	}
 }
 
+func TestToolNode_Run_ToolCallArgumentsPrivacy(t *testing.T) {
+	tool := &mockPetalTool{
+		name:   "search",
+		result: map[string]any{"found": true},
+	}
+
+	node := NewToolNode("my-tool", tool, ToolNodeConfig{
+		OutputKey:    "result",
+		StaticArgs:   map[string]any{"query": "secret search terms", "limit": 2},
+		RequiredArgs: []string{"query", "limit"},
+		RetryPolicy:  core.RetryPolicy{MaxAttempts: 1, Backoff: time.Millisecond},
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	// Default policy: no arguments content, only a shape descriptor.
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	if _, err := node.Run(ctx, env); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var callEvent *runtime.Event
+	for i := range events {
+		if events[i].Kind == runtime.EventToolCall {
+			callEvent = &events[i]
+		}
+	}
+	if callEvent == nil {
+		t.Fatal("tool.call event missing")
+	}
+	if _, present := callEvent.Payload["arguments"]; present {
+		t.Errorf("tool.call carries arguments by default: %+v", callEvent.Payload)
+	}
+	shape, ok := callEvent.Payload["arguments_shape"].(map[string]string)
+	if !ok {
+		t.Fatalf("arguments_shape = %#v, want map[string]string", callEvent.Payload["arguments_shape"])
+	}
+	if shape["query"] != "string" || shape["limit"] != "number" {
+		t.Errorf("arguments_shape = %+v", shape)
+	}
+
+	// Opt-in: captured arguments are redacted (values with secret names
+	// masked, credential patterns scrubbed).
+	events = nil
+	capture := runtime.ContentCapture{Enabled: true}
+	ctx = runtime.ContextWithContentCapture(
+		runtime.ContextWithEmitter(context.Background(), emitter), capture)
+	env = core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	if _, err := node.Run(ctx, env); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for i := range events {
+		if events[i].Kind != runtime.EventToolCall {
+			continue
+		}
+		args, ok := events[i].Payload["arguments"].(map[string]any)
+		if !ok {
+			t.Fatalf("captured arguments = %#v, want map", events[i].Payload["arguments"])
+		}
+		if args["query"] != "secret search terms" {
+			t.Errorf("query = %v, want captured value", args["query"])
+		}
+		if args["limit"] != 2 {
+			t.Errorf("limit = %v, want captured value", args["limit"])
+		}
+	}
+}
+
 // countingMockTool fails a specified number of times before succeeding.
 type countingMockTool struct {
 	name          string

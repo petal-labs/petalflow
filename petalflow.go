@@ -247,6 +247,13 @@ type (
 	// Event is a structured, streamable record of what happened during execution.
 	Event = runtime.Event
 
+	// ContentCapture gates opt-in content capture for event payloads.
+	// The zero value is the default: metadata only.
+	ContentCapture = runtime.ContentCapture
+
+	// PayloadClass classifies a payload field by privacy impact.
+	PayloadClass = runtime.PayloadClass
+
 	// EventEmitter is a function type for emitting events.
 	EventEmitter = runtime.EventEmitter
 
@@ -319,6 +326,15 @@ const (
 	EventMemoryRead       = runtime.EventMemoryRead
 	EventMemoryWrite      = runtime.EventMemoryWrite
 	EventContextAssembled = runtime.EventContextAssembled
+)
+
+// Event privacy helpers: SanitizeEvent applies the payload privacy
+// classification, RedactText scrubs credential-shaped material, and
+// ErrorCodeFor maps failures to stable codes.
+var (
+	SanitizeEvent = runtime.SanitizeEvent
+	RedactText    = runtime.RedactText
+	ErrorCodeFor  = runtime.ErrorCodeFor
 )
 
 // StepAction constants

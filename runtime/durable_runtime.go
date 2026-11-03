@@ -127,6 +127,9 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		event.Seq = seq.Next()
+		// Payload privacy is applied at the emit choke point so every
+		// downstream surface inherits the same classification.
+		event = SanitizeEvent(event, opts.ContentCapture)
 		record.LastSeq = event.Seq
 		record.UpdatedAt = opts.Now()
 		if opts.EventBus != nil {
@@ -217,7 +220,9 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		WithElapsed(opts.Now().Sub(record.StartedAt)).
 		WithPayload("status", string(status))
 	if runErr != nil {
-		finish = finish.WithPayload("error", runErr.Error())
+		finish = finish.
+			WithPayload("error", RedactText(runErr.Error())).
+			WithPayload("error_code", ErrorCodeFor(runErr))
 	}
 	emit(finish)
 	if err := opts.RunStore.Update(context.Background(), record); err != nil && runErr == nil {

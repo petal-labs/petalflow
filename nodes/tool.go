@@ -118,11 +118,14 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 		return nil, fmt.Errorf("failed to build args: %w", err)
 	}
 
-	// Emit tool.call event
+	// Emit tool.call event (arguments are content-classified: shape
+	// descriptor by default, bounded redacted arguments when capture is
+	// opted in).
+	capture, _ := runtime.ContentCaptureFromContext(ctx)
 	emit(runtime.NewEvent(runtime.EventToolCall, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("tool_name", tool.Name()).
-		WithPayload("arguments", args))
+		WithContentPayload("arguments", args, capture))
 
 	// Policy gate: fails with a typed error before any side effect when
 	// the caller's effective policy denies the tool. Rejections are

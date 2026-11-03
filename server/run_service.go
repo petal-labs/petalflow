@@ -285,6 +285,7 @@ func (s *Server) executeWorkflowRunSync(
 		opts.ToolApprovalVerifier = s.toolApprovalVerifier()
 	}
 	opts.EventEmitterDecorator = combineEmitDecorators(s.emitDecorator, extraDecorator)
+	opts.ContentCapture = s.contentCapture
 
 	if s.bus != nil {
 		opts.EventBus = s.bus

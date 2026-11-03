@@ -54,7 +54,9 @@ func (m CaptureMode) String() string {
 	}
 }
 
-// ParseCaptureMode parses a string into a CaptureMode.
+// ParseCaptureMode parses a string into a CaptureMode. Unknown values
+// resolve to CaptureMinimal so misconfiguration fails closed: metadata
+// only, no content capture.
 func ParseCaptureMode(s string) CaptureMode {
 	switch s {
 	case "minimal":
@@ -64,7 +66,7 @@ func ParseCaptureMode(s string) CaptureMode {
 	case "full":
 		return CaptureFull
 	default:
-		return CaptureStandard
+		return CaptureMinimal
 	}
 }
 
@@ -123,10 +125,12 @@ func NewAdapter(cfg *daemon.PetalTraceConfig) *Adapter {
 }
 
 // NewAdapterWithEndpoint creates a simple adapter with just an endpoint.
+// Capture defaults to minimal (metadata only) per the event privacy
+// defaults; enable content capture explicitly via CaptureMode.
 func NewAdapterWithEndpoint(endpoint string) *Adapter {
 	return &Adapter{
 		Endpoint:            endpoint,
-		CaptureMode:         CaptureStandard,
+		CaptureMode:         CaptureMinimal,
 		SampleRate:          1.0,
 		AlwaysCaptureErrors: true,
 		runSnapshots:        make(map[string]*RunSnapshot),
@@ -312,4 +316,12 @@ func (a *Adapter) ShouldCaptureEdgeData() bool {
 // ShouldCaptureSnapshots returns true if graph/input snapshots should be captured.
 func (a *Adapter) ShouldCaptureSnapshots() bool {
 	return a.CaptureMode == CaptureFull
+}
+
+// ContentCapture maps the capture ladder onto the runtime event
+// privacy policy: minimal is metadata-only (the default), standard and
+// full opt in to bounded, redacted content capture for prompts,
+// completions, messages, and tool arguments.
+func (a *Adapter) ContentCapture() runtime.ContentCapture {
+	return runtime.ContentCapture{Enabled: a.CaptureMode >= CaptureStandard}
 }

@@ -562,8 +562,54 @@ func TestLLMNode_Run_EmitsOutputFinalEvent(t *testing.T) {
 	if events[0].Kind != runtime.EventNodeOutputFinal {
 		t.Errorf("kind = %v, want %v", events[0].Kind, runtime.EventNodeOutputFinal)
 	}
-	if events[0].Payload["text"] != "Hello!" {
-		t.Errorf("text = %v, want 'Hello!'", events[0].Payload["text"])
+	// Default policy: no completion content, only a shape descriptor.
+	if _, present := events[0].Payload["text"]; present {
+		t.Errorf("text payload present by default, want metadata only: %+v", events[0].Payload)
+	}
+	if events[0].Payload["text_bytes"] != len("Hello!") {
+		t.Errorf("text_bytes = %v, want %d", events[0].Payload["text_bytes"], len("Hello!"))
+	}
+}
+
+func TestLLMNode_Run_OutputFinalEventContentCapture(t *testing.T) {
+	client := &mockLLMClient{
+		response: core.LLMResponse{Text: "secret sk-abcdef1234567890 tail", Model: "gpt-4"},
+	}
+
+	node := NewLLMNode("test-llm", client, LLMNodeConfig{
+		Model:     "gpt-4",
+		OutputKey: "answer",
+	})
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	// Explicit opt-in: content capture enabled with a small bound.
+	capture := runtime.ContentCapture{Enabled: true, MaxBytes: 32}
+	ctx := runtime.ContextWithContentCapture(
+		runtime.ContextWithEmitter(context.Background(), emitter), capture)
+	env := core.NewEnvelope()
+	env.Trace.RunID = "test-run"
+
+	_, err := node.Run(ctx, env)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	text, _ := events[0].Payload["text"].(string)
+	if text == "" {
+		t.Fatalf("captured text missing: %+v", events[0].Payload)
+	}
+	if strings.Contains(text, "sk-abcdef1234567890") {
+		t.Errorf("captured text leaks credentials: %q", text)
+	}
+	if len(text) > 32 {
+		t.Errorf("captured text exceeds bound: %d bytes", len(text))
 	}
 }
 

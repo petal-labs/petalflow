@@ -225,7 +225,10 @@ func (c *ChainClient) fallbackEvent(runID, nodeHint string, from, to *chainTarge
 	event = event.
 		WithPayload("provider", from.config.Provider).
 		WithPayload("model", from.config.Model).
-		WithPayload("trigger_error", trigger.Error()).
+		// Failure triggers carry a typed code plus a scrubbed message:
+		// raw provider/transport errors never persist.
+		WithPayload("trigger_error", runtime.RedactText(trigger.Error())).
+		WithPayload("error_code", runtime.ErrorCodeFor(trigger)).
 		WithPayload("fallback_to_provider", to.config.Provider).
 		WithPayload("fallback_to_model", to.config.Model).
 		WithPayload("attempt", attempt)

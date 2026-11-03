@@ -142,5 +142,13 @@ instrumented := llmprovider.NewInstrumentedClient(client, emitter, llmprovider.L
 })
 ```
 
+The instrumented client is metadata-only by default: `llm.call` /
+`llm.response` events carry model, usage, latency, and cost, while prompts,
+messages, completions, and tool calls appear as shape descriptors (sizes,
+counts). To capture content (bounded and redacted), either run inside a
+runtime that set `RunOptions.ContentCapture`, or set `Capture:
+&runtime.ContentCapture{Enabled: true}` on the `LLMEventContext`. Failure
+events carry a typed `error_code` plus a scrubbed message.
+
 These actual/estimated/unknown distinctions are what the budget ceilings
 (#207) enforce against.

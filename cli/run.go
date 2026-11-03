@@ -239,6 +239,10 @@ func buildRunOptions(cmd *cobra.Command) (runtime.RunOptions, bool) {
 	streaming, _ := cmd.Flags().GetBool("stream")
 	if streaming {
 		opts.EventHandler = runStreamingEventHandler(cmd.OutOrStdout())
+		// Streaming prints node output to the caller's terminal: an
+		// explicit, local opt-in to content capture. CLI runs do not
+		// persist events, so captured content stays on stdout.
+		opts.ContentCapture.Enabled = true
 	}
 	return opts, streaming
 }

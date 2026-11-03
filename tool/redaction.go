@@ -3,10 +3,12 @@ package tool
 import (
 	"net/url"
 	"strings"
+
+	"github.com/petal-labs/petalflow/security"
 )
 
 // MaskedSecretValue is used in user-facing output for sensitive config values.
-const MaskedSecretValue = "**********"
+const MaskedSecretValue = security.MaskedValue
 
 // sensitiveHeaderNames are HTTP header names whose values are always
 // redacted in user-facing registration output.

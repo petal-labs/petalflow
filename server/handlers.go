@@ -549,6 +549,7 @@ func (s *Server) startStreamingRuntime(
 	opts.WorkflowVersion = workflowVersion
 	opts.TenantID = tenantID
 	opts.IdempotencyKey = idempotencyKey
+	opts.ContentCapture = s.contentCapture
 	if s.runStore != nil {
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
 	}

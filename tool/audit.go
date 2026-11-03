@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/petal-labs/petalflow/security"
 )
 
 // ToolAuditKind classifies one lifecycle observation in the tool audit
@@ -191,31 +192,11 @@ func DefaultToolAuditReason(err error) string {
 	return ToolAuditError
 }
 
-// Audit redaction patterns: obvious credential-shaped values are
-// replaced outright, and key/value pairs keep their key prefix while
-// the value is masked. Structured reasons (typed codes) never embed
-// such material by construction; these backstops protect records
-// written from operator notes and payload summaries.
-var (
-	secretValuePattern = regexp.MustCompile(`(?i)\b(sk-[A-Za-z0-9]{8,}|Bearer\s+[A-Za-z0-9._\-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[baprs]-[A-Za-z0-9\-]{10,})\b`)
-	secretKeyPattern   = regexp.MustCompile(`(?i)\b((?:password|passwd|secret|token|api[_-]?key)\s*[:=]\s*)([^\s;,&]+)\b`)
-)
-
 // RedactAuditText scrubs obvious secret material from free-form audit
-// strings.
+// strings. It delegates to the canonical shared scrubber
+// (security.ScrubSecrets).
 func RedactAuditText(text string) string {
-	if text == "" {
-		return ""
-	}
-	scrubbed := secretValuePattern.ReplaceAllString(text, MaskedSecretValue)
-	return secretKeyPattern.ReplaceAllStringFunc(scrubbed, func(match string) string {
-		submatch := secretKeyPattern.FindStringSubmatchIndex(match)
-		if len(submatch) < 4 {
-			return match
-		}
-		prefix := match[:submatch[3]]
-		return prefix + MaskedSecretValue
-	})
+	return security.ScrubSecrets(text)
 }
 
 // RedactAuditRecord redacts reason fields on a record copy.

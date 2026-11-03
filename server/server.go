@@ -40,6 +40,13 @@ type ServerConfig struct {
 	// AuditStore records the tool lifecycle trail (approvals, denials,
 	// failures). A nil store disables audit recording.
 	AuditStore tool.ToolAuditStore
+	// ContentCapture opts in to capturing content-classified payload
+	// fields (prompts, completions, messages, tool arguments) in run
+	// events — and therefore in the persisted event store and the
+	// run-events API, which inherit the runtime's classification. The
+	// zero value is the default: metadata only. Captured values are
+	// size-bounded and redacted before emission or persistence.
+	ContentCapture runtime.ContentCapture
 }
 
 // SecurityConfig controls authentication, CORS, and request concurrency.
@@ -83,6 +90,8 @@ type Server struct {
 	defaultTenantPolicy *tool.ToolPolicy
 	// audit records the tool lifecycle trail; nil disables recording.
 	audit *tool.ToolAuditRecorder
+	// contentCapture is the configured event content capture policy.
+	contentCapture runtime.ContentCapture
 	// planHook, when set, overrides run planning. It is a test seam.
 	planHook func(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error)
 }
@@ -139,6 +148,7 @@ func NewServer(cfg ServerConfig) *Server {
 		jobStore:            cfg.JobStore,
 		defaultTenantPolicy: cfg.DefaultTenantPolicy,
 		audit:               tool.NewToolAuditRecorder(cfg.AuditStore),
+		contentCapture:      cfg.ContentCapture,
 	}
 }
 

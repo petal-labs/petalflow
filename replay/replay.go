@@ -102,8 +102,8 @@ func (r *Replayer) Replay(ctx context.Context, g graph.Graph, base runtime.RunOp
 	ctx = context.WithValue(ctx, replayRunIDKey{}, r.rec.RunID)
 
 	opts := base
-	// Freeze the clock at the recording's start so elapsed measurements are
-	// deterministic (zero) during replay.
+	// Freeze the clock at the recording's start so elapsed measurements
+	// are deterministic (zero) during replay.
 	opts.Now = func() time.Time { return r.rec.StartedAt }
 	if base.Now != nil {
 		baseNow := base.Now
@@ -111,6 +111,10 @@ func (r *Replayer) Replay(ctx context.Context, g graph.Graph, base runtime.RunOp
 	}
 	// Timeouts are wall-clock dependent and non-deterministic offline.
 	opts.NodeTimeout = 0
+	// Replay captures at full fidelity so Verify can diff outputs: the
+	// replay recording is an in-memory sensitive artifact, and the
+	// re-emitted fixture events carry the content verification needs.
+	opts.ContentCapture = FullFidelityCapture()
 	opts.EventHandler = capture.Handle
 	opts.NodeRecorder = capture
 	if base.EventHandler != nil {
@@ -362,8 +366,12 @@ func verifyInteractions(seq int, orig, rep NodeRecord) []Difference {
 	}
 	for i := 0; i < min(len(orig.LLM), len(rep.LLM)); i++ {
 		o, r := orig.LLM[i], rep.LLM[i]
-		if o.Model != r.Model || o.Completion != r.Completion || o.StopReason != r.StopReason ||
-			o.Usage != r.Usage {
+		// Completion content is compared only when the original
+		// recording captured it: redacted and contentless originals
+		// (the default event privacy policy) carry nothing to compare.
+		contentDiff := comparableContent(o.Completion) && o.Completion != r.Completion
+		metaDiff := o.Model != r.Model || o.StopReason != r.StopReason || o.Usage != r.Usage
+		if contentDiff || metaDiff {
 			diffs = append(diffs, Difference{
 				NodeID:  rep.NodeID,
 				Kind:    "llm_calls",
@@ -390,6 +398,12 @@ func verifyInteractions(seq int, orig, rep NodeRecord) []Difference {
 		}
 	}
 	return diffs
+}
+
+// comparableContent reports whether a recorded string is real captured
+// content (not empty and not a redaction placeholder).
+func comparableContent(s string) bool {
+	return s != "" && s != defaultPlaceholder
 }
 
 // sameMap compares two tool result maps for content equality.

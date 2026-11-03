@@ -13,6 +13,22 @@ import (
 	"github.com/petal-labs/petalflow/runtime"
 )
 
+// replayCaptureLimit bounds captured content for full-fidelity
+// recordings. It is deliberately generous (1 MiB per field) so fixtures
+// and verification reproduce recorded prompts and completions exactly;
+// captured values are still redacted.
+const replayCaptureLimit = 1 << 20
+
+// FullFidelityCapture returns the content capture policy for
+// full-fidelity recordings: content capture enabled with a generous
+// bound. Recordings made with it are sensitive artifacts — handle like
+// AllowAllPolicy output. Runs captured with the default policy produce
+// redacted recordings (no prompt or completion content) whose LLM
+// fixtures match by recorded order only.
+func FullFidelityCapture() runtime.ContentCapture {
+	return runtime.ContentCapture{Enabled: true, MaxBytes: replayCaptureLimit}
+}
+
 // Capture records a run into a redacted Recording. It implements
 // runtime.EventHandler (event stream) and runtime.NodeRecorder (per-node
 // envelope state); wire both into RunOptions:

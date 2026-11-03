@@ -92,6 +92,9 @@ func recordRun(t *testing.T) (*Recording, string) {
 	opts.EventHandler = record.Handle
 	opts.NodeRecorder = record
 	opts.CaptureSnapshots = true
+	// Full-fidelity recordings opt in to content capture so recorded
+	// prompts and completions survive the event privacy defaults.
+	opts.ContentCapture = FullFidelityCapture()
 
 	ctx := context.WithValue(context.Background(), runIDKey{}, "recorded-run")
 	_, err = runtime.NewRuntime().Run(ctx, g, core.NewEnvelope().WithInput("subject"), opts)
