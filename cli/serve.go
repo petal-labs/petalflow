@@ -85,6 +85,21 @@ func buildHTTPServer(addr string, handler http.Handler, t httpServerTimeouts) *h
 	}
 }
 
+// serveClientFactory builds the LLM client factory for the workflow
+// server: provider clients wrapped in context instrumentation so
+// hydrated runs emit llm.call/llm.response telemetry (LLM spans and
+// GenAI metrics; metadata-only by default per the event privacy
+// policy).
+func serveClientFactory() hydrate.ClientFactory {
+	return func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+		client, err := llmprovider.NewClient(name, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return llmprovider.NewContextInstrumentedClient(client), nil
+	}
+}
+
 func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
@@ -262,21 +277,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	logger := slog.Default()
 
 	workflowServer := server.NewServer(server.ServerConfig{
-		Store:         workflowStore,
-		ScheduleStore: workflowStore,
-		ToolStore:     toolStore,
-		Providers:     providers,
-		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
-			client, err := llmprovider.NewClient(name, cfg)
-			if err != nil {
-				return nil, err
-			}
-			// Context-instrumented clients emit llm.call/llm.response
-			// events through the runtime node context, producing LLM
-			// spans and GenAI metrics for hydrated workflow runs
-			// (metadata-only by default per the event privacy policy).
-			return llmprovider.NewContextInstrumentedClient(client), nil
-		},
+		Store:               workflowStore,
+		ScheduleStore:       workflowStore,
+		ToolStore:           toolStore,
+		Providers:           providers,
+		ClientFactory:       serveClientFactory(),
 		Bus:                 eb,
 		EventStore:          es,
 		RunStore:            runStore,

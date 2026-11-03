@@ -2,10 +2,13 @@ package otel_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	metricapi "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -644,5 +647,100 @@ func assertBoundedAttributes(t *testing.T, metric string, attrs attribute.Set, a
 		if _, ok := allowed[key]; !ok {
 			t.Errorf("metric %s carries attribute %q outside the bounded allow-list", metric, key)
 		}
+	}
+}
+
+// failingMeter fails on the Nth instrument creation; unimplemented
+// Meter methods panic if reached (they are not needed here).
+type failingMeter struct {
+	metricapi.Meter
+	failAt int
+	calls  int
+}
+
+func (m *failingMeter) fail() error {
+	m.calls++
+	if m.calls == m.failAt {
+		return errors.New("instrument creation failed")
+	}
+	return nil
+}
+
+func (m *failingMeter) Int64Counter(string, ...metricapi.Int64CounterOption) (metricapi.Int64Counter, error) {
+	return nil, m.fail()
+}
+
+func (m *failingMeter) Float64Histogram(string, ...metricapi.Float64HistogramOption) (metricapi.Float64Histogram, error) {
+	return nil, m.fail()
+}
+
+// TestNewMetricsHandlerPropagatesInstrumentErrors covers every
+// instrument-creation error branch: the handler fails loudly instead of
+// silently dropping a metric.
+func TestNewMetricsHandlerPropagatesInstrumentErrors(t *testing.T) {
+	for failAt := 1; failAt <= 6; failAt++ {
+		t.Run(fmt.Sprintf("instrument %d", failAt), func(t *testing.T) {
+			meter := &failingMeter{failAt: failAt}
+			if _, err := petalotel.NewMetricsHandler(meter); err == nil {
+				t.Errorf("NewMetricsHandler should fail when instrument %d cannot be created", failAt)
+			}
+		})
+	}
+}
+
+// TestMetricsHandlerPayloadInt64Variants covers the numeric payload
+// types events may carry (int, int64, and JSON-decoded float64).
+func TestMetricsHandlerPayloadInt64Variants(t *testing.T) {
+	reader, mp := newTestMeter()
+	meter := mp.Meter("test")
+
+	h, err := petalotel.NewMetricsHandler(meter)
+	if err != nil {
+		t.Fatalf("NewMetricsHandler: %v", err)
+	}
+
+	// Latency as int64, tokens as int and float64.
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "run-1",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     time.Now(),
+		Payload: map[string]any{
+			"status":        "success",
+			"model":         "m",
+			"latency_ms":    int64(250),
+			"input_tokens":  float64(3),
+			"output_tokens": 2,
+		},
+	})
+
+	rm := collectMetrics(t, reader)
+	duration := findMetric(rm, "gen_ai.client.operation.duration")
+	if duration == nil {
+		t.Fatal("gen_ai.client.operation.duration not found")
+	}
+	durData, ok := duration.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", duration.Data)
+	}
+	if len(durData.DataPoints) != 1 || durData.DataPoints[0].Sum != 0.25 {
+		t.Fatalf("duration sum = %v, want 0.25", durData.DataPoints)
+	}
+
+	tokens := findMetric(rm, "gen_ai.client.token.usage")
+	if tokens == nil {
+		t.Fatal("gen_ai.client.token.usage not found")
+	}
+	tokenData, ok := tokens.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", tokens.Data)
+	}
+	sums := map[string]float64{}
+	for _, dp := range tokenData.DataPoints {
+		sums[attributeMap(dp.Attributes)["gen_ai.token.type"]] = dp.Sum
+	}
+	if sums["input"] != 3 || sums["output"] != 2 {
+		t.Errorf("token sums = %v, want input 3 output 2", sums)
 	}
 }

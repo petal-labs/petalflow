@@ -273,9 +273,35 @@ func TestRuntime_ResumeFromDurableCheckpoint(t *testing.T) {
 		t.Fatalf("checkpoint = %#v", record.Checkpoint)
 	}
 
-	result, err := NewRuntime().Resume(context.Background(), g, record.ID, RunOptions{RunStore: store})
+	// The resume run carries correlation context (workflow, tenant,
+	// trigger) on its run.resumed event.
+	resumeOpts := RunOptions{
+		RunStore:      store,
+		WorkflowID:    "wf-resume",
+		TenantID:      "tenant-a",
+		TriggerSource: "api",
+	}
+	var resumedEvent *Event
+	resumeOpts.EventHandler = func(e Event) {
+		if e.Kind == EventRunResumed && resumedEvent == nil {
+			resumedEvent = &e
+		}
+	}
+	result, err := NewRuntime().Resume(context.Background(), g, record.ID, resumeOpts)
 	if err != nil {
 		t.Fatalf("Resume() error = %v", err)
+	}
+	if resumedEvent == nil {
+		t.Fatal("run.resumed event missing")
+	}
+	for key, want := range map[string]string{
+		"workflow_id": "wf-resume",
+		"tenant_id":   "tenant-a",
+		"trigger":     "api",
+	} {
+		if got, _ := resumedEvent.Payload[key].(string); got != want {
+			t.Errorf("run.resumed %s = %q, want %q", key, got, want)
+		}
 	}
 	if value, ok := result.GetVar("first"); !ok || value != true {
 		t.Fatalf("first output = %v, want true", value)

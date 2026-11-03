@@ -672,3 +672,41 @@ func TestToolNode_RateLimitRecorded(t *testing.T) {
 		t.Fatalf("typed rejections must not retry: invoked %d times, want 1", len(tool.calls))
 	}
 }
+
+func TestToolNode_ToolCallCarriesDescription(t *testing.T) {
+	described := core.NewFuncTool("search", "Search the knowledge base", func(context.Context, map[string]any) (map[string]any, error) {
+		return map[string]any{"ok": true}, nil
+	})
+	plain := &mockPetalTool{name: "bare", result: map[string]any{"ok": true}}
+
+	for _, tt := range []struct {
+		name        string
+		tool        core.PetalTool
+		description string
+	}{
+		{"func tool exposes description", described, "Search the knowledge base"},
+		{"tools without Description omit it", plain, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			node := NewToolNode("n", tt.tool, ToolNodeConfig{OutputKey: "out"})
+			var events []runtime.Event
+			ctx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) { events = append(events, e) })
+			env := core.NewEnvelope()
+			env.Trace.RunID = "run-d"
+
+			if _, err := node.Run(ctx, env); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			var call runtime.Event
+			for _, e := range events {
+				if e.Kind == runtime.EventToolCall {
+					call = e
+				}
+			}
+			got, _ := call.Payload["tool_description"].(string)
+			if got != tt.description {
+				t.Errorf("tool_description = %q, want %q", got, tt.description)
+			}
+		})
+	}
+}

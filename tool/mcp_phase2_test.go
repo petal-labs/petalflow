@@ -106,6 +106,12 @@ func TestMCPAdapterInvoke(t *testing.T) {
 						"keys": {Type: TypeArray, Items: &FieldSpec{Type: TypeString}},
 					},
 				},
+				"boom": {
+					// Maps to a tool the helper server does not know:
+					// invoking it fails inside the MCP call so the
+					// failure observation path is exercised.
+					MCPToolName: "nonexistent_tool",
+				},
 			},
 		},
 		Config: map[string]string{},
@@ -130,6 +136,69 @@ func TestMCPAdapterInvoke(t *testing.T) {
 	if !ok || len(keys) == 0 {
 		t.Fatalf("outputs[keys] = %#v, want non-empty []any", resp.Outputs["keys"])
 	}
+
+	// A workflow-run invocation carries run/tenant correlation onto the
+	// observability observation.
+	recording := &recordingObserver{}
+	SetObserver(recording)
+	defer SetObserver(nil)
+
+	runCtx := ContextWithAuditContext(context.Background(), ToolAuditContext{
+		TenantID: "tenant-a",
+		RunID:    "run-1",
+		NodeID:   "node-1",
+	})
+	if _, err := adapter.Invoke(runCtx, InvokeRequest{
+		Action: "list",
+		Inputs: map[string]any{"bucket": "reports"},
+	}); err != nil {
+		t.Fatalf("Invoke() with run context: %v", err)
+	}
+	if len(recording.invokes) != 1 {
+		t.Fatalf("observations = %d, want 1", len(recording.invokes))
+	}
+	correlation := recording.invokes[0].Correlation
+	if correlation.TenantID != "tenant-a" || correlation.RunID != "run-1" || correlation.NodeID != "node-1" {
+		t.Errorf("observation correlation = %+v, want tenant-a/run-1/node-1", correlation)
+	}
+
+	// A failing invocation records the failure observation with the same
+	// correlation (error emit path).
+	if _, err := adapter.Invoke(runCtx, InvokeRequest{
+		Action: "boom",
+		Inputs: map[string]any{"bucket": "reports"},
+	}); err == nil {
+		t.Fatal("invoking a nonexistent MCP tool should fail")
+	}
+	if len(recording.invokes) != 2 {
+		t.Fatalf("observations = %d, want 2 (success + failure)", len(recording.invokes))
+	}
+	failed := recording.invokes[1]
+	if failed.Success {
+		t.Error("second observation should record the failure")
+	}
+	if failed.Correlation.RunID != "run-1" || failed.Correlation.TenantID != "tenant-a" {
+		t.Errorf("failure observation correlation = %+v", failed.Correlation)
+	}
+}
+
+// recordingObserver captures observations for assertions.
+type recordingObserver struct {
+	invokes []ToolInvokeObservation
+	retries []ToolRetryObservation
+	health  []ToolHealthObservation
+}
+
+func (o *recordingObserver) ObserveInvoke(observation ToolInvokeObservation) {
+	o.invokes = append(o.invokes, observation)
+}
+
+func (o *recordingObserver) ObserveRetry(observation ToolRetryObservation) {
+	o.retries = append(o.retries, observation)
+}
+
+func (o *recordingObserver) ObserveHealth(observation ToolHealthObservation) {
+	o.health = append(o.health, observation)
 }
 
 func TestParseMCPOverlayYAMLValidation(t *testing.T) {

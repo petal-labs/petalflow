@@ -816,3 +816,193 @@ func TestTracingHandler_NodeFailedScrubsCredentialAndRecordsCode(t *testing.T) {
 		}
 	}
 }
+
+// TestTracingHandler_RunSpanCorrelationAttributes feeds a run.started
+// event carrying every correlation field and asserts each lands on the
+// run span.
+func TestTracingHandler_RunSpanCorrelationAttributes(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandler(tp.Tracer("test"))
+
+	now := time.Now()
+	h.Handle(runtime.Event{
+		Kind:  runtime.EventRunStarted,
+		RunID: "run-full",
+		Time:  now,
+		Payload: map[string]any{
+			"graph":              "myGraph",
+			"trigger":            "schedule",
+			"schedule_id":        "sched-1",
+			"workflow_id":        "wf-1",
+			"workflow_version":   "3",
+			"webhook_trigger_id": "hook-1",
+			"webhook_method":     "POST",
+			"scheduled_at":       "2026-01-02T03:04:05Z",
+			"tenant_id":          "tenant-a",
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunFinished,
+		RunID:   "run-full",
+		Time:    now.Add(time.Second),
+		Elapsed: time.Second,
+		Payload: map[string]any{"status": "completed"},
+	})
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d, want 1", len(spans))
+	}
+	runSpan := spans[0]
+	if runSpan.Name != "run:myGraph" {
+		t.Errorf("span name = %q, want run:myGraph", runSpan.Name)
+	}
+	for key, want := range map[string]string{
+		"petalflow.run_id":             "run-full",
+		"petalflow.graph":              "myGraph",
+		"petalflow.trigger":            "schedule",
+		"petalflow.schedule_id":        "sched-1",
+		"petalflow.workflow_id":        "wf-1",
+		"petalflow.webhook_trigger_id": "hook-1",
+		"petalflow.webhook_method":     "POST",
+		"petalflow.scheduled_at":       "2026-01-02T03:04:05Z",
+		"petalflow.tenant_id":          "tenant-a",
+	} {
+		if got := spanAttributeValue(runSpan, key); got != want {
+			t.Errorf("run span %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestTracingHandler_LLMRequestAttributes covers the request-parameter
+// span attributes (temperature, max_tokens) and the no-parent fallback
+// for LLM spans without a node span.
+func TestTracingHandler_LLMRequestAttributes(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandler(tp.Tracer("test"))
+
+	now := time.Now()
+	h.Handle(runtime.Event{Kind: runtime.EventRunStarted, RunID: "r", Time: now, Payload: map[string]any{"graph": "g"}})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeStarted,
+		RunID:    "r",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(time.Millisecond),
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMCall,
+		RunID:    "r",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(2 * time.Millisecond),
+		Payload: map[string]any{
+			"model":       "test-model",
+			"temperature": 0.7,
+			"max_tokens":  256,
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "r",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(3 * time.Millisecond),
+		Payload: map[string]any{
+			"status":      "success",
+			"latency_ms":  42,
+			"ttft_ms":     int64(12),
+			"request_id":  "resp-1",
+			"cost_usd":    0.02,
+			"stop_reason": "end_turn",
+		},
+	})
+	h.Handle(runtime.Event{Kind: runtime.EventRunFinished, RunID: "r", Time: now.Add(4 * time.Millisecond), Payload: map[string]any{"status": "completed"}})
+
+	var chat *tracetest.SpanStub
+	for i, s := range exporter.GetSpans() {
+		if s.Name == "chat test-model" {
+			chat = &exporter.GetSpans()[i]
+		}
+	}
+	if chat == nil {
+		t.Fatal("chat span missing")
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.request.temperature"); got != "0.7" {
+		t.Errorf("temperature = %q, want 0.7", got)
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.request.max_tokens"); got != "256" {
+		t.Errorf("max_tokens = %q, want 256", got)
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.response.id"); got != "resp-1" {
+		t.Errorf("gen_ai.response.id = %q, want resp-1", got)
+	}
+	if got := spanAttributeValue(*chat, "petalflow.llm.request_id"); got != "resp-1" {
+		t.Errorf("petalflow.llm.request_id = %q, want resp-1", got)
+	}
+	if got := spanAttributeValue(*chat, "petalflow.llm.cost_usd"); got != "0.02" {
+		t.Errorf("cost_usd = %q, want 0.02", got)
+	}
+	if got := spanAttributeValue(*chat, "petalflow.llm.ttft_ms"); got != "12" {
+		t.Errorf("ttft_ms = %q, want 12", got)
+	}
+	// Finish reasons: array convention plus the deprecated alias.
+	if got := spanAttributeValue(*chat, "gen_ai.response.finish_reasons"); got != `["end_turn"]` {
+		t.Errorf("finish_reasons = %q, want [\"end_turn\"]", got)
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.response.finish_reason"); got != "end_turn" {
+		t.Errorf("finish_reason = %q, want end_turn", got)
+	}
+}
+
+// TestTracingHandler_LLMAndToolEventsWithoutNodeSpanAreSkipped covers
+// the no-parent fallbacks: LLM and tool events for unknown nodes
+// create no spans.
+func TestTracingHandler_LLMAndToolEventsWithoutNodeSpanAreSkipped(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandler(tp.Tracer("test"))
+
+	now := time.Now()
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMCall,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindLLM,
+		Time:     now,
+		Payload:  map[string]any{"model": "m"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventToolCall,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindTool,
+		Time:     now,
+		Payload:  map[string]any{"tool_name": "t"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventToolResult,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindTool,
+		Time:     now,
+		Payload:  map[string]any{"tool_name": "t"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindLLM,
+		Time:     now,
+		Payload:  map[string]any{"status": "success"},
+	})
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventEdgeTransfer,
+		RunID:   "orphan",
+		Time:    now,
+		Payload: map[string]any{"source_node": "a", "target_node": "b"},
+	})
+
+	if got := len(exporter.GetSpans()); got != 0 {
+		t.Errorf("orphan events created %d spans, want 0", got)
+	}
+}
