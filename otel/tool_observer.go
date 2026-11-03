@@ -13,8 +13,19 @@ import (
 )
 
 // ToolObserver records tool/daemon hardening signals into OpenTelemetry.
+//
+// Correlation: when an observation carries run correlation (workflow-run
+// invocations), metrics gain the bounded tenant dimension and spans are
+// parented into the run's trace tree via the configured span lookup
+// (see WithSpanLookup), carrying gen_ai.tool.name and petalflow.* run
+// correlation attributes. Daemon-level calls without run context emit
+// standalone spans.
 type ToolObserver struct {
 	tracer trace.Tracer
+
+	// spanLookup resolves the active span context for a run/node pair
+	// so transport-level spans join the workflow trace tree.
+	spanLookup SpanLookup
 
 	invocations metric.Int64Counter
 	retries     metric.Int64Counter
@@ -22,8 +33,25 @@ type ToolObserver struct {
 	latency     metric.Float64Histogram
 }
 
+// SpanLookup returns the active span context for a workflow run/node
+// pair, or an empty SpanContext when none is active. TracingHandler
+// exposes suitable lookups (ActiveToolSpanContext, ActiveSpanContext,
+// ActiveRunSpanContext).
+type SpanLookup func(runID, nodeID string) trace.SpanContext
+
+// ObserverOption configures a ToolObserver.
+type ObserverOption func(*ToolObserver)
+
+// WithSpanLookup parents transport-level tool spans into the workflow
+// run's trace tree.
+func WithSpanLookup(lookup SpanLookup) ObserverOption {
+	return func(o *ToolObserver) {
+		o.spanLookup = lookup
+	}
+}
+
 // NewToolObserver creates a tool observer bound to the provided meter/tracer.
-func NewToolObserver(meter metric.Meter, tracer trace.Tracer) (*ToolObserver, error) {
+func NewToolObserver(meter metric.Meter, tracer trace.Tracer, opts ...ObserverOption) (*ToolObserver, error) {
 	invocations, err := meter.Int64Counter(
 		"petalflow.tool.invocations",
 		metric.WithDescription("Number of tool invocations"),
@@ -54,13 +82,41 @@ func NewToolObserver(meter metric.Meter, tracer trace.Tracer) (*ToolObserver, er
 		return nil, err
 	}
 
-	return &ToolObserver{
+	observer := &ToolObserver{
 		tracer:      tracer,
 		invocations: invocations,
 		retries:     retries,
 		health:      health,
 		latency:     latency,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(observer)
+	}
+	return observer, nil
+}
+
+// observeContext resolves the context for a transport-level span: the
+// run trace tree when correlation and a span lookup are available,
+// background otherwise.
+func (o *ToolObserver) observeContext(correlation tool.ObservationCorrelation) (context.Context, []attribute.KeyValue) {
+	attrs := []attribute.KeyValue{}
+	if correlation.TenantID != "" {
+		attrs = append(attrs, attribute.String("tenant_id", correlation.TenantID))
+	}
+	if o.spanLookup == nil || correlation.RunID == "" {
+		return context.Background(), attrs
+	}
+	sc := o.spanLookup(correlation.RunID, correlation.NodeID)
+	if sc.IsValid() {
+		attrs = append(attrs,
+			attribute.String("petalflow.run_id", correlation.RunID),
+		)
+		if correlation.NodeID != "" {
+			attrs = append(attrs, attribute.String("petalflow.node_id", correlation.NodeID))
+		}
+		return trace.ContextWithSpanContext(context.Background(), sc), attrs
+	}
+	return context.Background(), attrs
 }
 
 // ObserveInvoke records one invocation result.
@@ -78,6 +134,9 @@ func (o *ToolObserver) ObserveInvoke(observation tool.ToolInvokeObservation) {
 	if observation.ErrorCode != "" {
 		attrs = append(attrs, attribute.String("error_code", observation.ErrorCode))
 	}
+	if observation.Correlation.TenantID != "" {
+		attrs = append(attrs, attribute.String("tenant_id", observation.Correlation.TenantID))
+	}
 
 	ctx := context.Background()
 	options := metric.WithAttributes(attrs...)
@@ -87,7 +146,14 @@ func (o *ToolObserver) ObserveInvoke(observation tool.ToolInvokeObservation) {
 	if o.tracer == nil {
 		return
 	}
-	_, span := o.tracer.Start(ctx, "tool.invoke", trace.WithAttributes(attrs...))
+	spanCtx, correlationAttrs := o.observeContext(observation.Correlation)
+	spanAttrs := append([]attribute.KeyValue{
+		// OTel GenAI semantic conventions for tool execution.
+		attribute.String("gen_ai.operation.name", "execute_tool"),
+		attribute.String("gen_ai.tool.name", observation.ToolName),
+	}, correlationAttrs...)
+	spanAttrs = append(spanAttrs, attrs...)
+	_, span := o.tracer.Start(spanCtx, observation.ToolName, trace.WithAttributes(spanAttrs...))
 	if !observation.Success {
 		span.SetStatus(codes.Error, observation.ErrorCode)
 	} else {
@@ -110,6 +176,9 @@ func (o *ToolObserver) ObserveRetry(observation tool.ToolRetryObservation) {
 	}
 	if observation.ErrorCode != "" {
 		attrs = append(attrs, attribute.String("error_code", observation.ErrorCode))
+	}
+	if observation.Correlation.TenantID != "" {
+		attrs = append(attrs, attribute.String("tenant_id", observation.Correlation.TenantID))
 	}
 	o.retries.Add(context.Background(), 1, metric.WithAttributes(attrs...))
 }

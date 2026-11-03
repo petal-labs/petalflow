@@ -120,12 +120,19 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 
 	// Emit tool.call event (arguments are content-classified: shape
 	// descriptor by default, bounded redacted arguments when capture is
-	// opted in).
+	// opted in). The tool description is metadata for GenAI semconv
+	// spans (gen_ai.tool.description).
 	capture, _ := runtime.ContentCaptureFromContext(ctx)
-	emit(runtime.NewEvent(runtime.EventToolCall, env.Trace.RunID).
+	callEvent := runtime.NewEvent(runtime.EventToolCall, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("tool_name", tool.Name()).
-		WithContentPayload("arguments", args, capture))
+		WithContentPayload("arguments", args, capture)
+	if describer, ok := tool.(interface{ Description() string }); ok {
+		if description := describer.Description(); description != "" {
+			callEvent = callEvent.WithPayload("tool_description", description)
+		}
+	}
+	emit(callEvent)
 
 	// Policy gate: fails with a typed error before any side effect when
 	// the caller's effective policy denies the tool. Rejections are

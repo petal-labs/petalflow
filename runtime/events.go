@@ -12,6 +12,9 @@ type EventKind string
 
 const (
 	// EventRunStarted is emitted when a graph run begins.
+	// Payload includes: graph, entry, trigger, workflow_id,
+	// workflow_version, and tenant_id (used for trace/metric
+	// correlation).
 	EventRunStarted EventKind = "run.started"
 
 	// EventNodeStarted is emitted when a node begins execution.
@@ -49,6 +52,9 @@ const (
 	EventStepAborted EventKind = "step.aborted"
 
 	// EventToolCall is emitted when a tool invocation begins.
+	// Payload includes: tool_name, tool_description (when the tool
+	// exposes one; used for GenAI span attributes), and arguments
+	// (content-classified: shape descriptor by default).
 	EventToolCall EventKind = "tool.call"
 
 	// EventToolResult is emitted when a tool invocation completes.

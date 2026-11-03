@@ -120,13 +120,14 @@ func (a *MCPAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeRespo
 	})
 	if err != nil {
 		emitInvokeObservation(ToolInvokeObservation{
-			ToolName:   req.ToolName,
-			Action:     actionName,
-			Transport:  a.reg.Manifest.Transport.Type,
-			Attempts:   attempts,
-			DurationMS: elapsedMS(totalStart),
-			Success:    false,
-			ErrorCode:  toolErrorCode(err),
+			ToolName:    req.ToolName,
+			Action:      actionName,
+			Transport:   a.reg.Manifest.Transport.Type,
+			Attempts:    attempts,
+			DurationMS:  elapsedMS(totalStart),
+			Success:     false,
+			ErrorCode:   toolErrorCode(err),
+			Correlation: CorrelationFromContext(ctx),
 		})
 		return InvokeResponse{}, withToolErrorDetails(
 			newToolError(
@@ -151,12 +152,13 @@ func (a *MCPAdapter) Invoke(ctx context.Context, req InvokeRequest) (InvokeRespo
 	response.Metadata["retry_count"] = attempts - 1
 	response.Metadata["total_duration_ms"] = elapsedMS(totalStart)
 	emitInvokeObservation(ToolInvokeObservation{
-		ToolName:   req.ToolName,
-		Action:     actionName,
-		Transport:  a.reg.Manifest.Transport.Type,
-		Attempts:   attempts,
-		DurationMS: elapsedMS(totalStart),
-		Success:    true,
+		ToolName:    req.ToolName,
+		Action:      actionName,
+		Transport:   a.reg.Manifest.Transport.Type,
+		Attempts:    attempts,
+		DurationMS:  elapsedMS(totalStart),
+		Success:     true,
+		Correlation: CorrelationFromContext(ctx),
 	})
 	return response, nil
 }

@@ -16,6 +16,18 @@ import (
 // It maintains maps of active run and node spans, creating and ending them
 // based on event kind.
 //
+// Span names and attributes follow the current OpenTelemetry GenAI semantic
+// conventions: LLM spans are named "chat {model}" carrying
+// gen_ai.operation.name / gen_ai.provider.name / gen_ai.request.model /
+// gen_ai.response.model / gen_ai.usage.* / gen_ai.response.finish_reasons;
+// tool spans are named after the tool with gen_ai.operation.name
+// "execute_tool" and gen_ai.tool.name / gen_ai.tool.description. PetalFlow
+// correlation attributes (petalflow.run_id, petalflow.node_id,
+// petalflow.workflow_id, petalflow.schedule_id, petalflow.tenant_id) link
+// every span into one trace tree per run. gen_ai.system and
+// gen_ai.response.finish_reason are still emitted as deprecated aliases for
+// backends that predate the rename.
+//
 // Payload privacy: the handler is metadata-only by default —
 // content-classified attributes (system prompts, messages, completions,
 // tool calls, edge data previews) are never copied onto spans unless
@@ -33,6 +45,7 @@ type TracingHandler struct {
 	nodeSpans map[string]trace.Span      // runID:nodeID -> span
 	nodeCtxs  map[string]context.Context // runID:nodeID -> context (for LLM child spans)
 	llmSpans  map[string]trace.Span      // runID:nodeID:llm -> span (active LLM call)
+	toolSpans map[string]trace.Span      // runID:nodeID -> span (active tool call)
 }
 
 // NewTracingHandler creates a new TracingHandler that uses the given tracer
@@ -46,6 +59,7 @@ func NewTracingHandler(tracer trace.Tracer) *TracingHandler {
 		nodeSpans: make(map[string]trace.Span),
 		nodeCtxs:  make(map[string]context.Context),
 		llmSpans:  make(map[string]trace.Span),
+		toolSpans: make(map[string]trace.Span),
 	}
 }
 
@@ -64,7 +78,9 @@ func NewTracingHandlerWithCapture(tracer trace.Tracer, capture runtime.ContentCa
 // It implements runtime.EventHandler semantics.
 func (h *TracingHandler) Handle(e runtime.Event) {
 	switch e.Kind {
-	case runtime.EventRunStarted:
+	case runtime.EventRunStarted, runtime.EventRunResumed:
+		// Resumed durable runs create their run span from the resume
+		// event so the continued execution keeps one trace tree.
 		h.handleRunStarted(e)
 	case runtime.EventNodeStarted:
 		h.handleNodeStarted(e)
@@ -73,9 +89,9 @@ func (h *TracingHandler) Handle(e runtime.Event) {
 	case runtime.EventNodeFailed:
 		h.handleNodeFailed(e)
 	case runtime.EventToolCall:
-		h.handleToolEvent(e)
+		h.handleToolCall(e)
 	case runtime.EventToolResult:
-		h.handleToolEvent(e)
+		h.handleToolResult(e)
 	case runtime.EventLLMCall:
 		h.handleLLMCall(e)
 	case runtime.EventLLMResponse:
@@ -131,6 +147,12 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 			scheduledAt = s
 		}
 	}
+	tenantID := ""
+	if value, ok := e.Payload["tenant_id"]; ok {
+		if s, ok := value.(string); ok {
+			tenantID = s
+		}
+	}
 
 	spanName := "run:" + e.RunID
 	if graphName != "" {
@@ -164,6 +186,9 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 	}
 	if scheduledAt != "" {
 		span.SetAttributes(attribute.String("petalflow.scheduled_at", scheduledAt))
+	}
+	if tenantID != "" {
+		span.SetAttributes(attribute.String("petalflow.tenant_id", tenantID))
 	}
 
 	h.mu.Lock()
@@ -252,29 +277,92 @@ func (h *TracingHandler) handleNodeFailed(e runtime.Event) {
 	}
 }
 
-// handleToolEvent adds a span event for tool.call and tool.result events.
-func (h *TracingHandler) handleToolEvent(e runtime.Event) {
+// handleToolCall creates a child span under the node span for tool
+// invocations, following the GenAI "execute tool" semantic conventions
+// (span name is the tool name; gen_ai.tool.name/description attributes).
+func (h *TracingHandler) handleToolCall(e runtime.Event) {
 	key := e.RunID + ":" + e.NodeID
 
 	h.mu.RLock()
-	span, ok := h.nodeSpans[key]
+	parentCtx, ok := h.nodeCtxs[key]
 	h.mu.RUnlock()
+
+	if !ok {
+		// No parent node span; skip tool span creation.
+		return
+	}
+
+	toolName := payloadStringValue(e, "tool_name")
+	toolDescription := payloadStringValue(e, "tool_description")
+
+	spanName := toolName
+	if spanName == "" {
+		spanName = "tool"
+	}
+
+	attrs := []attribute.KeyValue{
+		attribute.String("petalflow.run_id", e.RunID),
+		attribute.String("petalflow.node_id", e.NodeID),
+		// OTel GenAI semantic conventions
+		attribute.String("gen_ai.operation.name", "execute_tool"),
+		attribute.String("gen_ai.tool.name", toolName),
+	}
+	if toolDescription != "" {
+		attrs = append(attrs, attribute.String("gen_ai.tool.description", toolDescription))
+	}
+
+	_, span := h.tracer.Start(parentCtx, spanName,
+		trace.WithAttributes(attrs...),
+		trace.WithTimestamp(e.Time),
+	)
+
+	h.mu.Lock()
+	// Close any stale tool span for this node (defensive: a node that
+	// emits tool.call twice without an intervening tool.result).
+	if prev, ok := h.toolSpans[key]; ok {
+		prev.End()
+	}
+	h.toolSpans[key] = span
+	h.mu.Unlock()
+}
+
+// handleToolResult ends the tool span with the invocation outcome.
+func (h *TracingHandler) handleToolResult(e runtime.Event) {
+	key := e.RunID + ":" + e.NodeID
+
+	h.mu.Lock()
+	span, ok := h.toolSpans[key]
+	if ok {
+		delete(h.toolSpans, key)
+	}
+	h.mu.Unlock()
 
 	if !ok {
 		return
 	}
 
-	attrs := []attribute.KeyValue{
-		attribute.String("petalflow.event_kind", string(e.Kind)),
-	}
-
-	if toolName, found := e.Payload["tool"]; found {
-		if s, ok := toolName.(string); ok {
-			attrs = append(attrs, attribute.String("petalflow.tool_name", s))
+	if isErr, ok := e.Payload["is_error"].(bool); ok && isErr {
+		attrs := spanErrorAttributes(e)
+		if len(attrs) > 0 {
+			span.SetAttributes(attrs...)
 		}
+		errMsg := "tool invocation failed"
+		if code, found := e.Payload["error_code"]; found {
+			if s, ok := code.(string); ok && s != "" {
+				errMsg = "tool invocation failed: " + s
+			}
+		}
+		span.SetStatus(codes.Error, errMsg)
+	} else {
+		span.SetStatus(codes.Ok, "")
 	}
+	span.End(trace.WithTimestamp(e.Time))
+}
 
-	span.AddEvent(string(e.Kind), trace.WithTimestamp(e.Time), trace.WithAttributes(attrs...))
+// payloadStringValue extracts a string payload field.
+func payloadStringValue(e runtime.Event, key string) string {
+	s, _ := e.Payload[key].(string)
+	return s
 }
 
 // handleRunFinished ends the root run span.
@@ -346,8 +434,25 @@ func (h *TracingHandler) ActiveRunSpanContext(runID string) trace.SpanContext {
 	return span.SpanContext()
 }
 
+// ActiveToolSpanContext returns the SpanContext for the active tool span
+// of a node. Tool-level observers use it to parent their transport spans
+// into the run's trace tree. Returns an empty SpanContext if not found.
+func (h *TracingHandler) ActiveToolSpanContext(runID, nodeID string) trace.SpanContext {
+	key := runID + ":" + nodeID
+
+	h.mu.RLock()
+	span, ok := h.toolSpans[key]
+	h.mu.RUnlock()
+
+	if !ok {
+		return trace.SpanContext{}
+	}
+	return span.SpanContext()
+}
+
 // handleLLMCall creates a child span under the node span for LLM requests.
-// It uses OpenTelemetry GenAI semantic conventions plus PetalFlow-specific attributes.
+// Span naming and attributes follow the GenAI "chat" semantic conventions
+// plus PetalFlow-specific correlation attributes.
 func (h *TracingHandler) handleLLMCall(e runtime.Event) {
 	key := e.RunID + ":" + e.NodeID
 
@@ -360,22 +465,18 @@ func (h *TracingHandler) handleLLMCall(e runtime.Event) {
 		return
 	}
 
-	model := ""
-	if m, found := e.Payload["model"]; found {
-		if s, ok := m.(string); ok {
-			model = s
-		}
-	}
+	model := payloadStringValue(e, "model")
 
-	spanName := "llm:" + model
+	spanName := "chat " + model
 	if model == "" {
-		spanName = "llm:unknown"
+		spanName = "chat"
 	}
 
 	attrs := []attribute.KeyValue{
 		attribute.String("petalflow.run_id", e.RunID),
 		attribute.String("petalflow.node_id", e.NodeID),
 		// OTel GenAI semantic conventions
+		attribute.String("gen_ai.operation.name", "chat"),
 		attribute.String("gen_ai.request.model", model),
 	}
 
@@ -441,10 +542,14 @@ func (h *TracingHandler) handleLLMResponse(e runtime.Event) {
 	// Set response attributes using OTel GenAI semantic conventions
 	attrs := []attribute.KeyValue{}
 
-	// Provider (gen_ai.system)
+	// Provider (gen_ai.provider.name; gen_ai.system is the deprecated
+	// alias kept for backends in transition)
 	if provider, found := e.Payload["provider"]; found {
 		if s, ok := provider.(string); ok {
-			attrs = append(attrs, attribute.String("gen_ai.system", s))
+			attrs = append(attrs,
+				attribute.String("gen_ai.provider.name", s),
+				attribute.String("gen_ai.system", s),
+			)
 		}
 	}
 
@@ -452,6 +557,13 @@ func (h *TracingHandler) handleLLMResponse(e runtime.Event) {
 	if model, found := e.Payload["response_model"]; found {
 		if s, ok := model.(string); ok {
 			attrs = append(attrs, attribute.String("gen_ai.response.model", s))
+		}
+	}
+
+	// Provider response ID
+	if reqID, found := e.Payload["request_id"]; found {
+		if s, ok := reqID.(string); ok && s != "" {
+			attrs = append(attrs, attribute.String("gen_ai.response.id", s))
 		}
 	}
 
@@ -474,10 +586,15 @@ func (h *TracingHandler) handleLLMResponse(e runtime.Event) {
 		}
 	}
 
-	// Stop reason
+	// Stop reason: gen_ai.response.finish_reasons (current convention,
+	// array-valued) plus the deprecated singular alias for backends in
+	// transition.
 	if stopReason, found := e.Payload["stop_reason"]; found {
-		if s, ok := stopReason.(string); ok {
-			attrs = append(attrs, attribute.String("gen_ai.response.finish_reason", s))
+		if s, ok := stopReason.(string); ok && s != "" {
+			attrs = append(attrs,
+				attribute.StringSlice("gen_ai.response.finish_reasons", []string{s}),
+				attribute.String("gen_ai.response.finish_reason", s),
+			)
 		}
 	}
 

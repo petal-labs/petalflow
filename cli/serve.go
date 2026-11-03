@@ -85,6 +85,21 @@ func buildHTTPServer(addr string, handler http.Handler, t httpServerTimeouts) *h
 	}
 }
 
+// serveClientFactory builds the LLM client factory for the workflow
+// server: provider clients wrapped in context instrumentation so
+// hydrated runs emit llm.call/llm.response telemetry (LLM spans and
+// GenAI metrics; metadata-only by default per the event privacy
+// policy).
+func serveClientFactory() hydrate.ClientFactory {
+	return func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
+		client, err := llmprovider.NewClient(name, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return llmprovider.NewContextInstrumentedClient(client), nil
+	}
+}
+
 func runServe(cmd *cobra.Command, _ []string) error {
 	host, _ := cmd.Flags().GetString("host")
 	port, _ := cmd.Flags().GetInt("port")
@@ -158,9 +173,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("creating daemon server: %w", err)
 	}
 
+	// --- Observability: OTel bootstrap (standard OTEL_* env, no-op
+	// default) or a configured PetalTrace adapter owning traces ---
+	observability, err := setupObservability(cmd.Context(), configPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = observability.shutdown(context.Background())
+	}()
+
+	var toolObserverOpts []petalotel.ObserverOption
+	if observability.enabled {
+		toolObserverOpts = append(toolObserverOpts,
+			petalotel.WithSpanLookup(observability.toolSpanLookup))
+	}
 	toolObserver, err := petalotel.NewToolObserver(
 		otelapi.GetMeterProvider().Meter("petalflow/tool"),
 		otelapi.GetTracerProvider().Tracer("petalflow/tool"),
+		toolObserverOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("initializing tool observability: %w", err)
@@ -246,16 +277,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	logger := slog.Default()
 
 	workflowServer := server.NewServer(server.ServerConfig{
-		Store:         workflowStore,
-		ScheduleStore: workflowStore,
-		ToolStore:     toolStore,
-		Providers:     providers,
-		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
-			return llmprovider.NewClient(name, cfg)
-		},
+		Store:               workflowStore,
+		ScheduleStore:       workflowStore,
+		ToolStore:           toolStore,
+		Providers:           providers,
+		ClientFactory:       serveClientFactory(),
 		Bus:                 eb,
 		EventStore:          es,
 		RunStore:            runStore,
+		RuntimeEvents:       observability.runtimeEvents(),
+		EmitDecorator:       observability.emitDecorator(),
+		ContentCapture:      observability.capture,
 		CORSOrigin:          corsOrigin,
 		MaxBody:             maxBody,
 		JobStore:            workflowStore,

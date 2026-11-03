@@ -2,9 +2,13 @@ package otel_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	metricapi "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -188,13 +192,35 @@ func TestMetricsHandler_RunFinishedRecordsWorkflowDuration(t *testing.T) {
 
 	now := time.Now()
 
+	// Tenant context from run.started is attributed to the run and its
+	// node metrics.
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunStarted,
+		RunID:   "run-1",
+		Time:    now,
+		Payload: map[string]any{"graph": "g", "tenant_id": "tenant-a"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeFinished,
+		RunID:    "run-1",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(time.Millisecond),
+		Elapsed:  time.Millisecond,
+	})
+
 	// Emit run.finished
 	h.Handle(runtime.Event{
 		Kind:    runtime.EventRunFinished,
 		RunID:   "run-1",
 		Time:    now,
 		Elapsed: 2 * time.Second,
-		Payload: map[string]any{"status": "completed"},
+		Payload: map[string]any{
+			"status":      "completed",
+			"tenant_id":   "tenant-a",
+			"workflow_id": "wf-1",
+			"trigger":     "api",
+		},
 	})
 
 	rm := collectMetrics(t, reader)
@@ -218,15 +244,43 @@ func TestMetricsHandler_RunFinishedRecordsWorkflowDuration(t *testing.T) {
 		t.Errorf("expected histogram sum 2.0 (seconds), got %f", dp.Sum)
 	}
 
-	// Verify run_id attribute
-	runIDFound := false
-	for _, attr := range dp.Attributes.ToSlice() {
-		if string(attr.Key) == "run_id" && attr.Value.AsString() == "run-1" {
-			runIDFound = true
+	// Bounded run attributes survive.
+	attrMap := attributeMap(dp.Attributes)
+	if attrMap["tenant_id"] != "tenant-a" {
+		t.Errorf("tenant_id = %q, want tenant-a", attrMap["tenant_id"])
+	}
+	if attrMap["workflow_id"] != "wf-1" {
+		t.Errorf("workflow_id = %q, want wf-1", attrMap["workflow_id"])
+	}
+	if attrMap["trigger"] != "api" {
+		t.Errorf("trigger = %q, want api", attrMap["trigger"])
+	}
+
+	// Cardinality rule: no per-run identifiers on metric attributes.
+	for _, forbidden := range []string{"run_id", "node_id", "schedule_id", "webhook_trigger_id"} {
+		if _, present := attrMap[forbidden]; present {
+			t.Errorf("run duration metric carries unbounded attribute %q", forbidden)
 		}
 	}
-	if !runIDFound {
-		t.Error("expected run_id attribute on run duration histogram")
+
+	// Node metrics carry the tenant dimension too.
+	nodeMetric := findMetric(rm, "petalflow.node.executions")
+	if nodeMetric == nil {
+		t.Fatal("petalflow.node.executions not found")
+	}
+	nodeSum, ok := nodeMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", nodeMetric.Data)
+	}
+	if len(nodeSum.DataPoints) != 1 {
+		t.Fatalf("expected 1 node execution data point, got %d", len(nodeSum.DataPoints))
+	}
+	nodeAttrs := attributeMap(nodeSum.DataPoints[0].Attributes)
+	if nodeAttrs["tenant_id"] != "tenant-a" {
+		t.Errorf("node execution tenant_id = %q, want tenant-a", nodeAttrs["tenant_id"])
+	}
+	if nodeAttrs["node_kind"] != "llm" {
+		t.Errorf("node execution node_kind = %q, want llm", nodeAttrs["node_kind"])
 	}
 }
 
@@ -363,5 +417,330 @@ func TestMetricsHandler_FullLifecycle(t *testing.T) {
 	// 200ms = 0.2s
 	if histData.DataPoints[0].Sum != 0.2 {
 		t.Errorf("expected run duration sum 0.2s, got %f", histData.DataPoints[0].Sum)
+	}
+}
+
+// attributeMap converts an attribute set into a plain map for assertions.
+func attributeMap(attrs attribute.Set) map[string]string {
+	out := map[string]string{}
+	for _, kv := range attrs.ToSlice() {
+		out[string(kv.Key)] = kv.Value.AsString()
+	}
+	return out
+}
+
+func TestMetricsHandler_LLMResponseGenAIMetrics(t *testing.T) {
+	reader, mp := newTestMeter()
+	meter := mp.Meter("test")
+
+	h, err := petalotel.NewMetricsHandler(meter)
+	if err != nil {
+		t.Fatalf("NewMetricsHandler: %v", err)
+	}
+
+	now := time.Now()
+
+	// A successful LLM call with usage.
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunStarted,
+		RunID:   "run-1",
+		Time:    now,
+		Payload: map[string]any{"tenant_id": "tenant-a"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "run-1",
+		NodeID:   "llm-1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now,
+		Payload: map[string]any{
+			"status":        "success",
+			"model":         "test-model",
+			"provider":      "openai",
+			"latency_ms":    1500,
+			"input_tokens":  10,
+			"output_tokens": 5,
+		},
+	})
+
+	rm := collectMetrics(t, reader)
+
+	tokens := findMetric(rm, "gen_ai.client.token.usage")
+	if tokens == nil {
+		t.Fatal("gen_ai.client.token.usage metric not found")
+	}
+	tokenData, ok := tokens.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", tokens.Data)
+	}
+	byType := map[string]float64{}
+	for _, dp := range tokenData.DataPoints {
+		attrs := attributeMap(dp.Attributes)
+		if attrs["gen_ai.token.type"] == "" || attrs["gen_ai.operation.name"] != "chat" {
+			t.Errorf("token usage data point missing GenAI attributes: %v", attrs)
+		}
+		if attrs["gen_ai.request.model"] != "test-model" || attrs["gen_ai.provider.name"] != "openai" {
+			t.Errorf("token usage model/provider attributes wrong: %v", attrs)
+		}
+		byType[attrs["gen_ai.token.type"]] = dp.Sum
+	}
+	if byType["input"] != 10 || byType["output"] != 5 {
+		t.Errorf("token sums = input %v output %v, want 10 and 5", byType["input"], byType["output"])
+	}
+
+	duration := findMetric(rm, "gen_ai.client.operation.duration")
+	if duration == nil {
+		t.Fatal("gen_ai.client.operation.duration metric not found")
+	}
+	durData, ok := duration.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", duration.Data)
+	}
+	if len(durData.DataPoints) != 1 {
+		t.Fatalf("expected 1 duration data point, got %d", len(durData.DataPoints))
+	}
+	durAttrs := attributeMap(durData.DataPoints[0].Attributes)
+	if durAttrs["tenant_id"] != "tenant-a" {
+		t.Errorf("duration tenant_id = %q, want tenant-a", durAttrs["tenant_id"])
+	}
+	if durData.DataPoints[0].Sum != 1.5 {
+		t.Errorf("duration sum = %f, want 1.5s", durData.DataPoints[0].Sum)
+	}
+}
+
+func TestMetricsHandler_LLMResponseErrorDuration(t *testing.T) {
+	reader, mp := newTestMeter()
+	meter := mp.Meter("test")
+
+	h, err := petalotel.NewMetricsHandler(meter)
+	if err != nil {
+		t.Fatalf("NewMetricsHandler: %v", err)
+	}
+
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "run-1",
+		NodeID:   "llm-1",
+		NodeKind: core.NodeKindLLM,
+		Time:     time.Now(),
+		Payload: map[string]any{
+			"status":     "error",
+			"model":      "test-model",
+			"latency_ms": 100,
+			"error_code": "deadline_exceeded",
+		},
+	})
+
+	rm := collectMetrics(t, reader)
+	duration := findMetric(rm, "gen_ai.client.operation.duration")
+	if duration == nil {
+		t.Fatal("gen_ai.client.operation.duration metric not found")
+	}
+	durData, ok := duration.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", duration.Data)
+	}
+	if len(durData.DataPoints) != 1 {
+		t.Fatalf("expected 1 duration data point, got %d", len(durData.DataPoints))
+	}
+	attrs := attributeMap(durData.DataPoints[0].Attributes)
+	if attrs["error.type"] != "deadline_exceeded" {
+		t.Errorf("error.type = %q, want deadline_exceeded", attrs["error.type"])
+	}
+
+	// Failed calls record no token usage (the instrument may not appear
+	// at all when it recorded no points).
+	if tokens := findMetric(rm, "gen_ai.client.token.usage"); tokens != nil {
+		tokenData, ok := tokens.Data.(metricdata.Histogram[float64])
+		if !ok {
+			t.Fatalf("expected Histogram[float64], got %T", tokens.Data)
+		}
+		for _, dp := range tokenData.DataPoints {
+			if dp.Count != 0 {
+				t.Errorf("failed call recorded token usage: count %d", dp.Count)
+			}
+		}
+	}
+}
+
+// TestMetricsHandlerAttributeCardinality enforces the metric
+// cardinality rules: no attribute can grow per run. run_id, node_id,
+// schedule_id, and webhook_trigger_id must never appear on any metric
+// attribute set, and every dimension outside the bounded allow-list
+// fails the test.
+func TestMetricsHandlerAttributeCardinality(t *testing.T) {
+	reader, mp := newTestMeter()
+	meter := mp.Meter("test")
+
+	h, err := petalotel.NewMetricsHandler(meter)
+	if err != nil {
+		t.Fatalf("NewMetricsHandler: %v", err)
+	}
+
+	now := time.Now()
+	// A full event stream whose payloads carry per-run identifiers.
+	events := []runtime.Event{
+		{Kind: runtime.EventRunStarted, RunID: "run-77", Time: now, Payload: map[string]any{
+			"graph": "pipeline", "tenant_id": "tenant-a", "workflow_id": "wf-1",
+			"schedule_id": "sched-9", "webhook_trigger_id": "hook-42", "webhook_method": "POST",
+		}},
+		{Kind: runtime.EventNodeStarted, RunID: "run-77", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(time.Millisecond)},
+		{Kind: runtime.EventLLMResponse, RunID: "run-77", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(2 * time.Millisecond), Payload: map[string]any{
+			"status": "success", "model": "test-model", "provider": "openai", "latency_ms": 50,
+			"input_tokens": 3, "output_tokens": 2,
+		}},
+		{Kind: runtime.EventNodeFinished, RunID: "run-77", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(3 * time.Millisecond), Elapsed: 2 * time.Millisecond},
+		{Kind: runtime.EventNodeFailed, RunID: "run-77", NodeID: "n2", NodeKind: core.NodeKindTool, Time: now.Add(4 * time.Millisecond), Elapsed: time.Millisecond, Payload: map[string]any{"error": "boom"}},
+		{Kind: runtime.EventRunFinished, RunID: "run-77", Time: now.Add(5 * time.Millisecond), Elapsed: 5 * time.Millisecond, Payload: map[string]any{
+			"status": "failed", "schedule_id": "sched-9", "webhook_trigger_id": "hook-42",
+			"trigger": "webhook", "workflow_id": "wf-1", "webhook_method": "POST",
+		}},
+	}
+	for _, e := range events {
+		h.Handle(e)
+	}
+
+	rm := collectMetrics(t, reader)
+
+	// The bounded allow-list (dimensions grow only with deployment
+	// configuration: tenants, workflows, providers, models, tools).
+	// Per-run identifiers (run_id, node_id, schedule_id,
+	// webhook_trigger_id) are enforced inside assertBoundedAttributes.
+	allowed := map[string]struct{}{
+		"node_kind": {}, "tenant_id": {}, "workflow_id": {}, "graph": {},
+		"trigger": {}, "webhook_method": {},
+		"gen_ai.operation.name": {}, "gen_ai.request.model": {}, "gen_ai.provider.name": {},
+		"gen_ai.token.type": {}, "error.type": {},
+	}
+
+	for _, scope := range rm.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			var histPoints []metricdata.HistogramDataPoint[float64]
+			var sumPoints []metricdata.DataPoint[int64]
+			switch data := m.Data.(type) {
+			case metricdata.Histogram[float64]:
+				histPoints = data.DataPoints
+			case metricdata.Sum[int64]:
+				sumPoints = data.DataPoints
+			}
+			for _, dp := range histPoints {
+				assertBoundedAttributes(t, m.Name, dp.Attributes, allowed)
+			}
+			for _, dp := range sumPoints {
+				assertBoundedAttributes(t, m.Name, dp.Attributes, allowed)
+			}
+		}
+	}
+}
+
+func assertBoundedAttributes(t *testing.T, metric string, attrs attribute.Set, allowed map[string]struct{}) {
+	t.Helper()
+	forbidden := map[string]struct{}{
+		"run_id": {}, "node_id": {}, "schedule_id": {}, "webhook_trigger_id": {},
+	}
+	for _, kv := range attrs.ToSlice() {
+		key := string(kv.Key)
+		if _, bad := forbidden[key]; bad {
+			t.Errorf("metric %s carries per-run attribute %q (unbounded cardinality)", metric, key)
+			continue
+		}
+		if _, ok := allowed[key]; !ok {
+			t.Errorf("metric %s carries attribute %q outside the bounded allow-list", metric, key)
+		}
+	}
+}
+
+// failingMeter fails on the Nth instrument creation; unimplemented
+// Meter methods panic if reached (they are not needed here).
+type failingMeter struct {
+	metricapi.Meter
+	failAt int
+	calls  int
+}
+
+func (m *failingMeter) fail() error {
+	m.calls++
+	if m.calls == m.failAt {
+		return errors.New("instrument creation failed")
+	}
+	return nil
+}
+
+func (m *failingMeter) Int64Counter(string, ...metricapi.Int64CounterOption) (metricapi.Int64Counter, error) {
+	return nil, m.fail()
+}
+
+func (m *failingMeter) Float64Histogram(string, ...metricapi.Float64HistogramOption) (metricapi.Float64Histogram, error) {
+	return nil, m.fail()
+}
+
+// TestNewMetricsHandlerPropagatesInstrumentErrors covers every
+// instrument-creation error branch: the handler fails loudly instead of
+// silently dropping a metric.
+func TestNewMetricsHandlerPropagatesInstrumentErrors(t *testing.T) {
+	for failAt := 1; failAt <= 6; failAt++ {
+		t.Run(fmt.Sprintf("instrument %d", failAt), func(t *testing.T) {
+			meter := &failingMeter{failAt: failAt}
+			if _, err := petalotel.NewMetricsHandler(meter); err == nil {
+				t.Errorf("NewMetricsHandler should fail when instrument %d cannot be created", failAt)
+			}
+		})
+	}
+}
+
+// TestMetricsHandlerPayloadInt64Variants covers the numeric payload
+// types events may carry (int, int64, and JSON-decoded float64).
+func TestMetricsHandlerPayloadInt64Variants(t *testing.T) {
+	reader, mp := newTestMeter()
+	meter := mp.Meter("test")
+
+	h, err := petalotel.NewMetricsHandler(meter)
+	if err != nil {
+		t.Fatalf("NewMetricsHandler: %v", err)
+	}
+
+	// Latency as int64, tokens as int and float64.
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "run-1",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     time.Now(),
+		Payload: map[string]any{
+			"status":        "success",
+			"model":         "m",
+			"latency_ms":    int64(250),
+			"input_tokens":  float64(3),
+			"output_tokens": 2,
+		},
+	})
+
+	rm := collectMetrics(t, reader)
+	duration := findMetric(rm, "gen_ai.client.operation.duration")
+	if duration == nil {
+		t.Fatal("gen_ai.client.operation.duration not found")
+	}
+	durData, ok := duration.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", duration.Data)
+	}
+	if len(durData.DataPoints) != 1 || durData.DataPoints[0].Sum != 0.25 {
+		t.Fatalf("duration sum = %v, want 0.25", durData.DataPoints)
+	}
+
+	tokens := findMetric(rm, "gen_ai.client.token.usage")
+	if tokens == nil {
+		t.Fatal("gen_ai.client.token.usage not found")
+	}
+	tokenData, ok := tokens.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", tokens.Data)
+	}
+	sums := map[string]float64{}
+	for _, dp := range tokenData.DataPoints {
+		sums[attributeMap(dp.Attributes)["gen_ai.token.type"]] = dp.Sum
+	}
+	if sums["input"] != 3 || sums["output"] != 2 {
+		t.Errorf("token sums = %v, want input 3 output 2", sums)
 	}
 }

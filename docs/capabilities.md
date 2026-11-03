@@ -150,5 +150,11 @@ runtime that set `RunOptions.ContentCapture`, or set `Capture:
 &runtime.ContentCapture{Enabled: true}` on the `LLMEventContext`. Failure
 events carry a typed `error_code` plus a scrubbed message.
 
+For clients built by a `hydrate.ClientFactory` (no fixed emitter or run
+identity), `llmprovider.NewContextInstrumentedClient(client)` resolves the
+emitter, run/node identity, and capture policy per call from the runtime
+node context and request metadata — the wiring `petalflow serve` uses to
+produce LLM spans and GenAI metrics from hydrated runs.
+
 These actual/estimated/unknown distinctions are what the budget ceilings
 (#207) enforce against.

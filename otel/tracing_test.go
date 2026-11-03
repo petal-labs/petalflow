@@ -1,6 +1,7 @@
 package otel_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -332,7 +333,7 @@ func TestTracingHandler_NodeFailedSetsErrorStatus(t *testing.T) {
 	t.Error("node:node-fail span not found")
 }
 
-func TestTracingHandler_ToolEventsBecomeSpanEvents(t *testing.T) {
+func TestTracingHandler_ToolEventsBecomeToolSpans(t *testing.T) {
 	exporter, tp := newTestTracer()
 	tracer := tp.Tracer("test")
 	h := petalotel.NewTracingHandler(tracer)
@@ -360,8 +361,13 @@ func TestTracingHandler_ToolEventsBecomeSpanEvents(t *testing.T) {
 		NodeID:   "node-tool",
 		NodeKind: core.NodeKindTool,
 		Time:     now.Add(15 * time.Millisecond),
-		Payload:  map[string]any{"tool": "calculator"},
+		Payload:  map[string]any{"tool_name": "calculator", "tool_description": "Multiply two numbers"},
 	})
+
+	// The tool span is active while the invocation runs.
+	if sc := h.ActiveToolSpanContext("run-1", "node-tool"); !sc.IsValid() {
+		t.Error("expected active tool span context between tool.call and tool.result")
+	}
 
 	// Emit tool.result
 	h.Handle(runtime.Event{
@@ -370,7 +376,7 @@ func TestTracingHandler_ToolEventsBecomeSpanEvents(t *testing.T) {
 		NodeID:   "node-tool",
 		NodeKind: core.NodeKindTool,
 		Time:     now.Add(18 * time.Millisecond),
-		Payload:  map[string]any{"tool": "calculator"},
+		Payload:  map[string]any{"tool_name": "calculator", "is_error": true, "error_code": "timeout"},
 	})
 
 	// Finish node and run
@@ -391,36 +397,46 @@ func TestTracingHandler_ToolEventsBecomeSpanEvents(t *testing.T) {
 	})
 
 	spans := exporter.GetSpans()
-	for _, s := range spans {
-		if s.Name == "node:node-tool" {
-			if len(s.Events) < 2 {
-				t.Fatalf("expected at least 2 span events (tool.call + tool.result), got %d", len(s.Events))
-			}
-			var foundCall, foundResult bool
-			for _, ev := range s.Events {
-				switch ev.Name {
-				case "tool.call":
-					foundCall = true
-					// Check tool name attribute
-					for _, attr := range ev.Attributes {
-						if string(attr.Key) == "petalflow.tool_name" && attr.Value.AsString() == "calculator" {
-							break
-						}
-					}
-				case "tool.result":
-					foundResult = true
-				}
-			}
-			if !foundCall {
-				t.Error("expected tool.call span event")
-			}
-			if !foundResult {
-				t.Error("expected tool.result span event")
-			}
-			return
+	var toolSpan, nodeSpan *tracetest.SpanStub
+	for i := range spans {
+		switch spans[i].Name {
+		case "calculator":
+			toolSpan = &spans[i]
+		case "node:node-tool":
+			nodeSpan = &spans[i]
 		}
 	}
-	t.Error("node:node-tool span not found")
+	if toolSpan == nil {
+		t.Fatal("tool span (named after the tool) not found")
+	}
+	if nodeSpan == nil {
+		t.Fatal("node:node-tool span not found")
+	}
+
+	// GenAI semantic conventions on the tool span.
+	if got := spanAttributeValue(*toolSpan, "gen_ai.operation.name"); got != "execute_tool" {
+		t.Errorf("gen_ai.operation.name = %q, want execute_tool", got)
+	}
+	if got := spanAttributeValue(*toolSpan, "gen_ai.tool.name"); got != "calculator" {
+		t.Errorf("gen_ai.tool.name = %q, want calculator", got)
+	}
+	if got := spanAttributeValue(*toolSpan, "gen_ai.tool.description"); got != "Multiply two numbers" {
+		t.Errorf("gen_ai.tool.description = %q, want tool description", got)
+	}
+	// Correlation attributes.
+	if got := spanAttributeValue(*toolSpan, "petalflow.run_id"); got != "run-1" {
+		t.Errorf("petalflow.run_id = %q, want run-1", got)
+	}
+	// The tool span is a child of the node span and records the failure.
+	if toolSpan.Parent.SpanID() != nodeSpan.SpanContext.SpanID() {
+		t.Errorf("tool span parent = %v, want node span %v", toolSpan.Parent.SpanID(), nodeSpan.SpanContext.SpanID())
+	}
+	if toolSpan.Status.Code != otelcodes.Error {
+		t.Errorf("tool span status = %v, want Error (is_error result)", toolSpan.Status.Code)
+	}
+	if got := spanAttributeValue(*toolSpan, "petalflow.error_code"); got != "timeout" {
+		t.Errorf("petalflow.error_code = %q, want timeout", got)
+	}
 }
 
 func TestTracingHandler_RunFinishedEndsRootSpan(t *testing.T) {
@@ -509,10 +525,10 @@ func TestTracingHandler_FullLifecycle(t *testing.T) {
 
 	// Full lifecycle: run starts, node starts, tool call, tool result, node finishes, run finishes
 	events := []runtime.Event{
-		{Kind: runtime.EventRunStarted, RunID: "r1", Time: now, Payload: map[string]any{"graph": "pipeline"}},
+		{Kind: runtime.EventRunStarted, RunID: "r1", Time: now, Payload: map[string]any{"graph": "pipeline", "tenant_id": "tenant-a"}},
 		{Kind: runtime.EventNodeStarted, RunID: "r1", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(1 * time.Millisecond)},
-		{Kind: runtime.EventToolCall, RunID: "r1", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(2 * time.Millisecond), Payload: map[string]any{"tool": "search"}},
-		{Kind: runtime.EventToolResult, RunID: "r1", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(3 * time.Millisecond), Payload: map[string]any{"tool": "search"}},
+		{Kind: runtime.EventToolCall, RunID: "r1", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(2 * time.Millisecond), Payload: map[string]any{"tool_name": "search", "tool_description": "Search the web"}},
+		{Kind: runtime.EventToolResult, RunID: "r1", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(3 * time.Millisecond), Payload: map[string]any{"tool_name": "search"}},
 		{Kind: runtime.EventNodeFinished, RunID: "r1", NodeID: "n1", NodeKind: core.NodeKindLLM, Time: now.Add(4 * time.Millisecond), Elapsed: 3 * time.Millisecond},
 		{Kind: runtime.EventNodeStarted, RunID: "r1", NodeID: "n2", NodeKind: core.NodeKindTool, Time: now.Add(5 * time.Millisecond)},
 		{Kind: runtime.EventNodeFailed, RunID: "r1", NodeID: "n2", NodeKind: core.NodeKindTool, Time: now.Add(6 * time.Millisecond), Elapsed: 1 * time.Millisecond, Payload: map[string]any{"error": "timeout"}},
@@ -524,8 +540,8 @@ func TestTracingHandler_FullLifecycle(t *testing.T) {
 	}
 
 	spans := exporter.GetSpans()
-	if len(spans) != 3 {
-		t.Fatalf("expected 3 spans (run + 2 nodes), got %d", len(spans))
+	if len(spans) != 4 {
+		t.Fatalf("expected 4 spans (run + 2 nodes + tool), got %d", len(spans))
 	}
 
 	// Verify span names
@@ -533,27 +549,38 @@ func TestTracingHandler_FullLifecycle(t *testing.T) {
 	for _, s := range spans {
 		names[s.Name] = true
 	}
-	for _, expected := range []string{"run:pipeline", "node:n1", "node:n2"} {
+	for _, expected := range []string{"run:pipeline", "node:n1", "node:n2", "search"} {
 		if !names[expected] {
 			t.Errorf("expected span %q not found", expected)
 		}
 	}
 
-	// Verify all spans share the same trace ID
+	// Verify all spans share the same trace ID (one correlated trace
+	// tree per run).
 	traceID := spans[0].SpanContext.TraceID()
 	for _, s := range spans {
 		if s.SpanContext.TraceID() != traceID {
 			t.Error("expected all spans to share the same trace ID")
 		}
 	}
+
+	// Tenant correlation rides on the run span.
+	for _, s := range spans {
+		if s.Name == "run:pipeline" {
+			if got := spanAttributeValue(s, "petalflow.tenant_id"); got != "tenant-a" {
+				t.Errorf("run span petalflow.tenant_id = %q, want tenant-a", got)
+			}
+		}
+	}
 }
 
-// spanAttributeValue returns the value of a span attribute, or "" when
-// absent.
+// spanAttributeValue returns the value of a span attribute as a
+// string, or "" when absent. Non-string values (numbers, booleans) are
+// rendered.
 func spanAttributeValue(s tracetest.SpanStub, key string) string {
 	for _, attr := range s.Attributes {
 		if string(attr.Key) == key {
-			return attr.Value.AsString()
+			return fmt.Sprint(attr.Value.Emit())
 		}
 	}
 	return ""
@@ -637,7 +664,7 @@ func TestTracingHandler_DefaultDropsContentAttributes(t *testing.T) {
 	spans := exporter.GetSpans()
 	var llmSpan *tracetest.SpanStub
 	for i := range spans {
-		if spans[i].Name == "llm:test-model" {
+		if spans[i].Name == "chat test-model" {
 			llmSpan = &spans[i]
 		}
 	}
@@ -674,7 +701,7 @@ func TestTracingHandlerWithCapture_KeepsContentAttributes(t *testing.T) {
 	spans := exporter.GetSpans()
 	var llmSpan *tracetest.SpanStub
 	for i := range spans {
-		if spans[i].Name == "llm:test-model" {
+		if spans[i].Name == "chat test-model" {
 			llmSpan = &spans[i]
 		}
 	}
@@ -787,5 +814,195 @@ func TestTracingHandler_NodeFailedScrubsCredentialAndRecordsCode(t *testing.T) {
 		if got := spanAttributeValue(s, "petalflow.error_code"); got != "error" {
 			t.Errorf("petalflow.error_code = %q, want \"error\"", got)
 		}
+	}
+}
+
+// TestTracingHandler_RunSpanCorrelationAttributes feeds a run.started
+// event carrying every correlation field and asserts each lands on the
+// run span.
+func TestTracingHandler_RunSpanCorrelationAttributes(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandler(tp.Tracer("test"))
+
+	now := time.Now()
+	h.Handle(runtime.Event{
+		Kind:  runtime.EventRunStarted,
+		RunID: "run-full",
+		Time:  now,
+		Payload: map[string]any{
+			"graph":              "myGraph",
+			"trigger":            "schedule",
+			"schedule_id":        "sched-1",
+			"workflow_id":        "wf-1",
+			"workflow_version":   "3",
+			"webhook_trigger_id": "hook-1",
+			"webhook_method":     "POST",
+			"scheduled_at":       "2026-01-02T03:04:05Z",
+			"tenant_id":          "tenant-a",
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunFinished,
+		RunID:   "run-full",
+		Time:    now.Add(time.Second),
+		Elapsed: time.Second,
+		Payload: map[string]any{"status": "completed"},
+	})
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d, want 1", len(spans))
+	}
+	runSpan := spans[0]
+	if runSpan.Name != "run:myGraph" {
+		t.Errorf("span name = %q, want run:myGraph", runSpan.Name)
+	}
+	for key, want := range map[string]string{
+		"petalflow.run_id":             "run-full",
+		"petalflow.graph":              "myGraph",
+		"petalflow.trigger":            "schedule",
+		"petalflow.schedule_id":        "sched-1",
+		"petalflow.workflow_id":        "wf-1",
+		"petalflow.webhook_trigger_id": "hook-1",
+		"petalflow.webhook_method":     "POST",
+		"petalflow.scheduled_at":       "2026-01-02T03:04:05Z",
+		"petalflow.tenant_id":          "tenant-a",
+	} {
+		if got := spanAttributeValue(runSpan, key); got != want {
+			t.Errorf("run span %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestTracingHandler_LLMRequestAttributes covers the request-parameter
+// span attributes (temperature, max_tokens) and the no-parent fallback
+// for LLM spans without a node span.
+func TestTracingHandler_LLMRequestAttributes(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandler(tp.Tracer("test"))
+
+	now := time.Now()
+	h.Handle(runtime.Event{Kind: runtime.EventRunStarted, RunID: "r", Time: now, Payload: map[string]any{"graph": "g"}})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeStarted,
+		RunID:    "r",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(time.Millisecond),
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMCall,
+		RunID:    "r",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(2 * time.Millisecond),
+		Payload: map[string]any{
+			"model":       "test-model",
+			"temperature": 0.7,
+			"max_tokens":  256,
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "r",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(3 * time.Millisecond),
+		Payload: map[string]any{
+			"status":      "success",
+			"latency_ms":  42,
+			"ttft_ms":     int64(12),
+			"request_id":  "resp-1",
+			"cost_usd":    0.02,
+			"stop_reason": "end_turn",
+		},
+	})
+	h.Handle(runtime.Event{Kind: runtime.EventRunFinished, RunID: "r", Time: now.Add(4 * time.Millisecond), Payload: map[string]any{"status": "completed"}})
+
+	var chat *tracetest.SpanStub
+	for i, s := range exporter.GetSpans() {
+		if s.Name == "chat test-model" {
+			chat = &exporter.GetSpans()[i]
+		}
+	}
+	if chat == nil {
+		t.Fatal("chat span missing")
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.request.temperature"); got != "0.7" {
+		t.Errorf("temperature = %q, want 0.7", got)
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.request.max_tokens"); got != "256" {
+		t.Errorf("max_tokens = %q, want 256", got)
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.response.id"); got != "resp-1" {
+		t.Errorf("gen_ai.response.id = %q, want resp-1", got)
+	}
+	if got := spanAttributeValue(*chat, "petalflow.llm.request_id"); got != "resp-1" {
+		t.Errorf("petalflow.llm.request_id = %q, want resp-1", got)
+	}
+	if got := spanAttributeValue(*chat, "petalflow.llm.cost_usd"); got != "0.02" {
+		t.Errorf("cost_usd = %q, want 0.02", got)
+	}
+	if got := spanAttributeValue(*chat, "petalflow.llm.ttft_ms"); got != "12" {
+		t.Errorf("ttft_ms = %q, want 12", got)
+	}
+	// Finish reasons: array convention plus the deprecated alias.
+	if got := spanAttributeValue(*chat, "gen_ai.response.finish_reasons"); got != `["end_turn"]` {
+		t.Errorf("finish_reasons = %q, want [\"end_turn\"]", got)
+	}
+	if got := spanAttributeValue(*chat, "gen_ai.response.finish_reason"); got != "end_turn" {
+		t.Errorf("finish_reason = %q, want end_turn", got)
+	}
+}
+
+// TestTracingHandler_LLMAndToolEventsWithoutNodeSpanAreSkipped covers
+// the no-parent fallbacks: LLM and tool events for unknown nodes
+// create no spans.
+func TestTracingHandler_LLMAndToolEventsWithoutNodeSpanAreSkipped(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandler(tp.Tracer("test"))
+
+	now := time.Now()
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMCall,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindLLM,
+		Time:     now,
+		Payload:  map[string]any{"model": "m"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventToolCall,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindTool,
+		Time:     now,
+		Payload:  map[string]any{"tool_name": "t"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventToolResult,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindTool,
+		Time:     now,
+		Payload:  map[string]any{"tool_name": "t"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "orphan",
+		NodeID:   "missing",
+		NodeKind: core.NodeKindLLM,
+		Time:     now,
+		Payload:  map[string]any{"status": "success"},
+	})
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventEdgeTransfer,
+		RunID:   "orphan",
+		Time:    now,
+		Payload: map[string]any{"source_node": "a", "target_node": "b"},
+	})
+
+	if got := len(exporter.GetSpans()); got != 0 {
+		t.Errorf("orphan events created %d spans, want 0", got)
 	}
 }
