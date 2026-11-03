@@ -1,10 +1,12 @@
 package otel_test
 
 import (
-	"context"
+	"errors"
+	"math"
 	"sync/atomic"
 	"testing"
 
+	metricapi "go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	petalotel "github.com/petal-labs/petalflow/otel"
@@ -88,4 +90,42 @@ func dropSumsBySource(t *testing.T, m *metricdata.Metrics) map[string]int64 {
 	return sums
 }
 
-var _ = context.Background
+func TestEventDropMetricsSaturatesOversizedCounters(t *testing.T) {
+	reader, mp := newTestMeter()
+	meter := mp.Meter("test-saturate")
+
+	unregister, err := petalotel.NewEventDropMetrics(meter, map[string]func() uint64{
+		"flood": func() uint64 { return math.MaxUint64 },
+	})
+	if err != nil {
+		t.Fatalf("NewEventDropMetrics: %v", err)
+	}
+	t.Cleanup(unregister)
+
+	rm := collectMetrics(t, reader)
+	dropped := findMetric(rm, "petalflow.events.dropped")
+	if dropped == nil {
+		t.Fatal("petalflow.events.dropped metric not found")
+	}
+	points := dropDataPoints(t, dropped)
+	if len(points) != 1 || points[0].Value != 1<<53 {
+		t.Fatalf("drop points = %+v, want saturated %d", points, int64(1<<53))
+	}
+}
+
+// failingDropMeter fails instrument creation.
+type failingDropMeter struct {
+	metricapi.Meter
+}
+
+func (m *failingDropMeter) Int64ObservableCounter(string, ...metricapi.Int64ObservableCounterOption) (metricapi.Int64ObservableCounter, error) {
+	return nil, errors.New("instrument creation failed")
+}
+
+func TestNewEventDropMetricsPropagatesInstrumentErrors(t *testing.T) {
+	if _, err := petalotel.NewEventDropMetrics(&failingDropMeter{}, map[string]func() uint64{
+		"source": func() uint64 { return 0 },
+	}); err == nil {
+		t.Error("NewEventDropMetrics should fail when the counter cannot be created")
+	}
+}

@@ -36,3 +36,31 @@ func TestDroppedEventsTotalCountsProcessWideChannelDrops(t *testing.T) {
 		t.Errorf("DroppedEventsTotal did not increase: before %d after %d", before, after)
 	}
 }
+
+// TestDurableRuntimeDropsCountedWhenChannelFull covers the durable
+// executor's drop path: the same process-wide counter records channel
+// drops from durable runs.
+func TestDurableRuntimeDropsCountedWhenChannelFull(t *testing.T) {
+	before := DroppedEventsTotal()
+
+	store := NewMemoryRunStore()
+	g := graph.NewGraph("durable-drop-flood")
+	g.AddNode(core.NewFuncNode("flood", func(ctx context.Context, env *core.Envelope) (*core.Envelope, error) {
+		emit := EmitterFromContext(ctx)
+		for i := 0; i < 300; i++ {
+			emit(NewEvent(EventNodeOutput, env.Trace.RunID).WithPayload("i", i))
+		}
+		return env, nil
+	}))
+	g.SetEntry("flood")
+
+	opts := DefaultRunOptions()
+	opts.RunStore = store
+	if _, err := NewRuntime().Run(context.Background(), g, core.NewEnvelope(), opts); err != nil {
+		t.Fatalf("durable Run: %v", err)
+	}
+
+	if after := DroppedEventsTotal(); after <= before {
+		t.Errorf("DroppedEventsTotal did not increase after durable drops: before %d after %d", before, after)
+	}
+}

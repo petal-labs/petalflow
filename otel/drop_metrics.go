@@ -13,12 +13,17 @@ package otel
 
 import (
 	"context"
-	"math"
 	"slices"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
+
+// maxObservableDrops saturates uint64 drop counters for the int64
+// metric. It stays at or below 2^53 — the integer range that survives
+// the SDK's float64-based aggregation without rounding — and is far
+// beyond any realistic drop total.
+const maxObservableDrops = 1 << 53
 
 // NewEventDropMetrics registers the petalflow.events.dropped observable
 // counter for the given drop sources. Each source maps a fixed,
@@ -46,12 +51,12 @@ func NewEventDropMetrics(meter metric.Meter, sources map[string]func() uint64) (
 			// Always observe (including zero) so rate queries see a
 			// continuous series for every configured source.
 			dropped := sources[name]()
-			if dropped > math.MaxInt64 {
-				// Saturate: an int64 counter is beyond any realistic
-				// drop total.
-				dropped = math.MaxInt64
+			if dropped > maxObservableDrops {
+				// Saturate: beyond any realistic drop total, and within
+				// the exact-integer range of the metric aggregation.
+				dropped = maxObservableDrops
 			}
-			obs.ObserveInt64(counter, int64(dropped), // #nosec G115 -- clamped to math.MaxInt64 above
+			obs.ObserveInt64(counter, int64(dropped), // #nosec G115 -- clamped to maxObservableDrops above
 				metric.WithAttributes(attribute.String("source", name)))
 		}
 		return nil

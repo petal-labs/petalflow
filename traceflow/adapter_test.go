@@ -1,7 +1,13 @@
 package traceflow
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"go.opentelemetry.io/otel"
 
 	"github.com/petal-labs/petalflow/daemon"
 )
@@ -242,6 +248,40 @@ func TestEffectiveSampleRate(t *testing.T) {
 			adapter := &Adapter{SampleRate: tt.rate, Tags: tt.tags, SampleOverrides: tt.overrides}
 			if got := adapter.EffectiveSampleRate(); got != tt.want {
 				t.Errorf("EffectiveSampleRate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAdapterInitializeSamplerBranches drives Initialize with the
+// effective rate at each sampler branch (never, ratio, always) against
+// a local collector; globals are restored afterwards.
+func TestAdapterInitializeSamplerBranches(t *testing.T) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(collector.Close)
+
+	prevTracer := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prevTracer) })
+
+	for _, rate := range []float64{0.0, 0.5, 1.0} {
+		t.Run(fmt.Sprintf("rate %.1f", rate), func(t *testing.T) {
+			adapter := NewAdapter(&daemon.PetalTraceConfig{
+				Enabled:     true,
+				Endpoint:    collector.URL,
+				CaptureMode: "minimal",
+				SampleRate:  rate,
+			})
+			if err := adapter.Initialize(context.Background()); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			if adapter.Tracer() == nil {
+				t.Fatal("tracer missing after Initialize")
+			}
+			if err := adapter.Shutdown(context.Background()); err != nil {
+				t.Fatalf("Shutdown: %v", err)
 			}
 		})
 	}

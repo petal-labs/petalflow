@@ -3,3 +3,6 @@ coverage:
     - tool/audit_store_postgres.go
     - tool/store_postgres.go
     - tool/mcp_runtime_transport.go
+    # Postgres event store: only exercisable against a live database
+    # (integration-tagged tests), mirroring the tool postgres stores.
+    - bus/postgresstore.go
