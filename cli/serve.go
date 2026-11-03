@@ -158,9 +158,25 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("creating daemon server: %w", err)
 	}
 
+	// --- Observability: OTel bootstrap (standard OTEL_* env, no-op
+	// default) or a configured PetalTrace adapter owning traces ---
+	observability, err := setupObservability(cmd.Context(), configPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = observability.shutdown(context.Background())
+	}()
+
+	var toolObserverOpts []petalotel.ObserverOption
+	if observability.enabled {
+		toolObserverOpts = append(toolObserverOpts,
+			petalotel.WithSpanLookup(observability.toolSpanLookup))
+	}
 	toolObserver, err := petalotel.NewToolObserver(
 		otelapi.GetMeterProvider().Meter("petalflow/tool"),
 		otelapi.GetTracerProvider().Tracer("petalflow/tool"),
+		toolObserverOpts...,
 	)
 	if err != nil {
 		return fmt.Errorf("initializing tool observability: %w", err)
@@ -251,11 +267,22 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		ToolStore:     toolStore,
 		Providers:     providers,
 		ClientFactory: func(name string, cfg hydrate.ProviderConfig) (core.LLMClient, error) {
-			return llmprovider.NewClient(name, cfg)
+			client, err := llmprovider.NewClient(name, cfg)
+			if err != nil {
+				return nil, err
+			}
+			// Context-instrumented clients emit llm.call/llm.response
+			// events through the runtime node context, producing LLM
+			// spans and GenAI metrics for hydrated workflow runs
+			// (metadata-only by default per the event privacy policy).
+			return llmprovider.NewContextInstrumentedClient(client), nil
 		},
 		Bus:                 eb,
 		EventStore:          es,
 		RunStore:            runStore,
+		RuntimeEvents:       observability.runtimeEvents(),
+		EmitDecorator:       observability.emitDecorator(),
+		ContentCapture:      observability.capture,
 		CORSOrigin:          corsOrigin,
 		MaxBody:             maxBody,
 		JobStore:            workflowStore,

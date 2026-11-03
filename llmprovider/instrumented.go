@@ -47,13 +47,76 @@ func NewInstrumentedClient(client core.LLMClient, emitter runtime.EventEmitter, 
 	}
 }
 
+// NewContextInstrumentedClient wraps an LLMClient so llm.call and
+// llm.response observability events are emitted through the runtime node
+// context: the emitter, run/node identity, and content capture policy are
+// resolved per call from the call context and the request metadata nodes
+// attach (run_id, node_id). Clients constructed this way are safe to share
+// across runs and providers; outside a runtime run (no context emitter)
+// no events are emitted. Streaming clients keep their streaming path.
+// Use it in hydrate.ClientFactory implementations to get LLM telemetry
+// from hydrated workflow runs.
+func NewContextInstrumentedClient(client core.LLMClient) core.LLMClient {
+	base := &InstrumentedClient{client: client}
+	if streaming, ok := client.(core.StreamingLLMClient); ok {
+		return &InstrumentedStreamingClient{
+			InstrumentedClient: base,
+			streamingClient:    streaming,
+		}
+	}
+	return base
+}
+
+// emission carries the resolved emitter, event identity, and capture
+// policy for one LLM call.
+type emission struct {
+	emitter  runtime.EventEmitter
+	identity LLMEventContext
+	capture  runtime.ContentCapture
+}
+
+// resolveEmission determines how one call emits events: a fixed emitter
+// and identity for NewInstrumentedClient, or the runtime node context
+// and request metadata for NewContextInstrumentedClient.
+func (c *InstrumentedClient) resolveEmission(ctx context.Context, req core.LLMRequest) emission {
+	if c.emitter != nil {
+		return emission{emitter: c.emitter, identity: c.ctx, capture: c.resolveCapture(ctx)}
+	}
+
+	// Context-resolved emission: inside a runtime run the node context
+	// carries the emitter and capture policy, and the request metadata
+	// carries run/node identity.
+	if !runtime.EmitterInContext(ctx) {
+		return emission{}
+	}
+	identity := LLMEventContext{
+		RunID:    requestMetaString(req, "run_id"),
+		NodeID:   requestMetaString(req, "node_id"),
+		NodeKind: core.NodeKindLLM,
+		Provider: c.ctx.Provider,
+	}
+	capture, _ := runtime.ContentCaptureFromContext(ctx)
+	return emission{emitter: runtime.EmitterFromContext(ctx), identity: identity, capture: capture}
+}
+
+// requestMetaString extracts a string from the request metadata nodes
+// attach for attribution.
+func requestMetaString(req core.LLMRequest, key string) string {
+	if req.Meta == nil {
+		return ""
+	}
+	s, _ := req.Meta[key].(string)
+	return s
+}
+
 // Complete sends a completion request and emits observability events.
 func (c *InstrumentedClient) Complete(ctx context.Context, req core.LLMRequest) (core.LLMResponse, error) {
 	startTime := time.Now()
+	em := c.resolveEmission(ctx, req)
 
 	// Emit LLM call event before the request
-	if c.emitter != nil {
-		c.emitLLMCallEvent(ctx, req, startTime)
+	if em.emitter != nil {
+		c.emitLLMCallEvent(em, req, startTime)
 	}
 
 	// Execute the actual LLM call
@@ -63,8 +126,8 @@ func (c *InstrumentedClient) Complete(ctx context.Context, req core.LLMRequest) 
 	latencyMs := endTime.Sub(startTime).Milliseconds()
 
 	// Emit LLM response event after the request
-	if c.emitter != nil {
-		c.emitLLMResponseEvent(ctx, req, resp, err, latencyMs, endTime)
+	if em.emitter != nil {
+		c.emitLLMResponseEvent(em, req, resp, err, latencyMs, endTime)
 	}
 
 	return resp, err
@@ -88,34 +151,33 @@ func (c *InstrumentedClient) resolveCapture(ctx context.Context) runtime.Content
 // (system prompt, instructions, messages, input text, JSON schema) are
 // classified per the capture policy: shape descriptors by default,
 // bounded redacted content when capture is opted in.
-func (c *InstrumentedClient) emitLLMCallEvent(ctx context.Context, req core.LLMRequest, startTime time.Time) {
-	capture := c.resolveCapture(ctx)
+func (c *InstrumentedClient) emitLLMCallEvent(em emission, req core.LLMRequest, startTime time.Time) {
 	event := runtime.Event{
 		Kind:     runtime.EventLLMCall,
-		RunID:    c.ctx.RunID,
-		NodeID:   c.ctx.NodeID,
-		NodeKind: c.ctx.NodeKind,
+		RunID:    em.identity.RunID,
+		NodeID:   em.identity.NodeID,
+		NodeKind: em.identity.NodeKind,
 		Time:     startTime,
 		Payload:  make(map[string]any),
 	}
 
 	// Add request details to payload
 	event.Payload["model"] = req.Model
-	event = event.WithContentPayload("system_prompt", req.System, capture)
+	event = event.WithContentPayload("system_prompt", req.System, em.capture)
 
 	if req.Instructions != "" {
-		event = event.WithContentPayload("instructions", req.Instructions, capture)
+		event = event.WithContentPayload("instructions", req.Instructions, em.capture)
 	}
 
 	// Serialize messages
 	if len(req.Messages) > 0 {
 		if messagesJSON, err := json.Marshal(req.Messages); err == nil {
-			event = event.WithContentPayload("messages", string(messagesJSON), capture)
+			event = event.WithContentPayload("messages", string(messagesJSON), em.capture)
 		}
 	}
 
 	if req.InputText != "" {
-		event = event.WithContentPayload("input_text", req.InputText, capture)
+		event = event.WithContentPayload("input_text", req.InputText, em.capture)
 	}
 
 	if req.Temperature != nil {
@@ -126,31 +188,30 @@ func (c *InstrumentedClient) emitLLMCallEvent(ctx context.Context, req core.LLMR
 		event.Payload["max_tokens"] = *req.MaxTokens
 	}
 
-	if c.ctx.Estimator != nil {
-		for key, value := range c.ctx.Estimator.estimateEventFields(c.ctx.Provider, req) {
+	if em.identity.Estimator != nil {
+		for key, value := range em.identity.Estimator.estimateEventFields(em.identity.Provider, req) {
 			event.Payload[key] = value
 		}
 	}
 
 	if req.JSONSchema != nil {
 		if schemaJSON, err := json.Marshal(req.JSONSchema); err == nil {
-			event = event.WithContentPayload("json_schema", string(schemaJSON), capture)
+			event = event.WithContentPayload("json_schema", string(schemaJSON), em.capture)
 		}
 	}
 
-	c.emitter(event)
+	em.emitter(event)
 }
 
 // emitLLMResponseEvent emits an event after the LLM response. The
 // completion, tool calls, and reasoning summary are content-classified;
 // failures carry a typed error code and a scrubbed message.
-func (c *InstrumentedClient) emitLLMResponseEvent(ctx context.Context, req core.LLMRequest, resp core.LLMResponse, err error, latencyMs int64, endTime time.Time) {
-	capture := c.resolveCapture(ctx)
+func (c *InstrumentedClient) emitLLMResponseEvent(em emission, req core.LLMRequest, resp core.LLMResponse, err error, latencyMs int64, endTime time.Time) {
 	event := runtime.Event{
 		Kind:     runtime.EventLLMResponse,
-		RunID:    c.ctx.RunID,
-		NodeID:   c.ctx.NodeID,
-		NodeKind: c.ctx.NodeKind,
+		RunID:    em.identity.RunID,
+		NodeID:   em.identity.NodeID,
+		NodeKind: em.identity.NodeKind,
 		Time:     endTime,
 		Payload:  make(map[string]any),
 	}
@@ -166,7 +227,7 @@ func (c *InstrumentedClient) emitLLMResponseEvent(ctx context.Context, req core.
 		event.Payload["status"] = "success"
 		event.Payload["provider"] = resp.Provider
 		event.Payload["response_model"] = resp.Model
-		event = event.WithContentPayload("completion", resp.Text, capture)
+		event = event.WithContentPayload("completion", resp.Text, em.capture)
 		event.Payload["stop_reason"] = resp.Status
 
 		// Token usage
@@ -188,7 +249,7 @@ func (c *InstrumentedClient) emitLLMResponseEvent(ctx context.Context, req core.
 		// Tool calls
 		if len(resp.ToolCalls) > 0 {
 			if toolCallsJSON, err := json.Marshal(resp.ToolCalls); err == nil {
-				event = event.WithContentPayload("tool_calls", string(toolCallsJSON), capture)
+				event = event.WithContentPayload("tool_calls", string(toolCallsJSON), em.capture)
 			}
 		}
 
@@ -202,11 +263,11 @@ func (c *InstrumentedClient) emitLLMResponseEvent(ctx context.Context, req core.
 		// Reasoning output
 		if resp.Reasoning != nil {
 			event.Payload["reasoning_id"] = resp.Reasoning.ID
-			event = event.WithContentPayload("reasoning_summary", resp.Reasoning.Summary, capture)
+			event = event.WithContentPayload("reasoning_summary", resp.Reasoning.Summary, em.capture)
 		}
 	}
 
-	c.emitter(event)
+	em.emitter(event)
 }
 
 // InstrumentedStreamingClient wraps a StreamingLLMClient to emit runtime events.
@@ -226,21 +287,21 @@ func NewInstrumentedStreamingClient(client core.StreamingLLMClient, emitter runt
 // CompleteStream sends a streaming completion request and emits observability events.
 func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req core.LLMRequest) (<-chan core.StreamChunk, error) {
 	startTime := time.Now()
-	capture := c.resolveCapture(ctx)
+	em := c.resolveEmission(ctx, req)
 
 	// Emit LLM call event before the request
-	if c.emitter != nil {
-		c.emitLLMCallEvent(ctx, req, startTime)
+	if em.emitter != nil {
+		c.emitLLMCallEvent(em, req, startTime)
 	}
 
 	// Execute the actual streaming LLM call
 	stream, err := c.streamingClient.CompleteStream(ctx, req)
 	if err != nil {
 		// Emit error response event
-		if c.emitter != nil {
+		if em.emitter != nil {
 			endTime := time.Now()
 			latencyMs := endTime.Sub(startTime).Milliseconds()
-			c.emitLLMResponseEvent(ctx, req, core.LLMResponse{}, err, latencyMs, endTime)
+			c.emitLLMResponseEvent(em, req, core.LLMResponse{}, err, latencyMs, endTime)
 		}
 		return nil, err
 	}
@@ -272,7 +333,7 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 
 			if chunk.Done {
 				// Emit final response event
-				if c.emitter != nil {
+				if em.emitter != nil {
 					endTime := time.Now()
 					latencyMs := endTime.Sub(startTime).Milliseconds()
 
@@ -286,16 +347,16 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 
 					event := runtime.Event{
 						Kind:     runtime.EventLLMResponse,
-						RunID:    c.ctx.RunID,
-						NodeID:   c.ctx.NodeID,
-						NodeKind: c.ctx.NodeKind,
+						RunID:    em.identity.RunID,
+						NodeID:   em.identity.NodeID,
+						NodeKind: em.identity.NodeKind,
 						Time:     endTime,
 						Payload:  make(map[string]any),
 					}
 
 					event.Payload["latency_ms"] = latencyMs
 					event.Payload["model"] = req.Model
-					event = event.WithContentPayload("completion", chunk.Accumulated, capture)
+					event = event.WithContentPayload("completion", chunk.Accumulated, em.capture)
 
 					if ttftMs > 0 {
 						event.Payload["ttft_ms"] = ttftMs
@@ -320,7 +381,7 @@ func (c *InstrumentedStreamingClient) CompleteStream(ctx context.Context, req co
 						}
 					}
 
-					c.emitter(event)
+					em.emitter(event)
 				}
 				return
 			}

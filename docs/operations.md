@@ -169,14 +169,65 @@ prompts contain credential-shaped material may report verification diffs.
 
 ## OpenTelemetry Signals
 
-With an OpenTelemetry SDK configured, PetalFlow can emit traces and metrics from runtime/tool paths.
+`petalflow serve` emits correlated traces and bounded-cardinality metrics.
 
-Runtime event correlation fields:
+### Enabling export
 
-- `trace_id`
-- `span_id`
+Telemetry export is a **documented no-op by default**: with no `OTEL_*`
+configuration present, no providers are installed and nothing leaves the
+process. Export activates from the standard OTel environment variables
+(OTLP/HTTP):
 
-Examples of tool metrics/spans emitted by the observability layer include invocation, retry, health, and latency signals.
+| Variable | Effect |
+|----------|--------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (or `_TRACES` / `_METRICS` variants) | Activates the OTLP pipeline for that signal |
+| `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` activates explicitly; `none` disables; other values are rejected loudly |
+| `OTEL_SERVICE_NAME` | Resource service name (default `petalflow`) |
+| `OTEL_RESOURCE_ATTRIBUTES` | Additional resource attributes |
+
+When `observability.petaltrace` is configured (enabled + valid), the
+PetalTrace adapter owns the trace pipeline instead, and its capture
+ladder (`minimal`/`standard`/`full`, see [Event Privacy](#event-privacy))
+also drives run event content capture.
+
+### Traces
+
+With tracing active, each workflow run produces **one correlated trace
+tree**: `run` span → `node` spans → `chat {model}` spans (LLM calls) and
+tool spans (named after the tool). Transport-level tool spans from the
+tool observer join the same tree underneath the tool span. Run, workflow,
+schedule, webhook, and tenant context is attached to the run span; events
+carry `trace_id`/`span_id` for correlation with the persisted event
+stream.
+
+Span attribute names follow the current OpenTelemetry GenAI semantic
+conventions on LLM and tool spans:
+
+| Signal | Attributes |
+|--------|------------|
+| LLM span (`chat {model}`) | `gen_ai.operation.name` (`chat`), `gen_ai.provider.name` (deprecated alias `gen_ai.system` also emitted), `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.usage.input_tokens` / `output_tokens` / `total_tokens`, `gen_ai.response.finish_reasons` (deprecated singular alias also emitted) |
+| Tool span (tool name) | `gen_ai.operation.name` (`execute_tool`), `gen_ai.tool.name`, `gen_ai.tool.description` |
+| Correlation (all spans) | `petalflow.run_id`, `petalflow.node_id`, `petalflow.workflow_id`, `petalflow.schedule_id`, `petalflow.tenant_id`, `petalflow.error_code` |
+
+Prompt and completion content never appears on spans unless content
+capture is opted in (see [Event Privacy](#event-privacy)).
+
+### Metrics
+
+| Instrument | Kind | Dimensions |
+|------------|------|------------|
+| `petalflow.node.executions` / `petalflow.node.failures` | counter | `node_kind`, `tenant_id` |
+| `petalflow.node.duration` / `petalflow.run.duration` | histogram (s) | `node_kind`, `tenant_id`; run adds `graph`, `trigger`, `workflow_id`, `webhook_method` |
+| `petalflow.tool.invocations` / `petalflow.tool.retries` / `petalflow.tool.health.checks` / `petalflow.tool.latency` | counter / histogram | `tool_name`, `action`, `transport`, `success`, `error_code`, `tenant_id` (bounded tool/tenant dimensions) |
+| `gen_ai.client.token.usage` | histogram (`{token}`) | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.token.type` (input/output), `tenant_id` |
+| `gen_ai.client.operation.duration` | histogram (s) | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `error.type` (on failure), `tenant_id` |
+
+**Cardinality rules** (test-enforced): no metric attribute can grow per
+run — `run_id`, `node_id`, `schedule_id`, and `webhook_trigger_id` never
+appear on metric attributes (they are correlation attributes for spans
+and events only). Every metric dimension is bounded by deployment
+configuration (tenants, workflows, registered tools, configured
+providers/models) or a fixed enum.
 
 ## Recommended Pre-Release Checks
 

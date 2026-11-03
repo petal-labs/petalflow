@@ -35,6 +35,13 @@ func EmitterFromContext(ctx context.Context) EventEmitter {
 	return func(Event) {}
 }
 
+// EmitterInContext reports whether a non-nil event emitter is attached
+// to the context (i.e. the caller runs inside a runtime run).
+func EmitterInContext(ctx context.Context) bool {
+	emit, ok := ctx.Value(emitterKey{}).(EventEmitter)
+	return ok && emit != nil
+}
+
 // ContextWithHumanRequestHandler attaches a human interaction bridge.
 func ContextWithHumanRequestHandler(ctx context.Context, handler HumanRequestHandler) context.Context {
 	return context.WithValue(ctx, humanRequestHandlerKey{}, handler)

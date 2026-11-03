@@ -388,6 +388,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	if opts.WorkflowVersion != "" {
 		runStartEvent = runStartEvent.WithPayload("workflow_version", opts.WorkflowVersion)
 	}
+	if opts.TenantID != "" {
+		runStartEvent = runStartEvent.WithPayload("tenant_id", opts.TenantID)
+	}
 
 	// Add snapshot data for PetalTrace replay support
 	if opts.CaptureSnapshots {

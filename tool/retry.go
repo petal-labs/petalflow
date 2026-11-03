@@ -35,11 +35,12 @@ func invokeWithRetry(ctx context.Context, policy RetryPolicy, meta retryObservat
 			return InvokeResponse{}, attempt, lastErr
 		}
 		emitRetryObservation(ToolRetryObservation{
-			ToolName:  meta.toolName,
-			Action:    meta.action,
-			Transport: meta.transport,
-			Attempt:   attempt,
-			ErrorCode: toolErrorCode(lastErr),
+			ToolName:    meta.toolName,
+			Action:      meta.action,
+			Transport:   meta.transport,
+			Attempt:     attempt,
+			ErrorCode:   toolErrorCode(lastErr),
+			Correlation: CorrelationFromContext(ctx),
 		})
 
 		wait := retryBackoffDuration(normalized, attempt)

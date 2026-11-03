@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **GenAI semconv alignment, serve telemetry wiring, and cross-context
+  trace correlation**
+  ([#227](https://github.com/petal-labs/petalflow/issues/227), part of
+  [#176](https://github.com/petal-labs/petalflow/issues/176)). Spans and
+  metrics follow the current OpenTelemetry GenAI semantic conventions and
+  `petalflow serve` now emits run/node/provider/tool telemetry with full
+  correlation. LLM spans are named `chat {model}` carrying
+  `gen_ai.operation.name`, `gen_ai.provider.name` (the renamed
+  `gen_ai.system`, emitted alongside as a deprecated alias),
+  `gen_ai.response.id`, and `gen_ai.response.finish_reasons` (array, with
+  the deprecated singular alias); tool.call/tool.result now create real
+  child spans named after the tool with `gen_ai.tool.name` /
+  `gen_ai.tool.description` (the tool.call event gained a
+  `tool_description` metadata field) instead of span events. New
+  `otel.SetupOTel` bootstraps OTLP/HTTP tracer and meter providers from
+  standard `OTEL_*` environment variables with a documented no-op
+  default (zero configuration installs nothing; unsupported exporter
+  values are rejected loudly), and `petalflow serve` wires the tracing
+  and metrics handlers plus the PetalTrace (traceflow) adapter when
+  `observability.petaltrace` is configured — the adapter's capture
+  ladder driving run event content capture. The serve `ClientFactory`
+  wraps provider clients in `llmprovider.NewContextInstrumentedClient`,
+  which resolves emitter, run/node identity, and capture policy per call
+  from the runtime node context, so hydrated runs emit `llm.call`/
+  `llm.response` events (metadata-only by default) and produce provider
+  spans and GenAI metrics. Correlation: run.started events carry
+  `tenant_id`; run spans attach tenant/workflow/schedule context; tool
+  observations carry run/tenant correlation (metrics gain the bounded
+  `tenant_id` dimension; transport-level tool spans join the run trace
+  tree via the new span lookup). New GenAI metrics
+  `gen_ai.client.token.usage` and `gen_ai.client.operation.duration`
+  are recorded from LLM responses. Metric cardinality is now
+  test-enforced: `run_id`, `node_id`, `schedule_id`, and
+  `webhook_trigger_id` never appear on metric attributes (spans/events
+  only); every dimension is bounded by deployment configuration or a
+  fixed enum. See the rewritten "OpenTelemetry Signals" section in
+  `docs/operations.md`.
+
 - **Default-private events, spans, and persisted payloads with opt-in
   redacted capture**
   ([#226](https://github.com/petal-labs/petalflow/issues/226), part of

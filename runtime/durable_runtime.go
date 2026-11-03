@@ -158,9 +158,19 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 	}
 
 	if resuming {
-		emit(NewEvent(EventRunResumed, runID).
+		resumeEvent := NewEvent(EventRunResumed, runID).
 			WithPayload("checkpoint_id", record.Checkpoint.ID).
-			WithPayload("graph", g.Name()))
+			WithPayload("graph", g.Name())
+		if opts.TriggerSource != "" {
+			resumeEvent = resumeEvent.WithPayload("trigger", opts.TriggerSource)
+		}
+		if opts.WorkflowID != "" {
+			resumeEvent = resumeEvent.WithPayload("workflow_id", opts.WorkflowID)
+		}
+		if opts.TenantID != "" {
+			resumeEvent = resumeEvent.WithPayload("tenant_id", opts.TenantID)
+		}
+		emit(resumeEvent)
 	} else {
 		event := NewEvent(EventRunStarted, runID).
 			WithPayload("graph", g.Name()).
@@ -170,6 +180,9 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		}
 		if opts.WorkflowID != "" {
 			event = event.WithPayload("workflow_id", opts.WorkflowID)
+		}
+		if opts.TenantID != "" {
+			event = event.WithPayload("tenant_id", opts.TenantID)
 		}
 		emit(event)
 	}

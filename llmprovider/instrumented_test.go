@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/runtime"
@@ -172,4 +173,139 @@ func TestInstrumentedClientErrorEventsScrubbedAndCoded(t *testing.T) {
 	if msg == "" {
 		t.Error("error message missing")
 	}
+}
+
+func TestContextInstrumentedClientEmitsThroughRuntimeContext(t *testing.T) {
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+
+	// The node context carries the emitter; the request metadata
+	// carries run/node identity (set by LLM nodes).
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+	req := core.LLMRequest{
+		Model:     "test-model",
+		InputText: "hello",
+		Meta:      map[string]any{"run_id": "run-9", "node_id": "llm-node"},
+	}
+
+	client := NewContextInstrumentedClient(&stubLLMClient{
+		resp: core.LLMResponse{Text: "answer", Model: "test-model", Provider: "stub"},
+	})
+	if _, err := client.Complete(ctx, req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2 (llm.call, llm.response)", len(events))
+	}
+	call, response := events[0], events[1]
+	if call.Kind != runtime.EventLLMCall || response.Kind != runtime.EventLLMResponse {
+		t.Fatalf("kinds = %s, %s", call.Kind, response.Kind)
+	}
+	if call.RunID != "run-9" || call.NodeID != "llm-node" {
+		t.Errorf("call identity = %s/%s, want run-9/llm-node", call.RunID, call.NodeID)
+	}
+	if response.RunID != "run-9" || response.NodeID != "llm-node" {
+		t.Errorf("response identity = %s/%s, want run-9/llm-node", response.RunID, response.NodeID)
+	}
+	if response.Payload["provider"] != "stub" {
+		t.Errorf("provider = %v, want stub", response.Payload["provider"])
+	}
+	// Default privacy holds: descriptors, no content.
+	if _, present := call.Payload["input_text"]; present {
+		t.Errorf("input_text present by default: %+v", call.Payload)
+	}
+	if call.Payload["input_text_bytes"] != len("hello") {
+		t.Errorf("input_text_bytes = %v", call.Payload["input_text_bytes"])
+	}
+}
+
+func TestContextInstrumentedClientSilentOutsideRuntime(t *testing.T) {
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+	_ = emitter
+
+	// No emitter in the context: no events, the client behaves normally.
+	client := NewContextInstrumentedClient(&stubLLMClient{
+		resp: core.LLMResponse{Text: "answer", Model: "test-model"},
+	})
+	resp, err := client.Complete(context.Background(), core.LLMRequest{Model: "test-model"})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Text != "answer" {
+		t.Errorf("text = %q, want answer", resp.Text)
+	}
+	if len(events) != 0 {
+		t.Errorf("events emitted outside a runtime run: %d", len(events))
+	}
+}
+
+func TestContextInstrumentedClientPreservesStreaming(t *testing.T) {
+	stub := &stubStreamingLLMClient{chunks: []core.StreamChunk{
+		{Delta: "he", Index: 0},
+		{Delta: "y", Index: 1, Done: true},
+	}}
+
+	var events []runtime.Event
+	emitter := runtime.EventEmitter(func(e runtime.Event) {
+		events = append(events, e)
+	})
+	ctx := runtime.ContextWithEmitter(context.Background(), emitter)
+
+	client := NewContextInstrumentedClient(stub)
+	streaming, ok := client.(core.StreamingLLMClient)
+	if !ok {
+		t.Fatal("context-instrumented wrapper lost the streaming path")
+	}
+	ch, err := streaming.CompleteStream(ctx, core.LLMRequest{
+		Model: "test-model",
+		Meta:  map[string]any{"run_id": "run-9", "node_id": "llm-node"},
+	})
+	if err != nil {
+		t.Fatalf("CompleteStream: %v", err)
+	}
+	var collected []string
+	for chunk := range ch {
+		if chunk.Delta != "" {
+			collected = append(collected, chunk.Delta)
+		}
+	}
+	if len(collected) != 2 {
+		t.Fatalf("stream deltas = %v, want 2", collected)
+	}
+
+	// The final llm.response event is emitted from the stream goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(events) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2 (llm.call, llm.response)", len(events))
+	}
+	if events[1].Kind != runtime.EventLLMResponse || events[1].RunID != "run-9" {
+		t.Errorf("response event = %s/%s, want llm.response/run-9", events[1].Kind, events[1].RunID)
+	}
+}
+
+// stubStreamingLLMClient streams a fixed chunk list.
+type stubStreamingLLMClient struct {
+	chunks []core.StreamChunk
+}
+
+func (s *stubStreamingLLMClient) Complete(_ context.Context, _ core.LLMRequest) (core.LLMResponse, error) {
+	return core.LLMResponse{Text: "sync"}, nil
+}
+
+func (s *stubStreamingLLMClient) CompleteStream(_ context.Context, _ core.LLMRequest) (<-chan core.StreamChunk, error) {
+	ch := make(chan core.StreamChunk, len(s.chunks))
+	for _, c := range s.chunks {
+		ch <- c
+	}
+	close(ch)
+	return ch, nil
 }
