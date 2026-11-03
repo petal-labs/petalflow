@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -296,4 +297,216 @@ func TestAuditStoreSQLiteErrorsAndSchemaPaths(t *testing.T) {
 	if records, _, _ := store.List(ctx, ToolAuditFilter{TenantID: "pb", Cursor: ""}); len(records) != 1 {
 		t.Fatalf("tenant-scope prune touched tenant pb: %#v", records)
 	}
+}
+
+func TestMemoryAuditStorePaginationPruneAndFilters(t *testing.T) {
+	store := NewMemoryAuditStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	seed := []ToolAuditRecord{
+		{ID: "m-1", TenantID: "t1", Tool: "a", Kind: ToolAuditInvocation, CreatedAt: now},
+		{ID: "m-2", TenantID: "t1", Tool: "a", Kind: ToolAuditFailure, CreatedAt: now.Add(time.Second)},
+		{ID: "m-3", TenantID: "t2", Tool: "b", Kind: ToolAuditInvocation, CreatedAt: now.Add(2 * time.Second)},
+		{ID: "m-4", TenantID: "t1", Tool: "b", Kind: ToolAuditRejection, CreatedAt: now.Add(3 * time.Second)},
+		{ID: "m-5", TenantID: "t1", Tool: "a", Kind: ToolAuditInvocation, CreatedAt: now.Add(4 * time.Second)},
+	}
+	for _, record := range seed {
+		if err := store.Append(ctx, record); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	// Cursor pagination walks every record exactly once.
+	seen := map[string]bool{}
+	cursor := ""
+	for i := 0; i < 6; i++ {
+		records, next, err := store.List(ctx, ToolAuditFilter{TenantID: "t1", Limit: 2, Cursor: cursor})
+		if err != nil {
+			t.Fatalf("page: %v", err)
+		}
+		for _, record := range records {
+			if seen[record.ID] {
+				t.Fatalf("record %s repeated", record.ID)
+			}
+			seen[record.ID] = true
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if len(seen) != 4 {
+		t.Fatalf("tenant pages walked %d records, want 4", len(seen))
+	}
+
+	// Bogus cursors restart from the beginning of the filter scope.
+	records, _, err := store.List(ctx, ToolAuditFilter{TenantID: "t1", Limit: 10, Cursor: "%%%not-base64%%%"})
+	if err != nil || len(records) != 4 {
+		t.Fatalf("bogus cursor page = %d records err %v", len(records), err)
+	}
+
+	// Before cutoffs bound list results.
+	before := now.Add(2500 * time.Millisecond)
+	records, _, err = store.List(ctx, ToolAuditFilter{Before: &before, Limit: 10, Cursor: ""})
+	if err != nil || len(records) != 3 {
+		t.Fatalf("before filter = %d records err %v", len(records), err)
+	}
+
+	// Tenant-scoped prune removes only that tenant's old records.
+	removed, err := store.Prune(ctx, ToolAuditFilter{TenantID: "t1"}, now.Add(2*time.Second))
+	if err != nil || removed != 2 {
+		t.Fatalf("pruned = %d err %v, want 2 (m-1, m-2)", removed, err)
+	}
+	remaining, _, _ := store.List(ctx, ToolAuditFilter{Limit: 10, Cursor: ""})
+	if len(remaining) != 3 {
+		t.Fatalf("remaining = %d records, want 3", len(remaining))
+	}
+}
+
+// failingAuditStore rejects every write so recorder error paths stay
+// observable.
+type failingAuditStore struct{}
+
+func (failingAuditStore) Append(context.Context, ToolAuditRecord) error {
+	return errors.New("audit store outage")
+}
+func (failingAuditStore) List(context.Context, ToolAuditFilter) ([]ToolAuditRecord, string, error) {
+	return nil, "", errors.New("audit store outage")
+}
+func (failingAuditStore) Prune(context.Context, ToolAuditFilter, time.Time) (int64, error) {
+	return 0, errors.New("audit store outage")
+}
+
+func TestAuditRecorderDefaultsAndFailures(t *testing.T) {
+	// Scope-derived RunID: meta without RunID, invocation scope attached.
+	store := NewMemoryAuditStore()
+	recorder := NewToolAuditRecorder(store)
+	ctx := ContextWithAuditContext(
+		ContextWithInvocationScope(context.Background(), "run-derived"),
+		ToolAuditContext{Actor: "workflow:wf", TenantID: "t"},
+	)
+	recorder.Record(ctx, ToolAuditRecord{Tool: "http_fetch", Kind: ToolAuditInvocation})
+	records, _, err := store.List(ctx, ToolAuditFilter{TenantID: "t", Limit: 10, Cursor: ""})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("recorded = %d err %v", len(records), err)
+	}
+	if records[0].RunID != "run-derived" {
+		t.Fatalf("RunID = %q, want derived from scope", records[0].RunID)
+	}
+	if records[0].ID == "" || records[0].CreatedAt.IsZero() {
+		t.Fatalf("defaults missing: %+v", records[0])
+	}
+
+	// Failing stores are swallowed by the recorder contract.
+	failing := NewToolAuditRecorder(failingAuditStore{})
+	failing.Record(context.Background(), ToolAuditRecord{ID: "boom", Tool: "t", Kind: ToolAuditFailure})
+	if _, _, err := failing.Store().List(context.Background(), ToolAuditFilter{}); err == nil {
+		t.Fatal("failing store must surface list errors to direct callers")
+	}
+}
+
+func TestAuditPayloadSummaryKindsAndEmpty(t *testing.T) {
+	if summary := AuditPayloadSummary(map[string]any{}); summary != nil {
+		t.Fatalf("empty payload summary = %+v, want nil", summary)
+	}
+	if summary := AuditPayloadSummary(map[string]any{"n": nil}); summary["n"] != "unknown" {
+		t.Fatalf("null value kind = %+v, want unknown", summary)
+	}
+}
+
+func TestAuditSQLiteStorePayloadAndCorruptionPaths(t *testing.T) {
+	store, err := NewSQLiteAuditStore(SQLiteStoreConfig{DSN: filepath.Join(t.TempDir(), "audit.db")})
+	if err != nil {
+		t.Fatalf("NewSQLiteAuditStore: %v", err)
+	}
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	// Payload summaries round-trip through persistence.
+	if err := store.Append(ctx, ToolAuditRecord{
+		ID: "s-1", TenantID: "t", Tool: "http_fetch", Kind: ToolAuditInvocation,
+		PayloadSummary: map[string]string{"tool": "string", "count": "number"},
+		CreatedAt:      now,
+	}); err != nil {
+		t.Fatalf("append with summary: %v", err)
+	}
+	records, _, err := store.List(ctx, ToolAuditFilter{TenantID: "t", Limit: 10, Cursor: ""})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("list = %d err %v", len(records), err)
+	}
+	if records[0].PayloadSummary["tool"] != "string" || records[0].PayloadSummary["count"] != "number" {
+		t.Fatalf("summary round trip = %+v", records[0].PayloadSummary)
+	}
+
+	// Corrupted timestamps surface scan errors.
+	if _, err := store.db.ExecContext(ctx,
+		"INSERT INTO tool_audit_records (id, tenant_id, tool, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+		"bad-time", "t", "http_fetch", "invocation", "not-a-time"); err != nil {
+		t.Fatalf("seed corrupt row: %v", err)
+	}
+	if _, _, err := store.List(ctx, ToolAuditFilter{TenantID: "t", Limit: 10, Cursor: ""}); err == nil {
+		t.Fatal("corrupt created_at must fail the scan")
+	}
+
+	// Corrupted payload summaries degrade to absent summaries.
+	if _, err := store.db.ExecContext(ctx,
+		"INSERT INTO tool_audit_records (id, tenant_id, tool, kind, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		"bad-json", "t2", "http_fetch", "invocation", "{not-json", now.Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed corrupt payload row: %v", err)
+	}
+	records, _, err = store.List(ctx, ToolAuditFilter{TenantID: "t2", Limit: 10, Cursor: ""})
+	if err != nil || len(records) != 1 || records[0].PayloadSummary != nil {
+		t.Fatalf("corrupt payload = %+v err %v", records, err)
+	}
+
+	// A closed database surfaces typed store errors on every path.
+	if err := store.db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := store.Append(ctx, ToolAuditRecord{ID: "s-2", Tool: "t", Kind: ToolAuditFailure, CreatedAt: now}); err == nil {
+		t.Fatal("append on closed store must fail")
+	}
+	if _, _, err := store.List(ctx, ToolAuditFilter{Limit: 1, Cursor: ""}); err == nil {
+		t.Fatal("list on closed store must fail")
+	}
+	if _, err := store.Prune(ctx, ToolAuditFilter{}, now.Add(time.Hour)); err == nil {
+		t.Fatal("prune on closed store must fail")
+	}
+}
+
+func TestMemoryAuditStoreWorkflowAndRunFilters(t *testing.T) {
+	store := NewMemoryAuditStore()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, record := range []ToolAuditRecord{
+		{ID: "w-1", TenantID: "t", WorkflowID: "wf-1", RunID: "run-1", Tool: "a", Kind: ToolAuditInvocation, CreatedAt: now},
+		{ID: "w-2", TenantID: "t", WorkflowID: "wf-2", RunID: "run-2", Tool: "a", Kind: ToolAuditInvocation, CreatedAt: now.Add(time.Second)},
+		{ID: "w-3", TenantID: "t", WorkflowID: "wf-1", RunID: "run-3", Tool: "a", Kind: ToolAuditInvocation, CreatedAt: now.Add(2 * time.Second)},
+	} {
+		if err := store.Append(ctx, record); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+
+	if records, _, err := store.List(ctx, ToolAuditFilter{WorkflowID: "wf-1", Limit: 10, Cursor: ""}); err != nil || len(records) != 2 {
+		t.Fatalf("workflow filter = %d err %v", len(records), err)
+	}
+	if records, _, err := store.List(ctx, ToolAuditFilter{RunID: "run-2", Limit: 10, Cursor: ""}); err != nil || len(records) != 1 || records[0].ID != "w-2" {
+		t.Fatalf("run filter = %+v err %v", records, err)
+	}
+}
+
+func TestAuditCursorValidBase64InvalidTime(t *testing.T) {
+	// Valid base64 wrapping a non-timestamp: decode fails cleanly.
+	if _, _, ok := decodeToolAuditCursor(base64Of("x|not-a-time")); ok {
+		t.Fatal("invalid cursor time must not decode")
+	}
+	if _, _, ok := decodeToolAuditCursor(base64Of("no-separator")); ok {
+		t.Fatal("cursor without a separator must not decode")
+	}
+}
+
+func base64Of(raw string) string {
+	return base64.StdEncoding.EncodeToString([]byte(raw))
 }

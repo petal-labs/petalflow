@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/petal-labs/petalflow/daemon"
+	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/security"
 	"github.com/petal-labs/petalflow/tool"
@@ -291,4 +292,65 @@ func TestAuditDAEMONQueryPaths(t *testing.T) {
 		t.Fatalf("auth daemon: %v", err)
 	}
 	_ = err
+}
+
+func TestDurableToolApprovalExpiryWithoutPendingAction(t *testing.T) {
+	workflowStore := newTestSQLiteStore(t)
+	runStore := runtime.NewMemoryRunStore()
+	auditStore := tool.NewMemoryAuditStore()
+	srv := NewServer(ServerConfig{
+		Store: workflowStore, RunStore: runStore, AuditStore: auditStore,
+	})
+	t.Cleanup(func() { _ = workflowStore.Close() })
+
+	// A paused run whose approval pending action was cleared but whose
+	// decision window lapsed: the bridge must fail closed, ledger the
+	// expiry, and audit the outcome.
+	request := nodes.ToolApprovalRequest{
+		ID:           "appr-lapsed",
+		NodeID:       "node-1",
+		RunID:        "run-lapsed",
+		ToolName:     "email-send",
+		Reference:    "email-send",
+		PolicySource: nodes.ToolApprovalSourcePolicy,
+		CreatedAt:    time.Now().UTC().Add(-48 * time.Hour),
+		ExpiresAt:    time.Now().UTC().Add(-24 * time.Hour),
+	}
+	if err := runStore.Create(context.Background(), &runtime.RunRecord{
+		ID: "run-lapsed", WorkflowID: "wf-1", Status: runtime.RunStatusPaused,
+		StartedAt: request.CreatedAt, UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+
+	bridge := srv.durableToolApprovalHandler()
+	_, err := bridge(context.Background(), &request)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("lapsed approval error = %v, want expiry failure", err)
+	}
+
+	record, err := runStore.Get(context.Background(), "run-lapsed")
+	if err != nil {
+		t.Fatalf("ledger read: %v", err)
+	}
+	if len(record.ApprovalRecords) != 1 || record.ApprovalRecords[0].Decision != runtime.ToolApprovalExpired {
+		t.Fatalf("lapsed ledger = %#v", record.ApprovalRecords)
+	}
+	records, _, err := auditStore.List(context.Background(), tool.ToolAuditFilter{RunID: "run-lapsed", Limit: 10, Cursor: ""})
+	if err != nil || len(records) != 1 {
+		t.Fatalf("expiry audit = %d records err %v", len(records), err)
+	}
+	if records[0].Kind != tool.ToolAuditApproval || records[0].Decision != string(runtime.ToolApprovalExpired) {
+		t.Fatalf("expiry audit record = %+v", records[0])
+	}
+}
+
+func TestServerAuditStoreAccessor(t *testing.T) {
+	if got := NewServer(ServerConfig{}).auditStore(); got != nil {
+		t.Fatalf("accessor without store = %v, want nil", got)
+	}
+	memory := tool.NewMemoryAuditStore()
+	if got := NewServer(ServerConfig{AuditStore: memory}).auditStore(); got != memory {
+		t.Fatalf("accessor with store = %v, want the configured store", got)
+	}
 }

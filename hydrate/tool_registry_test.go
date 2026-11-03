@@ -117,3 +117,28 @@ func TestBuildActionToolRegistry_SkipsDisabledTools(t *testing.T) {
 		t.Fatal("disabled_tool.execute should not be registered")
 	}
 }
+
+func TestToolRegistryOptions(t *testing.T) {
+	auditStore := tool.NewMemoryAuditStore()
+	limits := &tool.InvocationLimits{MaxConcurrentPerTool: 4}
+
+	// Options mutate the service config directly.
+	cfg := tool.DaemonToolServiceConfig{}
+	WithAuditStore(auditStore)(&cfg)
+	WithInvocationLimits(limits)(&cfg)
+	if cfg.AuditStore != auditStore || cfg.InvocationLimits != limits {
+		t.Fatalf("options did not apply: %+v", cfg)
+	}
+
+	// The registry builds with options over the noop store fallback.
+	registry, err := BuildActionToolRegistry(context.Background(), nil,
+		WithAuditStore(auditStore),
+		WithInvocationLimits(limits),
+	)
+	if err != nil {
+		t.Fatalf("BuildActionToolRegistry with options: %v", err)
+	}
+	if registry == nil {
+		t.Fatal("registry missing")
+	}
+}
