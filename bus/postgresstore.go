@@ -60,6 +60,17 @@ func NewPostgresEventStore(cfg PostgresStoreConfig) (*PostgresEventStore, error)
 		return nil, fmt.Errorf("postgresstore: create schema: %w", err)
 	}
 
+	// Migrate pre-tenant databases (tenant_id column for retention
+	// scoping and audit).
+	if _, err := db.Exec(`ALTER TABLE events ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("postgresstore: migrate: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_tenant_time ON events (tenant_id, time)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("postgresstore: migrate index: %w", err)
+	}
+
 	s := &PostgresEventStore{
 		db:   db,
 		cfg:  cfg,
@@ -89,8 +100,8 @@ func (s *PostgresEventStore) Append(ctx context.Context, event runtime.Event) er
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		sqldialect.Rebind(`INSERT INTO events (run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		sqldialect.Rebind(`INSERT INTO events (run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		event.RunID,
 		event.Seq,
 		string(event.Kind),
@@ -102,6 +113,7 @@ func (s *PostgresEventStore) Append(ctx context.Context, event runtime.Event) er
 		string(payloadJSON),
 		event.TraceID,
 		event.SpanID,
+		event.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("postgresstore: append: %w", err)
@@ -114,7 +126,7 @@ func (s *PostgresEventStore) List(ctx context.Context, runID string, afterSeq ui
 	var rows *sql.Rows
 	var err error
 
-	query := `SELECT run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id
+	query := `SELECT run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id
 	           FROM events WHERE run_id = ? AND seq > ? ORDER BY seq ASC`
 	args := []any{runID, afterSeq}
 
@@ -182,11 +194,8 @@ func (s *PostgresEventStore) Close() error {
 // Prune runs a single pruning pass. Exported for testing.
 func (s *PostgresEventStore) Prune(ctx context.Context) error {
 	if s.cfg.RetentionAge > 0 {
-		cutoff := time.Now().Add(-s.cfg.RetentionAge).Format(time.RFC3339Nano)
-		if _, err := s.db.ExecContext(ctx,
-			sqldialect.Rebind(`DELETE FROM events WHERE time < ?`), cutoff,
-		); err != nil {
-			return fmt.Errorf("postgresstore: prune by age: %w", err)
+		if _, err := s.PruneBefore(ctx, time.Now().Add(-s.cfg.RetentionAge), ""); err != nil {
+			return err
 		}
 	}
 
@@ -238,6 +247,29 @@ func (s *PostgresEventStore) pruneLoop() {
 			_ = s.Prune(context.Background())
 		}
 	}
+}
+
+// PruneBefore deletes events older than the cutoff and returns the
+// number of rows removed. An empty tenantID prunes across all tenants;
+// a non-empty tenantID scopes the prune to that tenant only (other
+// tenants' events are untouched).
+func (s *PostgresEventStore) PruneBefore(ctx context.Context, before time.Time, tenantID string) (int64, error) {
+	cutoff := before.Format(time.RFC3339Nano)
+	query := `DELETE FROM events WHERE time < ?`
+	args := []any{cutoff}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	result, err := s.db.ExecContext(ctx, sqldialect.Rebind(query), args...)
+	if err != nil {
+		return 0, fmt.Errorf("postgresstore: prune before %s: %w", cutoff, err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("postgresstore: prune rows affected: %w", err)
+	}
+	return removed, nil
 }
 
 // Compile-time interface check.

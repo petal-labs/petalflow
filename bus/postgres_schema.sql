@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS events (
     payload   TEXT    NOT NULL DEFAULT '{}',
     trace_id  TEXT    NOT NULL DEFAULT '',
     span_id   TEXT    NOT NULL DEFAULT '',
+    tenant_id TEXT    NOT NULL DEFAULT '', -- tenant scoping for retention/audit
     UNIQUE(run_id, seq)
 );
 

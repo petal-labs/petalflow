@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	otelapi "go.opentelemetry.io/otel"
@@ -48,6 +49,13 @@ type SetupOptions struct {
 	// SkipMetrics leaves the global meter provider untouched.
 	SkipMetrics bool
 }
+
+// Head sampling: the trace pipeline honors the standard
+// OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG variables
+// (always_on, always_off, traceidratio, parentbased_always_on,
+// parentbased_always_off, parentbased_traceidratio). Unset defaults to
+// the SDK default (parentbased_always_on). Invalid values are rejected
+// loudly instead of silently changing sampling behavior.
 
 // SetupResult reports what SetupOTel configured.
 type SetupResult struct {
@@ -89,9 +97,14 @@ func SetupOTel(ctx context.Context, opts SetupOptions) (*SetupResult, error) {
 			if err != nil {
 				return nil, fmt.Errorf("otel: creating OTLP trace exporter: %w", err)
 			}
+			sampler, err := resolveSampler()
+			if err != nil {
+				return nil, err
+			}
 			provider := sdktrace.NewTracerProvider(
 				sdktrace.WithBatcher(exporter),
 				sdktrace.WithResource(res),
+				sdktrace.WithSampler(sampler),
 			)
 			otelapi.SetTracerProvider(provider)
 			result.TracesEnabled = true
@@ -140,6 +153,57 @@ func SetupOTel(ctx context.Context, opts SetupOptions) (*SetupResult, error) {
 	}
 
 	return result, nil
+}
+
+// resolveSampler builds the head sampler from OTEL_TRACES_SAMPLER and
+// OTEL_TRACES_SAMPLER_ARG per the OTel environment variable spec.
+// Unset variables keep the SDK default (ParentBased(AlwaysSample)).
+func resolveSampler() (sdktrace.Sampler, error) {
+	name := strings.ToLower(strings.TrimSpace(os.Getenv("OTEL_TRACES_SAMPLER")))
+	arg := strings.TrimSpace(os.Getenv("OTEL_TRACES_SAMPLER_ARG"))
+
+	ratio := func() (float64, error) {
+		if arg == "" {
+			return 0, fmt.Errorf("otel: OTEL_TRACES_SAMPLER=%s requires OTEL_TRACES_SAMPLER_ARG", name)
+		}
+		r, err := strconv.ParseFloat(arg, 64)
+		if err != nil {
+			return 0, fmt.Errorf("otel: parsing OTEL_TRACES_SAMPLER_ARG=%q: %w", arg, err)
+		}
+		if r < 0 || r > 1 {
+			return 0, fmt.Errorf("otel: OTEL_TRACES_SAMPLER_ARG=%q out of range [0,1]", arg)
+		}
+		return r, nil
+	}
+
+	switch name {
+	case "":
+		return sdktrace.ParentBased(sdktrace.AlwaysSample()), nil
+	case "always_on":
+		return sdktrace.AlwaysSample(), nil
+	case "always_off":
+		return sdktrace.NeverSample(), nil
+	case "traceidratio":
+		r, err := ratio()
+		if err != nil {
+			return nil, err
+		}
+		return sdktrace.TraceIDRatioBased(r), nil
+	case "parentbased_always_on":
+		return sdktrace.ParentBased(sdktrace.AlwaysSample()), nil
+	case "parentbased_always_off":
+		return sdktrace.ParentBased(sdktrace.NeverSample()), nil
+	case "parentbased_traceidratio":
+		r, err := ratio()
+		if err != nil {
+			return nil, err
+		}
+		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(r)), nil
+	default:
+		return nil, fmt.Errorf(
+			"otel: OTEL_TRACES_SAMPLER=%q is not supported (supported: always_on, always_off, traceidratio, parentbased_always_on, parentbased_always_off, parentbased_traceidratio)",
+			name)
+	}
 }
 
 // signalConfigured reports whether an OTLP pipeline for one signal is

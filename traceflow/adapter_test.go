@@ -181,3 +181,68 @@ func TestAdapterContentCaptureLadder(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveSampleRate(t *testing.T) {
+	tests := []struct {
+		name      string
+		rate      float64
+		tags      map[string]string
+		overrides map[string]float64
+		want      float64
+	}{
+		{
+			name: "no overrides keeps base rate",
+			rate: 0.2,
+			want: 0.2,
+		},
+		{
+			name:      "matching tag override applies",
+			rate:      0.2,
+			tags:      map[string]string{"environment": "staging"},
+			overrides: map[string]float64{"environment:staging": 1.0},
+			want:      1.0,
+		},
+		{
+			name:      "non-matching override ignored",
+			rate:      0.2,
+			tags:      map[string]string{"environment": "production"},
+			overrides: map[string]float64{"environment:staging": 1.0},
+			want:      0.2,
+		},
+		{
+			name:      "highest matching override wins",
+			rate:      0.1,
+			tags:      map[string]string{"environment": "staging", "team": "platform"},
+			overrides: map[string]float64{"environment:staging": 0.5, "team:platform": 1.0},
+			want:      1.0,
+		},
+		{
+			name:      "lowering override never reduces the base rate",
+			rate:      0.8,
+			tags:      map[string]string{"environment": "production"},
+			overrides: map[string]float64{"environment:production": 0.1},
+			want:      0.8,
+		},
+		{
+			name:      "malformed override key ignored",
+			rate:      0.3,
+			tags:      map[string]string{"environment": "staging"},
+			overrides: map[string]float64{"environment": 1.0},
+			want:      0.3,
+		},
+		{
+			name:      "overrides without tags ignored",
+			rate:      0.3,
+			overrides: map[string]float64{"environment:staging": 1.0},
+			want:      0.3,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &Adapter{SampleRate: tt.rate, Tags: tt.tags, SampleOverrides: tt.overrides}
+			if got := adapter.EffectiveSampleRate(); got != tt.want {
+				t.Errorf("EffectiveSampleRate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

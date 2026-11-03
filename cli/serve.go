@@ -174,8 +174,17 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	// --- Observability: OTel bootstrap (standard OTEL_* env, no-op
-	// default) or a configured PetalTrace adapter owning traces ---
-	observability, err := setupObservability(cmd.Context(), configPath)
+	// default) or a configured PetalTrace adapter owning traces; event
+	// retention policy from observability.events ---
+	observabilityConfig, err := daemon.LoadObservabilityConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading observability config: %w", err)
+	}
+	var petaltraceCfg *daemon.PetalTraceConfig
+	if observabilityConfig != nil {
+		petaltraceCfg = observabilityConfig.PetalTrace
+	}
+	observability, err := setupObservability(cmd.Context(), petaltraceCfg)
 	if err != nil {
 		return err
 	}
@@ -239,7 +248,31 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 
 	eb := bus.NewMemBus(bus.MemBusConfig{})
-	es, err := openEventStore(dsn, backend)
+
+	// Dropped-event observability: bus subscriber buffers and runtime
+	// event channels drop (never block) when consumers fall behind; the
+	// counters surface as petalflow.events.dropped for alerting.
+	if unregisterDropMetrics, err := observability.registerDropMetrics(eb); err != nil {
+		return fmt.Errorf("registering drop metrics: %w", err)
+	} else if unregisterDropMetrics != nil {
+		defer unregisterDropMetrics()
+	}
+
+	// Event retention from observability.events (disabled by default;
+	// production deployments should set a retention age and/or per-run
+	// cap so the event store cannot grow unboundedly).
+	eventsRetention := daemon.ParsedEventsRetention{}
+	if observabilityConfig != nil && observabilityConfig.Events != nil {
+		eventsRetention, err = observabilityConfig.Events.Parse()
+		if err != nil {
+			return fmt.Errorf("invalid event retention config: %w", err)
+		}
+	}
+	if eventsRetention.Age > 0 || eventsRetention.MaxPerRun > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Event retention: age %s, max %d events/run (prune every %s)\n",
+			eventsRetention.Age, eventsRetention.MaxPerRun, eventsRetention.Interval)
+	}
+	es, err := openEventStore(dsn, backend, eventsRetention)
 	if err != nil {
 		return fmt.Errorf("opening event store: %w", err)
 	}

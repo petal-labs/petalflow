@@ -127,6 +127,9 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		event.Seq = seq.Next()
+		// Tenant correlation rides on every event for retention
+		// scoping and audit.
+		event.TenantID = opts.TenantID
 		// Payload privacy is applied at the emit choke point so every
 		// downstream surface inherits the same classification.
 		event = SanitizeEvent(event, opts.ContentCapture)
@@ -151,6 +154,7 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		case r.eventCh <- event:
 		default:
 			r.droppedEvents.Add(1)
+			recordDroppedEvent()
 		}
 	}
 	if opts.EventEmitterDecorator != nil {

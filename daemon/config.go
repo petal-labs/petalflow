@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -51,7 +52,73 @@ func (d ToolPolicyDeclaration) ToToolPolicy() *tool.ToolPolicy {
 
 // ObservabilityConfig holds settings for telemetry and tracing integrations.
 type ObservabilityConfig struct {
-	PetalTrace *PetalTraceConfig `yaml:"petaltrace,omitempty"`
+	PetalTrace *PetalTraceConfig      `yaml:"petaltrace,omitempty"`
+	Events     *EventsRetentionConfig `yaml:"events,omitempty"`
+}
+
+// EventsRetentionConfig controls retention of persisted run events
+// (observability.events). By default no retention is configured and
+// persisted events grow unboundedly — production deployments should set
+// a retention age and/or a per-run event cap.
+type EventsRetentionConfig struct {
+	// Retention is how long run events are kept, as a Go duration
+	// string (e.g. "720h" for 30 days). Empty or zero disables
+	// age-based pruning.
+	Retention string `yaml:"retention"`
+
+	// MaxEventsPerRun keeps at most this many events per run (0
+	// disables count-based pruning).
+	MaxEventsPerRun int `yaml:"max_events_per_run"`
+
+	// PruneInterval is how often the background pruner runs (Go
+	// duration string; default "1h").
+	PruneInterval string `yaml:"prune_interval"`
+}
+
+// ParsedEventsRetention is the validated event retention policy with
+// defaults applied.
+type ParsedEventsRetention struct {
+	// Age deletes events older than this duration (0 disables).
+	Age time.Duration
+	// MaxPerRun keeps at most this many events per run (0 disables).
+	MaxPerRun int
+	// Interval is how often the background pruner runs.
+	Interval time.Duration
+}
+
+// Parse validates the retention configuration and applies defaults.
+func (c *EventsRetentionConfig) Parse() (ParsedEventsRetention, error) {
+	parsed := ParsedEventsRetention{Interval: time.Hour}
+	if c == nil {
+		return parsed, nil
+	}
+
+	if c.Retention != "" {
+		age, err := time.ParseDuration(c.Retention)
+		if err != nil {
+			return parsed, fmt.Errorf("observability.events.retention: %w", err)
+		}
+		if age < 0 {
+			return parsed, fmt.Errorf("observability.events.retention: must not be negative")
+		}
+		parsed.Age = age
+	}
+	if c.MaxEventsPerRun < 0 {
+		return parsed, fmt.Errorf("observability.events.max_events_per_run: must not be negative")
+	}
+	parsed.MaxPerRun = c.MaxEventsPerRun
+
+	if c.PruneInterval != "" {
+		interval, err := time.ParseDuration(c.PruneInterval)
+		if err != nil {
+			return parsed, fmt.Errorf("observability.events.prune_interval: %w", err)
+		}
+		if interval <= 0 {
+			return parsed, fmt.Errorf("observability.events.prune_interval: must be positive")
+		}
+		parsed.Interval = interval
+	}
+	return parsed, nil
 }
 
 // PetalTraceConfig configures the PetalTrace observability integration.

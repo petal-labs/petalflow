@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -266,5 +267,102 @@ func TestSetupOTelSkipOptionsSuppressEnabledSignal(t *testing.T) {
 	}
 	if err := result.Shutdown(context.Background()); err != nil {
 		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+func TestResolveSampler(t *testing.T) {
+	tests := []struct {
+		name     string
+		sampler  string
+		arg      string
+		wantErr  bool
+		wantDesc string
+	}{
+		{name: "unset keeps SDK default", sampler: "", arg: "", wantDesc: "root:AlwaysOnSampler"},
+		{name: "always_on", sampler: "always_on", arg: "", wantDesc: "AlwaysOnSampler"},
+		{name: "always_off", sampler: "always_off", arg: "", wantDesc: "AlwaysOffSampler"},
+		{name: "traceidratio", sampler: "traceidratio", arg: "0.5", wantDesc: "TraceIDRatioBased{0.5}"},
+		{name: "parentbased_always_on", sampler: "parentbased_always_on", arg: "", wantDesc: "root:AlwaysOnSampler"},
+		{name: "parentbased_always_off", sampler: "parentbased_always_off", arg: "", wantDesc: "root:AlwaysOffSampler"},
+		{name: "parentbased_traceidratio", sampler: "parentbased_traceidratio", arg: "0.25", wantDesc: "root:TraceIDRatioBased{0.25}"},
+		{name: "ratio without arg errors", sampler: "traceidratio", arg: "", wantErr: true},
+		{name: "ratio with bad arg errors", sampler: "traceidratio", arg: "half", wantErr: true},
+		{name: "ratio out of range errors", sampler: "traceidratio", arg: "1.5", wantErr: true},
+		{name: "unknown sampler errors", sampler: "bert", arg: "", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("OTEL_TRACES_SAMPLER", tt.sampler)
+			t.Setenv("OTEL_TRACES_SAMPLER_ARG", tt.arg)
+			sampler, err := resolveSampler()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSampler: %v", err)
+			}
+			if got := sampler.Description(); !strings.Contains(got, tt.wantDesc) {
+				t.Errorf("sampler = %q, want it to contain %q", got, tt.wantDesc)
+			}
+		})
+	}
+}
+
+// TestSetupOTelSamplerGatesTraceEmission drives the bootstrap with an
+// explicit sampler and verifies sampling actually gates what reaches
+// the collector: always_off exports nothing, always_on exports the
+// span.
+func TestSetupOTelSamplerGatesTraceEmission(t *testing.T) {
+	restoreOTelGlobals(t)
+
+	run := func(t *testing.T, sampler string) int {
+		t.Helper()
+		traces, _, endpoint := newOTLPCollector(t)
+		t.Setenv("OTEL_TRACES_EXPORTER", "otlp")
+		t.Setenv("OTEL_METRICS_EXPORTER", "none")
+		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+		t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+		t.Setenv("OTEL_TRACES_SAMPLER", sampler)
+
+		result, err := SetupOTel(context.Background(), SetupOptions{})
+		if err != nil {
+			t.Fatalf("SetupOTel: %v", err)
+		}
+		tracer := otelapi.GetTracerProvider().Tracer("test")
+		_, span := tracer.Start(context.Background(), "sampled?")
+		span.End()
+		if err := result.Shutdown(context.Background()); err != nil {
+			t.Fatalf("shutdown: %v", err)
+		}
+		return int(traces.Load())
+	}
+
+	t.Run("always_off exports nothing", func(t *testing.T) {
+		if got := run(t, "always_off"); got != 0 {
+			t.Errorf("always_off exported %d trace requests, want 0", got)
+		}
+	})
+	t.Run("always_on exports the span", func(t *testing.T) {
+		if got := run(t, "always_on"); got == 0 {
+			t.Error("always_on exported no trace requests")
+		}
+	})
+}
+
+// TestSetupOTelRejectsInvalidSampler covers the loud-failure path for
+// sampler misconfiguration.
+func TestSetupOTelRejectsInvalidSampler(t *testing.T) {
+	_, _, endpoint := newOTLPCollector(t)
+	t.Setenv("OTEL_TRACES_EXPORTER", "otlp")
+	t.Setenv("OTEL_METRICS_EXPORTER", "none")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
+	t.Setenv("OTEL_TRACES_SAMPLER", "bert")
+
+	if _, err := SetupOTel(context.Background(), SetupOptions{}); err == nil {
+		t.Fatal("expected error for unsupported OTEL_TRACES_SAMPLER value")
 	}
 }

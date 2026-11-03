@@ -2,13 +2,17 @@ package bus
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/runtime"
+
+	_ "modernc.org/sqlite"
 )
 
 // testDSN returns a unique shared-memory DSN for test isolation.
@@ -598,4 +602,159 @@ func TestSQLiteEventStore_NilPayload(t *testing.T) {
 
 func TestSQLiteEventStore_InterfaceCompliance(t *testing.T) {
 	var _ EventStore = (*SQLiteEventStore)(nil)
+}
+
+// --- Tenant scoping and PruneBefore ---
+
+func TestSQLiteEventStore_TenantRoundTrip(t *testing.T) {
+	dsn := testDSN(t)
+	store, err := NewSQLiteEventStore(SQLiteStoreConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("NewSQLiteEventStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	event := makeEvent("run-tenant", 1, runtime.EventRunStarted)
+	event.TenantID = "tenant-a"
+	if err := store.Append(ctx, event); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	events, err := store.List(ctx, "run-tenant", 0, 0)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(events) != 1 || events[0].TenantID != "tenant-a" {
+		t.Fatalf("tenant round trip = %+v, want tenant-a", events)
+	}
+}
+
+func TestSQLiteEventStore_PruneBeforeTenantScoping(t *testing.T) {
+	dsn := testDSN(t)
+	store, err := NewSQLiteEventStore(SQLiteStoreConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("NewSQLiteEventStore: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	old := time.Now().Add(-2 * time.Hour)
+
+	appendTenantEvent := func(runID string, seq uint64, tenant string, at time.Time) {
+		t.Helper()
+		event := makeEvent(runID, seq, runtime.EventNodeStarted)
+		event.TenantID = tenant
+		event.Time = at
+		if err := store.Append(ctx, event); err != nil {
+			t.Fatalf("Append %s/%d: %v", runID, seq, err)
+		}
+	}
+
+	appendTenantEvent("run-a", 1, "tenant-a", old)
+	appendTenantEvent("run-a", 2, "tenant-a", time.Now())
+	appendTenantEvent("run-b", 1, "tenant-b", old)
+	appendTenantEvent("run-b", 2, "tenant-b", time.Now())
+
+	// Tenant-scoped prune removes only tenant-a's old events.
+	removed, err := store.PruneBefore(ctx, time.Now().Add(-time.Hour), "tenant-a")
+	if err != nil {
+		t.Fatalf("PruneBefore: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+
+	remainingA, _ := store.List(ctx, "run-a", 0, 0)
+	if len(remainingA) != 1 || remainingA[0].Seq != 2 {
+		t.Errorf("tenant-a events = %+v, want only the recent one", remainingA)
+	}
+	// Tenant-b untouched (no cross-tenant effects).
+	remainingB, _ := store.List(ctx, "run-b", 0, 0)
+	if len(remainingB) != 2 {
+		t.Errorf("tenant-b events = %d, want 2 (untouched by tenant-a prune)", len(remainingB))
+	}
+
+	// Global prune sweeps the rest of the expired events.
+	removed, err = store.PruneBefore(ctx, time.Now().Add(-time.Hour), "")
+	if err != nil {
+		t.Fatalf("PruneBefore (all tenants): %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("global removed = %d, want 1 (tenant-b old event)", removed)
+	}
+	remainingB, _ = store.List(ctx, "run-b", 0, 0)
+	if len(remainingB) != 1 || remainingB[0].Seq != 2 {
+		t.Errorf("tenant-b events after global prune = %+v", remainingB)
+	}
+}
+
+func TestSQLiteEventStore_MigratesPreTenantDatabase(t *testing.T) {
+	// A real file database: the migration scenario is upgrading an
+	// existing on-disk store (shared-cache memory databases would be
+	// destroyed when the seeding connection closes).
+	dsn := "file:" + filepath.Join(t.TempDir(), "events.db") + "?_pragma=journal_mode(WAL)"
+
+	// Create a database with the pre-tenant schema.
+	preTenantSchema := `
+CREATE TABLE IF NOT EXISTS events (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id    TEXT    NOT NULL,
+    seq       INTEGER NOT NULL,
+    kind      TEXT    NOT NULL,
+    node_id   TEXT    NOT NULL DEFAULT '',
+    node_kind TEXT    NOT NULL DEFAULT '',
+    time      TEXT    NOT NULL,
+    attempt   INTEGER NOT NULL DEFAULT 1,
+    elapsed   INTEGER NOT NULL DEFAULT 0,
+    payload   TEXT    NOT NULL DEFAULT '{}',
+    trace_id  TEXT    NOT NULL DEFAULT '',
+    span_id   TEXT    NOT NULL DEFAULT '',
+    UNIQUE(run_id, seq)
+);`
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := db.Exec(preTenantSchema); err != nil {
+		t.Fatalf("create pre-tenant schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO events (run_id, seq, kind, time) VALUES ('run-old', 1, 'run.started', ?)`,
+		time.Now().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("seed pre-tenant row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	// Opening through the store migrates the tenant column.
+	store, err := NewSQLiteEventStore(SQLiteStoreConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("NewSQLiteEventStore (migrate): %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	// Pre-existing rows are readable with an empty tenant.
+	events, err := store.List(ctx, "run-old", 0, 0)
+	if err != nil {
+		t.Fatalf("List pre-tenant row: %v", err)
+	}
+	if len(events) != 1 || events[0].TenantID != "" {
+		t.Fatalf("pre-tenant row = %+v, want empty tenant", events)
+	}
+
+	// New rows carry the tenant and prune scoping works.
+	event := makeEvent("run-new", 1, runtime.EventNodeStarted)
+	event.TenantID = "tenant-a"
+	if err := store.Append(ctx, event); err != nil {
+		t.Fatalf("Append after migration: %v", err)
+	}
+	removed, err := store.PruneBefore(ctx, time.Now().Add(-time.Hour), "tenant-a")
+	if err != nil {
+		t.Fatalf("PruneBefore after migration: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0 (recent event kept)", removed)
+	}
 }

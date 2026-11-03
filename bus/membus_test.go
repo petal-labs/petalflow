@@ -282,3 +282,42 @@ func TestMemBus_ConcurrentSubscribePublish(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestMemBusDroppedTotalAggregatesSubscriptions(t *testing.T) {
+	bus := NewMemBus(MemBusConfig{SubscriberBufferSize: 2})
+	defer bus.Close()
+
+	// Two subscriptions that never drain: publishing floods their
+	// buffers and every further event is dropped and counted.
+	first := bus.Subscribe("run-1")
+	second := bus.SubscribeAll()
+	defer first.Close()
+	defer second.Close()
+
+	for i := 0; i < 10; i++ {
+		bus.Publish(newBusTestEvent("run-1"))
+	}
+
+	if got := bus.DroppedTotal(); got != 16 { // (10-2) drops per subscription
+		t.Errorf("DroppedTotal = %d, want 16 (8 per subscription)", got)
+	}
+
+	// Per-subscription counters still work individually.
+	if got := first.Dropped(); got != 8 {
+		t.Errorf("first.Dropped = %d, want 8", got)
+	}
+
+	// Closed subscriptions stop contributing: their counters are not
+	// retained, so the total is first's drops only (8 + 4 more).
+	_ = second.Close()
+	for i := 0; i < 4; i++ {
+		bus.Publish(newBusTestEvent("run-1"))
+	}
+	if got := bus.DroppedTotal(); got != 12 {
+		t.Errorf("DroppedTotal after close = %d, want 12", got)
+	}
+}
+
+func newBusTestEvent(runID string) runtime.Event {
+	return runtime.NewEvent(runtime.EventNodeStarted, runID)
+}

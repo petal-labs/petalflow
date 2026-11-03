@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/petal-labs/petalflow/tool"
 )
@@ -226,4 +227,79 @@ func TestPetalTraceCaptureModeDefaultsToMinimal(t *testing.T) {
 	if invalid.IsValid() {
 		t.Error("unknown capture mode should be invalid")
 	}
+}
+
+func TestEventsRetentionConfigParse(t *testing.T) {
+	t.Run("nil config keeps safe defaults", func(t *testing.T) {
+		var cfg *EventsRetentionConfig
+		parsed, err := cfg.Parse()
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if parsed.Age != 0 || parsed.MaxPerRun != 0 || parsed.Interval != time.Hour {
+			t.Errorf("parsed = %+v, want disabled retention with 1h interval", parsed)
+		}
+	})
+
+	t.Run("valid config", func(t *testing.T) {
+		parsed, err := (&EventsRetentionConfig{
+			Retention:       "720h",
+			MaxEventsPerRun: 1000,
+			PruneInterval:   "15m",
+		}).Parse()
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if parsed.Age != 720*time.Hour || parsed.MaxPerRun != 1000 || parsed.Interval != 15*time.Minute {
+			t.Errorf("parsed = %+v", parsed)
+		}
+	})
+
+	t.Run("invalid retention duration rejected", func(t *testing.T) {
+		if _, err := (&EventsRetentionConfig{Retention: "30 days"}).Parse(); err == nil {
+			t.Error("expected error for non-Go duration")
+		}
+	})
+
+	t.Run("negative values rejected", func(t *testing.T) {
+		if _, err := (&EventsRetentionConfig{Retention: "-1h"}).Parse(); err == nil {
+			t.Error("expected error for negative retention")
+		}
+		if _, err := (&EventsRetentionConfig{MaxEventsPerRun: -1}).Parse(); err == nil {
+			t.Error("expected error for negative max events")
+		}
+	})
+
+	t.Run("non-positive prune interval rejected", func(t *testing.T) {
+		if _, err := (&EventsRetentionConfig{PruneInterval: "0s"}).Parse(); err == nil {
+			t.Error("expected error for zero prune interval")
+		}
+	})
+
+	t.Run("loads from yaml", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "petalflow.yaml")
+		yaml := []byte(`
+observability:
+  events:
+    retention: 168h
+    max_events_per_run: 500
+`)
+		if err := os.WriteFile(path, yaml, 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := LoadObservabilityConfig(path)
+		if err != nil {
+			t.Fatalf("LoadObservabilityConfig: %v", err)
+		}
+		if cfg == nil || cfg.Events == nil {
+			t.Fatalf("events retention config missing: %+v", cfg)
+		}
+		parsed, err := cfg.Events.Parse()
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if parsed.Age != 168*time.Hour || parsed.MaxPerRun != 500 {
+			t.Errorf("parsed = %+v", parsed)
+		}
+	})
 }

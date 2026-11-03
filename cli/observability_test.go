@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/daemon"
+
 	otelapi "go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -21,7 +23,7 @@ func TestSetupObservabilityNoopDefault(t *testing.T) {
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	stack, err := setupObservability(context.Background(), "")
+	stack, err := setupObservability(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -47,7 +49,7 @@ func TestSetupObservabilityExplicitNoneStaysDisabled(t *testing.T) {
 	t.Setenv("OTEL_METRICS_EXPORTER", "none")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 
-	stack, err := setupObservability(context.Background(), "")
+	stack, err := setupObservability(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -77,7 +79,11 @@ observability:
     capture_mode: standard
 `)
 
-	stack, err := setupObservability(context.Background(), configPath)
+	petaltraceCfg, err := daemon.LoadPetalTraceConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadPetalTraceConfig: %v", err)
+	}
+	stack, err := setupObservability(context.Background(), petaltraceCfg)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -102,7 +108,7 @@ func TestSetupObservabilityOTelEnabledWiresHandlers(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
 
-	stack, err := setupObservability(context.Background(), "")
+	stack, err := setupObservability(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -229,7 +235,11 @@ observability:
     capture_mode: full
 `)
 
-	stack, err := setupObservability(context.Background(), configPath)
+	petaltraceCfg, err := daemon.LoadPetalTraceConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadPetalTraceConfig: %v", err)
+	}
+	stack, err := setupObservability(context.Background(), petaltraceCfg)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/petal-labs/petalflow/bus"
+	"github.com/petal-labs/petalflow/daemon"
 	"github.com/petal-labs/petalflow/server"
 	"github.com/petal-labs/petalflow/tool"
 )
@@ -115,12 +116,24 @@ type eventStoreCloser interface {
 	io.Closer
 }
 
-func openEventStore(dsn string, backend databaseBackend) (eventStoreCloser, error) {
+// openEventStore opens the event store for serve with the configured
+// retention policy (zero values disable pruning).
+func openEventStore(dsn string, backend databaseBackend, retention daemon.ParsedEventsRetention) (eventStoreCloser, error) {
 	switch backend {
 	case backendPostgres:
-		return bus.NewPostgresEventStore(bus.PostgresStoreConfig{DSN: dsn})
+		return bus.NewPostgresEventStore(bus.PostgresStoreConfig{
+			DSN:            dsn,
+			RetentionAge:   retention.Age,
+			RetentionCount: retention.MaxPerRun,
+			PruneInterval:  retention.Interval,
+		})
 	default:
-		return bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{DSN: dsn})
+		return bus.NewSQLiteEventStore(bus.SQLiteStoreConfig{
+			DSN:            dsn,
+			RetentionAge:   retention.Age,
+			RetentionCount: retention.MaxPerRun,
+			PruneInterval:  retention.Interval,
+		})
 	}
 }
 

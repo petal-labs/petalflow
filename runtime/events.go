@@ -170,6 +170,12 @@ type Event struct {
 
 	// SpanID is the OpenTelemetry span ID (hex-encoded, empty when OTel inactive).
 	SpanID string
+
+	// TenantID is the tenant the run belongs to (empty for
+	// unauthenticated deployments). Stamped by the runtime at emission
+	// from RunOptions.TenantID so persisted events can be pruned and
+	// audited per tenant.
+	TenantID string
 }
 
 // NewEvent creates a new event with the current timestamp.
