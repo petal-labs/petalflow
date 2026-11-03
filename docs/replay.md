@@ -29,6 +29,22 @@ The capture does not alter execution semantics: it only observes the event
 stream and the per-node envelopes, and redacts content as it is captured, so
 sensitive content is never retained.
 
+Two independent gates govern what a recording contains:
+
+1. **Event privacy** (run-scoped): the runtime only *emits* prompt,
+   completion, message, and tool-argument content when the run opted in via
+   `RunOptions.ContentCapture`. Under the default policy these fields are
+   already shape descriptors by the time the capture sees them, so even
+   `AllowAllPolicy` recordings stay contentless. Full-fidelity recordings
+   (needed for fingerprint-matched fixtures) opt in explicitly:
+
+   ```go
+   opts.ContentCapture = replay.FullFidelityCapture()
+   ```
+
+2. **Redaction policy** (capture-scoped): governs what the capture keeps
+   from the envelopes it observes (see below).
+
 ## Format
 
 Recordings are JSON with a schema version (`replay.FormatVersion`, currently
@@ -133,10 +149,12 @@ if diffs := replay.Verify(recording, result.Recording); len(diffs) > 0 {
 
 ### Matching strategy
 
-- **Full-fidelity recordings** (captured with `AllowAllPolicy`): fixtures
+- **Full-fidelity recordings** (captured with `AllowAllPolicy` **and**
+  `replay.FullFidelityCapture()` so the events carry content): fixtures
   match by input fingerprint — model, prompts, and input text for LLM
   calls, argument maps for tools — falling back to recorded order.
-- **Redacted recordings**: prompts are not available, so fixtures match
+- **Redacted recordings** (including any recording captured without
+  content capture opted in): prompts are not available, so fixtures match
   strictly in recorded order.
 - Each fixture is consumed once, which keeps replay aligned with the
   recorded sequence across loops and parallel branches. Fixture stores are

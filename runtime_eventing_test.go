@@ -300,4 +300,65 @@ func TestRuntimeEventingPipeline(t *testing.T) {
 			t.Errorf("last event kind = %s, want run.finished", last.Kind)
 		}
 	})
+
+	// 5i. Default privacy: no content in any emitted, persisted, or
+	// served event; content fields appear as shape descriptors.
+	t.Run("default_privacy_no_content", func(t *testing.T) {
+		sensitive := []string{
+			"lookup:42",                 // LLM completion (node.output.final text)
+			"integration-test",          // tool.call arguments value
+			"You are a test assistant.", // system prompt
+			"what is 42?",               // prompt input
+		}
+
+		checkEvents := func(events []runtime.Event, label string) {
+			for _, e := range events {
+				for key, value := range e.Payload {
+					if s, ok := value.(string); ok {
+						for _, secret := range sensitive {
+							if strings.Contains(s, secret) {
+								t.Errorf("%s event %s payload %q leaks content %q", label, e.Kind, key, secret)
+							}
+						}
+					}
+				}
+			}
+		}
+		checkEvents(busEvents, "bus")
+		checkEvents(handlerEvents, "handler")
+
+		stored, err := store.List(context.Background(), runID, 0, 0)
+		if err != nil {
+			t.Fatalf("store.List: %v", err)
+		}
+		checkEvents(stored, "store")
+
+		// Descriptors replace content: node.output.final carries
+		// text_bytes, tool.call carries an arguments shape.
+		var hasTextBytes, hasArgsShape bool
+		for _, e := range stored {
+			if e.Kind == runtime.EventNodeOutputFinal {
+				if _, ok := e.Payload["text_bytes"]; ok {
+					hasTextBytes = true
+				}
+				if _, present := e.Payload["text"]; present {
+					t.Error("node.output.final carries text by default")
+				}
+			}
+			if e.Kind == runtime.EventToolCall {
+				if _, ok := e.Payload["arguments_shape"]; ok {
+					hasArgsShape = true
+				}
+				if _, present := e.Payload["arguments"]; present {
+					t.Error("tool.call carries arguments by default")
+				}
+			}
+		}
+		if !hasTextBytes {
+			t.Error("node.output.final missing text_bytes descriptor")
+		}
+		if !hasArgsShape {
+			t.Error("tool.call missing arguments_shape descriptor")
+		}
+	})
 }

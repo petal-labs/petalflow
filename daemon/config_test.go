@@ -199,3 +199,31 @@ tool_policy:
 		t.Fatalf("LoadDefaultToolPolicy(invalid) = %v, %v; want nil, error", policy, err)
 	}
 }
+
+func TestPetalTraceCaptureModeDefaultsToMinimal(t *testing.T) {
+	t.Setenv("PETALTRACE_ENDPOINT", "http://localhost:4318")
+	t.Setenv("PETALTRACE_CAPTURE_MODE", "")
+
+	cfg := PetalTraceConfigFromEnv()
+	if cfg == nil {
+		t.Fatal("expected config with endpoint set")
+	}
+	if cfg.CaptureMode != CaptureModeMinimal {
+		t.Errorf("CaptureMode = %q, want %q (metadata-only default)", cfg.CaptureMode, CaptureModeMinimal)
+	}
+	if !cfg.IsValid() {
+		t.Error("default config should be valid")
+	}
+
+	// An empty capture mode (YAML without capture_mode) is valid and
+	// resolves to minimal.
+	empty := &PetalTraceConfig{Enabled: true, Endpoint: "http://localhost:4318"}
+	if !empty.IsValid() {
+		t.Error("empty capture mode should resolve to minimal and be valid")
+	}
+
+	invalid := &PetalTraceConfig{Enabled: true, Endpoint: "http://localhost:4318", CaptureMode: "loud"}
+	if invalid.IsValid() {
+		t.Error("unknown capture mode should be invalid")
+	}
+}

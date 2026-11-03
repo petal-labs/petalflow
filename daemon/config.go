@@ -63,7 +63,9 @@ type PetalTraceConfig struct {
 	Endpoint string `yaml:"endpoint"`
 
 	// CaptureMode controls the level of detail captured.
-	// Values: "minimal", "standard", "full"
+	// Values: "minimal", "standard", "full". Empty resolves to
+	// "minimal": metadata only, no content capture (the privacy
+	// default).
 	CaptureMode string `yaml:"capture_mode"`
 
 	// SampleRate controls the percentage of runs to trace (0.0 - 1.0).
@@ -103,7 +105,7 @@ func PetalTraceConfigFromEnv() *PetalTraceConfig {
 	cfg := &PetalTraceConfig{
 		Enabled:             true,
 		Endpoint:            endpoint,
-		CaptureMode:         CaptureModeStandard,
+		CaptureMode:         CaptureModeMinimal,
 		SampleRate:          1.0,
 		AlwaysCaptureErrors: true,
 	}
@@ -156,7 +158,9 @@ func (c *PetalTraceConfig) MergeWithEnv() *PetalTraceConfig {
 	return &result
 }
 
-// IsValid checks if the PetalTrace config has valid values.
+// IsValid checks if the PetalTrace config has valid values. An empty
+// capture mode is valid: it resolves to CaptureModeMinimal (metadata
+// only), matching the event privacy defaults.
 func (c *PetalTraceConfig) IsValid() bool {
 	if c == nil || !c.Enabled {
 		return false
@@ -165,8 +169,8 @@ func (c *PetalTraceConfig) IsValid() bool {
 		return false
 	}
 	switch c.CaptureMode {
-	case CaptureModeMinimal, CaptureModeStandard, CaptureModeFull:
-		// Valid
+	case "", CaptureModeMinimal, CaptureModeStandard, CaptureModeFull:
+		// Valid; "" resolves to minimal.
 	default:
 		return false
 	}

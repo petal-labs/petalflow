@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Default-private events, spans, and persisted payloads with opt-in
+  redacted capture**
+  ([#226](https://github.com/petal-labs/petalflow/issues/226), part of
+  [#176](https://github.com/petal-labs/petalflow/issues/176)). Runtime
+  events, OpenTelemetry spans, persisted event rows, and replay fixtures
+  are metadata by default: no prompt, completion, message, tool argument,
+  or credential value leaves the process boundary unless content capture
+  is explicitly opted in. A payload privacy classification
+  (metadata/content/secret) lives in `runtime/privacy.go` and is applied
+  at both the emission points (instrumented LLM client, llm/tool nodes,
+  tracing handler, edge transfers) and the runtime's emit choke point, so
+  the SQLite/Postgres event store, `GET /api/runs/{run_id}/events`, SSE
+  streams, and OTel handlers inherit the same behavior with no separate
+  redaction path. Content fields are replaced with shape descriptors
+  (sizes, counts, key names per the audit-summary conventions); opt-in
+  capture (`RunOptions.ContentCapture`, `server.ServerConfig.ContentCapture`,
+  `LLMEventContext.Capture`, `otel.NewTracingHandlerWithCapture`) is
+  size-bounded (16 KiB default per field) and passed through a redaction
+  pass — a canonical credential scrubber (`security.ScrubSecrets`, now
+  shared by the tool audit trail) plus sensitive-field masking. Failure
+  events (`node.failed`, `run.finished`, `routing.fallback`, LLM errors)
+  carry typed `error_code` values plus scrubbed messages, never raw
+  provider/transport errors. The PetalTrace capture ladder now fails
+  closed: `minimal` (metadata-only) is the default for
+  `ParseCaptureMode`, `NewAdapterWithEndpoint`, and daemon config (an
+  empty `capture_mode` resolves to minimal). Replay honors the same
+  gates: recordings made without `replay.FullFidelityCapture()` carry no
+  event-derived content and yield order-matched fixtures; the replayer
+  itself captures at full fidelity internally for verification. See the
+  "Event Privacy" section in `docs/operations.md`.
+
 - **Per-node and per-run budget enforcement with hard cost ceilings**
   ([#207](https://github.com/petal-labs/petalflow/issues/207), part of
   [#174](https://github.com/petal-labs/petalflow/issues/174)). A new

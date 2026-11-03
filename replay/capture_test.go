@@ -218,6 +218,8 @@ func TestCaptureIntegrationRuntimeRun(t *testing.T) {
 	opts.EventHandler = capture.Handle
 	opts.NodeRecorder = capture
 	opts.CaptureSnapshots = true
+	// Full-fidelity capture opts in to content capture explicitly.
+	opts.ContentCapture = FullFidelityCapture()
 	opts.GraphDefinition = g
 	opts.Inputs = "hello world"
 
@@ -275,6 +277,32 @@ func TestCaptureIntegrationRuntimeRun(t *testing.T) {
 	for _, sensitive := range []string{"hello world", "integration answer", "Summarize"} {
 		if strings.Contains(raw, sensitive) {
 			t.Errorf("redacted recording leaked %q", sensitive)
+		}
+	}
+
+	// Default event privacy (no content capture): even a full-fidelity
+	// capture policy records no event-derived content, because the
+	// runtime never emits it. Envelope snapshots remain governed by the
+	// RedactionPolicy (AllowAll is the explicit full-fidelity opt-in).
+	defaultPrivacy := NewCapture(AllowAllPolicy())
+	opts.EventHandler = defaultPrivacy.Handle
+	opts.NodeRecorder = defaultPrivacy
+	opts.ContentCapture = runtime.ContentCapture{}
+	opts.Inputs = "hello world"
+	if _, err := runtime.NewRuntime().Run(context.Background(), g, core.NewEnvelope().WithInput("hello world"), opts); err != nil {
+		t.Fatalf("default-privacy run: %v", err)
+	}
+	private := defaultPrivacy.Finish()
+	for _, node := range private.Nodes {
+		for _, call := range node.LLM {
+			if call.System != "" || call.InputText != "" || call.Completion != "" || len(call.Messages) != 0 {
+				t.Errorf("default-privacy LLM record captured content: %+v", call)
+			}
+		}
+		for _, call := range node.Tools {
+			if call.Args != nil || call.Result != nil {
+				t.Errorf("default-privacy tool record captured content: %+v", call)
+			}
 		}
 	}
 }

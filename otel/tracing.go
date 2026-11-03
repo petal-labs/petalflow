@@ -15,8 +15,17 @@ import (
 // TracingHandler translates PetalFlow runtime events into OpenTelemetry spans.
 // It maintains maps of active run and node spans, creating and ending them
 // based on event kind.
+//
+// Payload privacy: the handler is metadata-only by default —
+// content-classified attributes (system prompts, messages, completions,
+// tool calls, edge data previews) are never copied onto spans unless
+// content capture is explicitly enabled with NewTracingHandlerWithCapture,
+// and free-form error text is scrubbed of credential-shaped material.
+// Events sanitized by the runtime already carry descriptors; the handler
+// applies the same classification to raw events wired to it directly.
 type TracingHandler struct {
-	tracer trace.Tracer
+	tracer  trace.Tracer
+	capture runtime.ContentCapture
 
 	mu        sync.RWMutex
 	runSpans  map[string]trace.Span      // runID -> span
@@ -27,7 +36,8 @@ type TracingHandler struct {
 }
 
 // NewTracingHandler creates a new TracingHandler that uses the given tracer
-// to create spans from runtime events.
+// to create spans from runtime events. The handler is metadata-only:
+// content-classified event fields are not copied onto spans.
 func NewTracingHandler(tracer trace.Tracer) *TracingHandler {
 	return &TracingHandler{
 		tracer:    tracer,
@@ -37,6 +47,17 @@ func NewTracingHandler(tracer trace.Tracer) *TracingHandler {
 		nodeCtxs:  make(map[string]context.Context),
 		llmSpans:  make(map[string]trace.Span),
 	}
+}
+
+// NewTracingHandlerWithCapture creates a TracingHandler that copies
+// content-classified fields (system prompts, messages, completions,
+// tool calls, edge data previews) onto spans when content capture is
+// explicitly opted in. Captured values must already be bounded and
+// redacted (the runtime sanitizes events before they reach handlers).
+func NewTracingHandlerWithCapture(tracer trace.Tracer, capture runtime.ContentCapture) *TracingHandler {
+	h := NewTracingHandler(tracer)
+	h.capture = capture
+	return h
 }
 
 // Handle processes a runtime event and creates or ends spans accordingly.
@@ -220,6 +241,8 @@ func (h *TracingHandler) handleNodeFailed(e runtime.Event) {
 				errMsg = s
 			}
 		}
+		errMsg = runtime.RedactText(errMsg)
+		span.SetAttributes(spanErrorAttributes(e)...)
 		span.SetStatus(codes.Error, errMsg)
 		span.RecordError(
 			spanError(errMsg),
@@ -284,6 +307,8 @@ func (h *TracingHandler) handleRunFinished(e runtime.Event) {
 					errMsg = s
 				}
 			}
+			errMsg = runtime.RedactText(errMsg)
+			span.SetAttributes(spanErrorAttributes(e)...)
 			span.SetStatus(codes.Error, errMsg)
 		} else {
 			span.SetStatus(codes.Ok, "")
@@ -354,10 +379,21 @@ func (h *TracingHandler) handleLLMCall(e runtime.Event) {
 		attribute.String("gen_ai.request.model", model),
 	}
 
-	// Add system prompt if available
-	if system, found := e.Payload["system_prompt"]; found {
-		if s, ok := system.(string); ok && s != "" {
-			attrs = append(attrs, attribute.String("petalflow.llm.system_prompt", s))
+	// Content-classified attributes are only copied onto spans when
+	// capture is explicitly opted in (metadata-only by default).
+	if h.capture.Enabled {
+		// Add system prompt if available
+		if system, found := e.Payload["system_prompt"]; found {
+			if s, ok := system.(string); ok && s != "" {
+				attrs = append(attrs, attribute.String("petalflow.llm.system_prompt", s))
+			}
+		}
+
+		// Add messages (as JSON string) if available
+		if messages, found := e.Payload["messages"]; found {
+			if s, ok := messages.(string); ok && s != "" {
+				attrs = append(attrs, attribute.String("petalflow.llm.messages", s))
+			}
 		}
 	}
 
@@ -372,13 +408,6 @@ func (h *TracingHandler) handleLLMCall(e runtime.Event) {
 	if maxTokens, found := e.Payload["max_tokens"]; found {
 		if i, ok := maxTokens.(int); ok {
 			attrs = append(attrs, attribute.Int("gen_ai.request.max_tokens", i))
-		}
-	}
-
-	// Add messages (as JSON string) if available
-	if messages, found := e.Payload["messages"]; found {
-		if s, ok := messages.(string); ok && s != "" {
-			attrs = append(attrs, attribute.String("petalflow.llm.messages", s))
 		}
 	}
 
@@ -480,17 +509,19 @@ func (h *TracingHandler) handleLLMResponse(e runtime.Event) {
 		}
 	}
 
-	// Completion text (for PetalTrace capture)
-	if completion, found := e.Payload["completion"]; found {
-		if s, ok := completion.(string); ok {
-			attrs = append(attrs, attribute.String("petalflow.llm.completion", s))
+	// Completion text and tool calls are content-classified: only copied
+	// onto spans when capture is explicitly opted in.
+	if h.capture.Enabled {
+		if completion, found := e.Payload["completion"]; found {
+			if s, ok := completion.(string); ok {
+				attrs = append(attrs, attribute.String("petalflow.llm.completion", s))
+			}
 		}
-	}
 
-	// Tool calls
-	if toolCalls, found := e.Payload["tool_calls"]; found {
-		if s, ok := toolCalls.(string); ok && s != "" {
-			attrs = append(attrs, attribute.String("petalflow.llm.tool_calls", s))
+		if toolCalls, found := e.Payload["tool_calls"]; found {
+			if s, ok := toolCalls.(string); ok && s != "" {
+				attrs = append(attrs, attribute.String("petalflow.llm.tool_calls", s))
+			}
 		}
 	}
 
@@ -505,6 +536,8 @@ func (h *TracingHandler) handleLLMResponse(e runtime.Event) {
 					errMsg = s
 				}
 			}
+			errMsg = runtime.RedactText(errMsg)
+			span.SetAttributes(spanErrorAttributes(e)...)
 			span.SetStatus(codes.Error, errMsg)
 			span.RecordError(spanError(errMsg), trace.WithTimestamp(e.Time))
 		} else {
@@ -571,10 +604,13 @@ func (h *TracingHandler) handleEdgeTransfer(e runtime.Event) {
 		}
 	}
 
-	// Data preview (truncated)
-	if preview, found := e.Payload["data_preview"]; found {
-		if s, ok := preview.(string); ok {
-			attrs = append(attrs, attribute.String("petalflow.edge.data_preview", s))
+	// Data preview (truncated) is content-classified: only copied onto
+	// spans when capture is explicitly opted in.
+	if h.capture.Enabled {
+		if preview, found := e.Payload["data_preview"]; found {
+			if s, ok := preview.(string); ok {
+				attrs = append(attrs, attribute.String("petalflow.edge.data_preview", s))
+			}
 		}
 	}
 
@@ -592,3 +628,15 @@ func (h *TracingHandler) handleEdgeTransfer(e runtime.Event) {
 type spanError string
 
 func (e spanError) Error() string { return string(e) }
+
+// spanErrorAttributes renders the typed error code from a failure event
+// payload as a span attribute. Codes are stable machine values and
+// never carry payload or secret material.
+func spanErrorAttributes(e runtime.Event) []attribute.KeyValue {
+	if code, found := e.Payload["error_code"]; found {
+		if s, ok := code.(string); ok && s != "" {
+			return []attribute.KeyValue{attribute.String("petalflow.error_code", s)}
+		}
+	}
+	return nil
+}

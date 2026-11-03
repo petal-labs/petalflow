@@ -115,6 +115,9 @@ func TestLLMNode_Streaming(t *testing.T) {
 	var finals []runtime.Event
 
 	opts := runtime.DefaultRunOptions()
+	// The test consumes streamed content, so it opts in to content
+	// capture explicitly (metadata-only by default).
+	opts.ContentCapture.Enabled = true
 	opts.EventHandler = func(e runtime.Event) {
 		mu.Lock()
 		defer mu.Unlock()

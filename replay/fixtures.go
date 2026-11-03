@@ -112,7 +112,10 @@ func NewFixtureStore(rec *Recording) *FixtureStore {
 	return store
 }
 
-// isRedacted reports whether an LLM record's prompts are placeholders.
+// isRedacted reports whether an LLM record's prompts are placeholders
+// or absent entirely (recordings captured under the default event
+// privacy policy carry no prompt content). Redacted or contentless
+// records cannot fingerprint-match and fall back to recorded order.
 func isRedacted(call LLMCallRecord) bool {
 	redactedSystem := call.System != "" && isPlaceholder(call.System)
 	redactedInput := call.InputText != "" && isPlaceholder(call.InputText)
@@ -120,6 +123,9 @@ func isRedacted(call LLMCallRecord) bool {
 		if m.Content != "" && isPlaceholder(m.Content) {
 			return true
 		}
+	}
+	if call.System == "" && call.InputText == "" && len(call.Messages) == 0 {
+		return true
 	}
 	return redactedSystem || redactedInput
 }

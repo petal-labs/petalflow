@@ -234,6 +234,19 @@ type RunOptions struct {
 	// EventHandler, a capture layer can combine envelope state with the
 	// event stream.
 	NodeRecorder NodeRecorder
+
+	// ContentCapture opts in to capturing content-classified payload
+	// fields (prompts, completions, messages, tool arguments) in
+	// emitted events. The zero value is the default: content fields are
+	// reduced to metadata shape descriptors (sizes, counts, key names)
+	// and no prompt, completion, message, tool argument, or credential
+	// value leaves the process boundary. When enabled, captured values
+	// are size-bounded (ContentCapture.MaxBytes, default
+	// DefaultContentCaptureLimit) and passed through a redaction pass.
+	// The classification is applied to every emitted event, so the
+	// event store, run-events API, SSE streams, and tracing handlers
+	// inherit the same behavior.
+	ContentCapture ContentCapture
 }
 
 // NodeRecorder receives per-node envelope state for capture and replay.
@@ -338,6 +351,10 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		defer emitMu.Unlock()
 
 		e.Seq = seq.Next()
+		// Payload privacy is applied at the emit choke point so every
+		// downstream surface (event bus, EventHandler chain, event
+		// channel) inherits the same classification.
+		e = SanitizeEvent(e, opts.ContentCapture)
 		if opts.EventBus != nil {
 			opts.EventBus.Publish(e)
 		}
@@ -395,7 +412,8 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	if err != nil {
 		finishEvent = finishEvent.
 			WithPayload("status", runStatusForError(err)).
-			WithPayload("error", err.Error())
+			WithPayload("error", RedactText(err.Error())).
+			WithPayload("error_code", ErrorCodeFor(err))
 	} else {
 		finishEvent = finishEvent.
 			WithPayload("status", "completed")
@@ -1234,6 +1252,10 @@ func (r *BasicRuntime) executeNode(
 	// Inject emitter into context for node use
 	nodeCtx := ContextWithEmitter(ctx, emit)
 	nodeCtx = ContextWithIdempotencyKey(nodeCtx, opts.IdempotencyKey)
+	// The content capture policy rides on the node context so emitters
+	// (llm/tool nodes, instrumented clients) classify content fields at
+	// emission instead of relying on downstream sanitization.
+	nodeCtx = ContextWithContentCapture(nodeCtx, opts.ContentCapture)
 	if opts.HumanRequestHandler != nil {
 		nodeCtx = ContextWithHumanRequestHandler(nodeCtx, opts.HumanRequestHandler)
 	}
@@ -1268,11 +1290,13 @@ func (r *BasicRuntime) executeNode(
 	}
 
 	if err != nil {
-		// Emit node failed
+		// Emit node failed: the payload carries a typed code plus a
+		// scrubbed message (raw provider/transport errors never persist).
 		failed := NewEvent(EventNodeFailed, runID).
 			WithNode(nodeID, nodeKind).
 			WithElapsed(nodeElapsed).
-			WithPayload("error", err.Error())
+			WithPayload("error", RedactText(err.Error())).
+			WithPayload("error_code", ErrorCodeFor(err))
 		// Surface the stack trace for panics so operators can diagnose them.
 		var panicErr *NodePanicError
 		if errors.As(err, &panicErr) {

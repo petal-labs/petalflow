@@ -208,10 +208,12 @@ func (n *LLMNode) runSync(ctx context.Context, env *core.Envelope, emit runtime.
 		}
 	}
 
-	// Emit node.output.final event
+	// Emit node.output.final event (content classified: shape descriptor
+	// by default, bounded redacted text when capture is opted in).
+	capture, _ := runtime.ContentCaptureFromContext(ctx)
 	emit(runtime.NewEvent(runtime.EventNodeOutputFinal, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
-		WithPayload("text", resp.Text))
+		WithContentPayload("text", resp.Text, capture))
 
 	// Store output in envelope, honoring structured output.
 	output, err := n.finalizeOutput(resp.Text, resp.JSON)
@@ -274,6 +276,7 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 	// Read chunks, accumulate text, emit delta events
 	var accumulated strings.Builder
 	var usage core.LLMTokenUsage
+	capture, _ := runtime.ContentCaptureFromContext(ctx)
 
 	streaming := true
 	for streaming {
@@ -307,10 +310,11 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 			// Accumulate text
 			accumulated.WriteString(chunk.Delta)
 
-			// Emit delta event
+			// Emit delta event (content classified: shape descriptor by
+			// default, bounded redacted delta when capture is opted in).
 			emit(runtime.NewEvent(runtime.EventNodeOutputDelta, env.Trace.RunID).
 				WithNode(n.ID(), n.Kind()).
-				WithPayload("delta", chunk.Delta).
+				WithContentPayload("delta", chunk.Delta, capture).
 				WithPayload("index", chunk.Index))
 		}
 	}
@@ -329,10 +333,11 @@ func (n *LLMNode) runStreaming(ctx context.Context, env *core.Envelope, streamCl
 		}
 	}
 
-	// Emit node.output.final event
+	// Emit node.output.final event (content classified: shape descriptor
+	// by default, bounded redacted text when capture is opted in).
 	emit(runtime.NewEvent(runtime.EventNodeOutputFinal, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
-		WithPayload("text", text))
+		WithContentPayload("text", text, capture))
 
 	// Store output in envelope, honoring structured output.
 	output, err := n.finalizeOutput(text, nil)

@@ -1,12 +1,13 @@
 package otel_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	otelcodes "go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	otelcodes "go.opentelemetry.io/otel/codes"
 
 	"github.com/petal-labs/petalflow/core"
 	petalotel "github.com/petal-labs/petalflow/otel"
@@ -543,6 +544,248 @@ func TestTracingHandler_FullLifecycle(t *testing.T) {
 	for _, s := range spans {
 		if s.SpanContext.TraceID() != traceID {
 			t.Error("expected all spans to share the same trace ID")
+		}
+	}
+}
+
+// spanAttributeValue returns the value of a span attribute, or "" when
+// absent.
+func spanAttributeValue(s tracetest.SpanStub, key string) string {
+	for _, attr := range s.Attributes {
+		if string(attr.Key) == key {
+			return attr.Value.AsString()
+		}
+	}
+	return ""
+}
+
+func hasSpanAttribute(s tracetest.SpanStub, key string) bool {
+	for _, attr := range s.Attributes {
+		if string(attr.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// feedLLMEvents drives one LLM call/response cycle carrying content
+// payloads through the handler.
+func feedLLMEvents(h *petalotel.TracingHandler, now time.Time) {
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunStarted,
+		RunID:   "run-priv",
+		Time:    now,
+		Payload: map[string]any{"graph": "g"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeStarted,
+		RunID:    "run-priv",
+		NodeID:   "llm-1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(10 * time.Millisecond),
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMCall,
+		RunID:    "run-priv",
+		NodeID:   "llm-1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(20 * time.Millisecond),
+		Payload: map[string]any{
+			"model":         "test-model",
+			"system_prompt": "You are a test assistant.",
+			"messages":      `[{"role":"user","content":"hello"}]`,
+			"input_text":    "hello",
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventLLMResponse,
+		RunID:    "run-priv",
+		NodeID:   "llm-1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(30 * time.Millisecond),
+		Payload: map[string]any{
+			"status":     "success",
+			"provider":   "stub",
+			"completion": "the answer",
+			"tool_calls": `[{"name":"lookup"}]`,
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeFinished,
+		RunID:    "run-priv",
+		NodeID:   "llm-1",
+		NodeKind: core.NodeKindLLM,
+		Time:     now.Add(40 * time.Millisecond),
+		Elapsed:  30 * time.Millisecond,
+	})
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunFinished,
+		RunID:   "run-priv",
+		Time:    now.Add(50 * time.Millisecond),
+		Elapsed: 50 * time.Millisecond,
+		Payload: map[string]any{"status": "completed"},
+	})
+}
+
+func TestTracingHandler_DefaultDropsContentAttributes(t *testing.T) {
+	exporter, tp := newTestTracer()
+	tracer := tp.Tracer("test")
+	h := petalotel.NewTracingHandler(tracer)
+
+	feedLLMEvents(h, time.Now())
+
+	spans := exporter.GetSpans()
+	var llmSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == "llm:test-model" {
+			llmSpan = &spans[i]
+		}
+	}
+	if llmSpan == nil {
+		t.Fatal("llm span not found")
+	}
+
+	for _, key := range []string{
+		"petalflow.llm.system_prompt",
+		"petalflow.llm.messages",
+		"petalflow.llm.completion",
+		"petalflow.llm.tool_calls",
+	} {
+		if hasSpanAttribute(*llmSpan, key) {
+			t.Errorf("span carries content attribute %q by default", key)
+		}
+	}
+	// Metadata attributes survive.
+	if spanAttributeValue(*llmSpan, "gen_ai.request.model") != "test-model" {
+		t.Errorf("gen_ai.request.model missing")
+	}
+	if spanAttributeValue(*llmSpan, "gen_ai.system") != "stub" {
+		t.Errorf("gen_ai.system missing")
+	}
+}
+
+func TestTracingHandlerWithCapture_KeepsContentAttributes(t *testing.T) {
+	exporter, tp := newTestTracer()
+	tracer := tp.Tracer("test")
+	h := petalotel.NewTracingHandlerWithCapture(tracer, runtime.ContentCapture{Enabled: true})
+
+	feedLLMEvents(h, time.Now())
+
+	spans := exporter.GetSpans()
+	var llmSpan *tracetest.SpanStub
+	for i := range spans {
+		if spans[i].Name == "llm:test-model" {
+			llmSpan = &spans[i]
+		}
+	}
+	if llmSpan == nil {
+		t.Fatal("llm span not found")
+	}
+
+	for key, want := range map[string]string{
+		"petalflow.llm.system_prompt": "You are a test assistant.",
+		"petalflow.llm.messages":      `[{"role":"user","content":"hello"}]`,
+		"petalflow.llm.completion":    "the answer",
+		"petalflow.llm.tool_calls":    `[{"name":"lookup"}]`,
+	} {
+		if got := spanAttributeValue(*llmSpan, key); got != want {
+			t.Errorf("span attribute %q = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestTracingHandler_EdgeDataPreviewGated(t *testing.T) {
+	exporter, tp := newTestTracer()
+	tracer := tp.Tracer("test")
+	now := time.Now()
+
+	edgeEvent := runtime.Event{
+		Kind:  runtime.EventEdgeTransfer,
+		RunID: "run-edge",
+		Time:  now,
+		Payload: map[string]any{
+			"source_node":     "a",
+			"source_port":     "out",
+			"target_node":     "b",
+			"target_port":     "in",
+			"data_size_bytes": int64(512),
+			"data_preview":    `{"secret_input":"hello world"}`,
+		},
+	}
+
+	runStart := runtime.Event{Kind: runtime.EventRunStarted, RunID: "run-edge", Time: now, Payload: map[string]any{"graph": "g"}}
+
+	h := petalotel.NewTracingHandler(tracer)
+	h.Handle(runStart)
+	h.Handle(edgeEvent)
+
+	for _, s := range exporter.GetSpans() {
+		if s.Name == "edge:a->b" {
+			if hasSpanAttribute(s, "petalflow.edge.data_preview") {
+				t.Error("edge span carries data_preview by default")
+			}
+			if !hasSpanAttribute(s, "petalflow.edge.data_size_bytes") {
+				t.Error("edge span missing data_size_bytes")
+			}
+		}
+	}
+
+	exporter.Reset()
+	h = petalotel.NewTracingHandlerWithCapture(tracer, runtime.ContentCapture{Enabled: true})
+	h.Handle(runStart)
+	h.Handle(edgeEvent)
+	for _, s := range exporter.GetSpans() {
+		if s.Name == "edge:a->b" {
+			if !hasSpanAttribute(s, "petalflow.edge.data_preview") {
+				t.Error("edge span missing data_preview under capture opt-in")
+			}
+		}
+	}
+}
+
+func TestTracingHandler_NodeFailedScrubsCredentialAndRecordsCode(t *testing.T) {
+	exporter, tp := newTestTracer()
+	tracer := tp.Tracer("test")
+	h := petalotel.NewTracingHandler(tracer)
+
+	now := time.Now()
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunStarted,
+		RunID:   "run-err",
+		Time:    now,
+		Payload: map[string]any{"graph": "g"},
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeStarted,
+		RunID:    "run-err",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindTool,
+		Time:     now.Add(10 * time.Millisecond),
+	})
+	h.Handle(runtime.Event{
+		Kind:     runtime.EventNodeFailed,
+		RunID:    "run-err",
+		NodeID:   "n1",
+		NodeKind: core.NodeKindTool,
+		Time:     now.Add(20 * time.Millisecond),
+		Payload: map[string]any{
+			"error":      "provider rejected api_key=sk-abcdef123456789",
+			"error_code": "error",
+		},
+	})
+
+	for _, s := range exporter.GetSpans() {
+		if s.Name != "node:n1" {
+			continue
+		}
+		if s.Status.Code != otelcodes.Error {
+			t.Errorf("expected Error status, got %v", s.Status.Code)
+		}
+		if strings.Contains(s.Status.Description, "sk-abcdef123456789") {
+			t.Errorf("span status leaks credential: %q", s.Status.Description)
+		}
+		if got := spanAttributeValue(s, "petalflow.error_code"); got != "error" {
+			t.Errorf("petalflow.error_code = %q, want \"error\"", got)
 		}
 	}
 }
