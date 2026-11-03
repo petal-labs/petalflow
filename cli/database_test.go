@@ -1,6 +1,9 @@
 package cli
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestDetectBackend(t *testing.T) {
 	cases := []struct {
@@ -46,4 +49,24 @@ func TestNormalizePostgresScope(t *testing.T) {
 			t.Errorf("normalizePostgresScope(%q) = %q, want unchanged %q", dsn, got, dsn)
 		}
 	})
+}
+
+func TestOpenAuditStore(t *testing.T) {
+	// The SQLite backend opens (and creates) the shared audit database.
+	path := filepath.Join(t.TempDir(), "audit.db")
+	sqliteStore, err := openAuditStore(path, backendSQLite, path)
+	if err != nil || sqliteStore == nil {
+		t.Fatalf("sqlite audit store = %v err %v", sqliteStore, err)
+	}
+
+	// Empty DSNs fail cleanly.
+	if _, err := openAuditStore("", backendSQLite, ""); err == nil {
+		t.Fatal("empty sqlite DSN must be rejected")
+	}
+
+	// The Postgres branch requires a reachable server; construction
+	// fails without one.
+	if _, err := openAuditStore("postgres://127.0.0.1:1/none", backendPostgres, ""); err == nil {
+		t.Fatal("postgres audit store without a server must fail")
+	}
 }

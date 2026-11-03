@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/security"
@@ -25,6 +26,9 @@ type ServerConfig struct {
 	// ToolPolicy is the statically configured tool policy. When set,
 	// tool invocation requests run through the policy gate.
 	ToolPolicy *tool.ToolPolicy
+	// AuditStore records the tenant-scoped tool lifecycle trail; nil
+	// disables audit recording and query endpoints.
+	AuditStore tool.ToolAuditStore
 }
 
 type SecurityConfig struct {
@@ -40,6 +44,9 @@ type Server struct {
 	// toolPolicy is the statically configured policy; nil disables the
 	// request-side gate (embedded-library compatibility).
 	toolPolicy *tool.ToolPolicy
+	// audit is the optional tool lifecycle audit store; nil disables
+	// audit recording and query endpoints.
+	audit tool.ToolAuditStore
 
 	mu           sync.Mutex
 	dynamicTypes map[string]struct{}
@@ -81,6 +88,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		reg:          reg,
 		security:     cfg.Security,
 		toolPolicy:   cfg.ToolPolicy,
+		audit:        cfg.AuditStore,
 		dynamicTypes: make(map[string]struct{}),
 	}
 	if err := s.syncRegistry(context.Background()); err != nil {
@@ -119,6 +127,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/node-types", s.handleNodeTypes)
 
+	mux.HandleFunc("GET /api/audit", s.handleListAudit)
+	mux.HandleFunc("DELETE /api/audit", s.handlePruneAudit)
+
 	return s.middleware(mux)
 }
 
@@ -146,7 +157,13 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required", nil)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(security.ContextWithIdentity(r.Context(), identity)))
+		// Audit identity: tool lifecycle records scope to the
+		// authenticated tenant with the user actor attributed.
+		auditCtx := tool.ContextWithAuditContext(r.Context(), tool.ToolAuditContext{
+			Actor:    "user:" + identity.Subject,
+			TenantID: identity.TenantID,
+		})
+		next.ServeHTTP(w, r.WithContext(security.ContextWithIdentity(auditCtx, identity)))
 	})
 }
 
@@ -824,4 +841,83 @@ func writeJSONError(w http.ResponseWriter, status int, code, message string, det
 			Details: details,
 		},
 	})
+}
+
+// auditQueryResponse is the audit query page envelope.
+type auditQueryResponse struct {
+	Records    []tool.ToolAuditRecord `json:"records"`
+	NextCursor string                 `json:"next_cursor,omitempty"`
+}
+
+// handleListAudit serves tenant-scoped tool lifecycle records with
+// filters (tool, workflow, run, kind) and cursor pagination.
+func (s *Server) handleListAudit(w http.ResponseWriter, r *http.Request) {
+	if s.auditStore() == nil {
+		writeJSONError(w, http.StatusNotImplemented, "AUDIT_NOT_CONFIGURED", "audit store is not configured", nil)
+		return
+	}
+
+	filter := tool.ToolAuditFilter{}
+	if filter.TenantID = s.requestTenant(r); filter.TenantID == "" && s.security.RequireAuth {
+		// Authenticated callers without tenant identity get nothing
+		// rather than cross-tenant visibility.
+		writeJSON(w, http.StatusOK, auditQueryResponse{Records: []tool.ToolAuditRecord{}})
+		return
+	}
+	filter.WorkflowID = r.URL.Query().Get("workflow_id")
+	filter.RunID = r.URL.Query().Get("run_id")
+	filter.Tool = r.URL.Query().Get("tool")
+	if kind := r.URL.Query().Get("kind"); kind != "" {
+		filter.Kind = tool.ToolAuditKind(kind)
+	}
+	filter.Cursor = r.URL.Query().Get("cursor")
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err := strconv.Atoi(raw)
+		if err != nil || limit < 1 || limit > 500 {
+			writeJSONError(w, http.StatusBadRequest, "INVALID_QUERY", "limit must be between 1 and 500", nil)
+			return
+		}
+		filter.Limit = limit
+	} else {
+		filter.Limit = 100
+	}
+
+	records, next, err := s.auditStore().List(r.Context(), filter)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "AUDIT_QUERY_FAILED", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, auditQueryResponse{Records: records, NextCursor: next})
+}
+
+// handlePruneAudit removes audit records strictly before a cutoff
+// (retention policy, tenant-scoped; operators without auth prune all).
+func (s *Server) handlePruneAudit(w http.ResponseWriter, r *http.Request) {
+	if s.auditStore() == nil {
+		writeJSONError(w, http.StatusNotImplemented, "AUDIT_NOT_CONFIGURED", "audit store is not configured", nil)
+		return
+	}
+	beforeRaw := r.URL.Query().Get("before")
+	if beforeRaw == "" {
+		writeJSONError(w, http.StatusBadRequest, "INVALID_QUERY", "before (RFC3339) is required", nil)
+		return
+	}
+	before, err := time.Parse(time.RFC3339, beforeRaw)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "INVALID_QUERY", "before must be an RFC3339 timestamp", nil)
+		return
+	}
+	filter := tool.ToolAuditFilter{TenantID: s.requestTenant(r)}
+	removed, err := s.auditStore().Prune(r.Context(), filter, before)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "AUDIT_PRUNE_FAILED", err.Error(), nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+// auditStore returns the optional audit store configured at
+// construction (nil when audit recording is disabled).
+func (s *Server) auditStore() tool.ToolAuditStore {
+	return s.audit
 }

@@ -137,9 +137,18 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		_ = closeIfCloser(toolStore)
 	}()
 
+	auditStore, err := openAuditStore(dsn, backend, scope)
+	if err != nil {
+		return fmt.Errorf("opening tool audit store: %w", err)
+	}
+	defer func() {
+		_ = closeIfCloser(auditStore)
+	}()
+
 	daemonServer, err := daemon.NewServer(daemon.ServerConfig{
 		Store:      toolStore,
 		ToolPolicy: defaultToolPolicy,
+		AuditStore: auditStore,
 		Security: daemon.SecurityConfig{
 			RequireAuth:   true,
 			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),
@@ -251,6 +260,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		MaxBody:             maxBody,
 		JobStore:            workflowStore,
 		DefaultTenantPolicy: defaultToolPolicy,
+		AuditStore:          auditStore,
 		Security: server.SecurityConfig{
 			RequireAuth:   true,
 			Authenticator: security.BearerTokenAuthenticator(apiToken, security.Identity{Subject: "api", TenantID: tenantID}),

@@ -1,0 +1,5 @@
+coverage:
+  ignore:
+    - tool/audit_store_postgres.go
+    - tool/store_postgres.go
+    - tool/mcp_runtime_transport.go

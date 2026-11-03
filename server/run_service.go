@@ -205,7 +205,7 @@ func (s *Server) planWorkflowRunWithDefinition(
 		return nil, &runAPIError{Status: http.StatusBadRequest, Code: "INVALID_HUMAN_OPTIONS", Message: err.Error()}
 	}
 
-	toolRegistry, err := hydrate.BuildActionToolRegistry(ctx, s.toolStore)
+	toolRegistry, err := hydrate.BuildActionToolRegistry(ctx, s.toolStore, hydrate.WithAuditStore(s.auditStore()))
 	if err != nil {
 		return nil, &runAPIError{Status: http.StatusInternalServerError, Code: "TOOL_REGISTRY_ERROR", Message: err.Error()}
 	}
@@ -250,6 +250,14 @@ func (s *Server) executeWorkflowRunSync(
 	if evaluator != nil {
 		runCtx = tool.ContextWithPolicyEvaluator(runCtx, evaluator)
 	}
+	// Workflow-run audit identity: tool lifecycle events from this run
+	// scope to the tenant + workflow with the run actor attributed.
+	runCtx = tool.ContextWithAuditContext(runCtx, tool.ToolAuditContext{
+		Actor:      "workflow:" + workflowID,
+		TenantID:   plan.tenantID,
+		WorkflowID: workflowID,
+		RunID:      plan.env.Trace.RunID,
+	})
 
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
@@ -560,6 +568,7 @@ func (s *Server) durableToolApprovalHandler() runtime.ToolApprovalHandler {
 				CreatedAt: req.CreatedAt, DecidedAt: now, ExpiresAt: req.ExpiresAt,
 			})
 			record.UpdatedAt = now
+			s.recordApprovalLifecycleAudit(ctx, record, req.NodeID, req.ToolName, req.Action, runtime.ToolApprovalExpired, "decision window expired")
 			if err := s.runStore.Update(ctx, record); err != nil {
 				return nil, err
 			}
@@ -580,6 +589,7 @@ func (s *Server) durableToolApprovalHandler() runtime.ToolApprovalHandler {
 		if err := s.runStore.Update(ctx, record); err != nil {
 			return nil, err
 		}
+		s.recordApprovalLifecycleAudit(ctx, record, req.NodeID, req.ToolName, req.Action, runtime.ToolApprovalPending, "approval requested")
 		return nil, &nodes.ToolApprovalPendingError{Request: req}
 	}
 }
@@ -653,8 +663,30 @@ func (s *Server) enforceToolApprovalExpiry(record *runtime.RunRecord, pending *r
 	if err := s.runStore.Update(context.Background(), record); err != nil {
 		return err
 	}
+	s.recordApprovalLifecycleAudit(context.Background(), record, pending.NodeID, request.ToolName, request.Action, runtime.ToolApprovalExpired, "decision window expired")
 	return fmt.Errorf("%w: approval %q for %q expired at %s",
 		nodes.ErrToolApprovalExpired, pending.ID, request.ToolName, request.ExpiresAt.Format(time.RFC3339))
+}
+
+// recordApprovalLifecycleAudit writes approval lifecycle outcomes
+// (pause requested, expiry) into the tool audit trail (best effort).
+func (s *Server) recordApprovalLifecycleAudit(ctx context.Context, record *runtime.RunRecord, nodeID, toolName, action string, decision runtime.ToolApprovalDecision, reason string) {
+	if s.audit == nil {
+		return
+	}
+	actor := "system"
+	s.audit.Record(ctx, tool.ToolAuditRecord{
+		TenantID:   record.TenantID,
+		WorkflowID: record.WorkflowID,
+		RunID:      record.ID,
+		NodeID:     nodeID,
+		Actor:      actor,
+		Tool:       toolName,
+		Action:     action,
+		Kind:       tool.ToolAuditApproval,
+		Decision:   string(decision),
+		Reason:     reason,
+	})
 }
 
 // toolApprovalVerifier validates and single-use-claims an approval grant
