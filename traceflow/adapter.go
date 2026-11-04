@@ -9,6 +9,7 @@ package traceflow
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel"
@@ -86,6 +87,13 @@ type Adapter struct {
 	// AlwaysCaptureErrors ensures failed runs are always captured.
 	AlwaysCaptureErrors bool
 
+	// SampleOverrides allows tag-based sample rate overrides: keys of
+	// the form "tag:value" (for example "environment:staging") raise or
+	// lower the effective rate when the adapter's Tags contain a
+	// matching pair. When several overrides match, the highest rate
+	// wins.
+	SampleOverrides map[string]float64 `json:",omitempty" yaml:",omitempty"`
+
 	// Tags are key-value pairs attached to all traces.
 	Tags map[string]string
 
@@ -119,6 +127,7 @@ func NewAdapter(cfg *daemon.PetalTraceConfig) *Adapter {
 		CaptureMode:         ParseCaptureMode(cfg.CaptureMode),
 		SampleRate:          cfg.SampleRate,
 		AlwaysCaptureErrors: cfg.AlwaysCaptureErrors,
+		SampleOverrides:     cfg.SampleOverrides,
 		Tags:                cfg.Tags,
 		runSnapshots:        make(map[string]*RunSnapshot),
 	}
@@ -171,14 +180,16 @@ func (a *Adapter) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	// Configure sampler based on sample rate
+	// Configure sampler based on the effective sample rate (tag-based
+	// overrides applied).
+	rate := a.EffectiveSampleRate()
 	var sampler sdktrace.Sampler
-	if a.SampleRate >= 1.0 {
+	if rate >= 1.0 {
 		sampler = sdktrace.AlwaysSample()
-	} else if a.SampleRate <= 0.0 {
+	} else if rate <= 0.0 {
 		sampler = sdktrace.NeverSample()
 	} else {
-		sampler = sdktrace.TraceIDRatioBased(a.SampleRate)
+		sampler = sdktrace.TraceIDRatioBased(rate)
 	}
 
 	a.provider = sdktrace.NewTracerProvider(
@@ -301,6 +312,38 @@ func (a *Adapter) GetRunSnapshot(runID string) *RunSnapshot {
 	a.snapshotsMu.RLock()
 	defer a.snapshotsMu.RUnlock()
 	return a.runSnapshots[runID]
+}
+
+// EffectiveSampleRate resolves the sample rate with tag-based
+// overrides applied: an override key of the form "tag:value" applies
+// when the adapter's Tags contain that pair. When several overrides
+// match, the highest rate wins (the most permissive configuration, so
+// debugging overrides never reduce visibility below the base rate).
+func (a *Adapter) EffectiveSampleRate() float64 {
+	if len(a.SampleOverrides) == 0 || len(a.Tags) == 0 {
+		return a.SampleRate
+	}
+	rate := a.SampleRate
+	for override, value := range a.SampleOverrides {
+		if !tagOverrideMatches(a.Tags, override) {
+			continue
+		}
+		if value > rate {
+			rate = value
+		}
+	}
+	return rate
+}
+
+// tagOverrideMatches reports whether an override key "tag:value" is
+// present in the configured tags.
+func tagOverrideMatches(tags map[string]string, override string) bool {
+	tag, value, found := strings.Cut(override, ":")
+	if !found {
+		return false
+	}
+	got, ok := tags[tag]
+	return ok && got == value
 }
 
 // ShouldCaptureLLMContent returns true if LLM prompts/completions should be captured.

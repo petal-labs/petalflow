@@ -167,6 +167,50 @@ permissions and they should be treated as sensitive artifacts when captured
 at full fidelity. Because captured content is redacted, replays of runs whose
 prompts contain credential-shaped material may report verification diffs.
 
+## Event Retention
+
+Persisted run events grow unboundedly unless retention is configured.
+Set it under `observability.events`:
+
+```yaml
+observability:
+  events:
+    retention: 720h          # age bound: delete events older than 30 days
+    max_events_per_run: 1000 # count bound: keep the most recent N per run
+    prune_interval: 1h       # background prune cadence (default 1h)
+```
+
+- Both bounds are optional and combine (age first, then per-run count).
+- A background pruner in `petalflow serve` runs on the prune interval;
+  SQLite and Postgres stores both support it.
+- **Tenant scoping**: every event row carries the run's tenant. The
+  store's `PruneBefore(cutoff, tenantID)` prunes a single tenant without
+  touching other tenants' events; serve's background prune is age-based
+  across all tenants (uniform policy). Databases created before tenant
+  scoping are migrated automatically (the `tenant_id` column is added).
+- Invalid values (non-Go durations, negative bounds, non-positive
+  intervals) fail startup loudly.
+
+## Dropped Events and Alerting
+
+Event delivery is **drop-not-block**: a slow consumer never stalls
+workflow execution.
+
+| Source | Behavior | Counter |
+|--------|----------|---------|
+| Bus subscribers (SSE streams) | Per-subscriber buffer of 256; events beyond it while the consumer is behind are dropped | `petalflow.events.dropped{source="bus_subscriber"}` |
+| Runtime event channel | Per-run buffer of 100 (`Events()`); dropped when no reader keeps up | `petalflow.events.dropped{source="runtime_channel"}` |
+
+The `petalflow.events.dropped` metric (cumulative counter, exported when
+telemetry is enabled) aggregates both sources with the single bounded
+`source` dimension.
+
+**Alert guidance**: alert when `rate(petalflow.events.dropped[5m]) > 0`.
+Drops mean a consumer (SSE client, event exporter, or channel reader)
+fell behind: for SSE clients this is expected when clients disconnect
+mid-run; sustained non-zero rates on `runtime_channel` indicate the
+`Events()` channel is not being drained.
+
 ## OpenTelemetry Signals
 
 `petalflow serve` emits correlated traces and bounded-cardinality metrics.
@@ -182,6 +226,7 @@ process. Export activates from the standard OTel environment variables
 |----------|--------|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (or `_TRACES` / `_METRICS` variants) | Activates the OTLP pipeline for that signal |
 | `OTEL_TRACES_EXPORTER` / `OTEL_METRICS_EXPORTER` | `otlp` activates explicitly; `none` disables; other values are rejected loudly |
+| `OTEL_TRACES_SAMPLER` (+ `OTEL_TRACES_SAMPLER_ARG`) | Head sampling (see below) |
 | `OTEL_SERVICE_NAME` | Resource service name (default `petalflow`) |
 | `OTEL_RESOURCE_ATTRIBUTES` | Additional resource attributes |
 
@@ -189,6 +234,22 @@ When `observability.petaltrace` is configured (enabled + valid), the
 PetalTrace adapter owns the trace pipeline instead, and its capture
 ladder (`minimal`/`standard`/`full`, see [Event Privacy](#event-privacy))
 also drives run event content capture.
+
+### Sampling
+
+Head sampling decides whether a run's spans are recorded at all —
+sampled-out runs produce no trace, which is the primary lever for trace
+volume.
+
+| Path | Configuration |
+|------|----------------|
+| OTEL_* bootstrap | `OTEL_TRACES_SAMPLER` (`always_on`, `always_off`, `traceidratio`, `parentbased_*`) with `OTEL_TRACES_SAMPLER_ARG` for ratios; unset keeps the SDK default (`parentbased_always_on`); invalid values are rejected loudly |
+| PetalTrace adapter | `observability.petaltrace.sample_rate` (0.0–1.0); `sample_overrides` raises the rate per tag match (`"environment:staging": 1.0` with matching `tags`) — the highest matching override wins and overrides never reduce the base rate |
+
+Interaction: when PetalTrace owns the trace pipeline, its sample rate is
+the head sampler; the OTEL sampler variables are not consulted. When the
+OTEL bootstrap owns it, `OTEL_TRACES_SAMPLER` applies. Metrics are never
+sampled.
 
 ### Traces
 
@@ -221,6 +282,7 @@ capture is opted in (see [Event Privacy](#event-privacy)).
 | `petalflow.tool.invocations` / `petalflow.tool.retries` / `petalflow.tool.health.checks` / `petalflow.tool.latency` | counter / histogram | `tool_name`, `action`, `transport`, `success`, `error_code`, `tenant_id` (bounded tool/tenant dimensions) |
 | `gen_ai.client.token.usage` | histogram (`{token}`) | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.token.type` (input/output), `tenant_id` |
 | `gen_ai.client.operation.duration` | histogram (s) | `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `error.type` (on failure), `tenant_id` |
+| `petalflow.events.dropped` | counter | `source` (`bus_subscriber`, `runtime_channel`) — see [Dropped Events and Alerting](#dropped-events-and-alerting) |
 
 **Cardinality rules** (test-enforced): no metric attribute can grow per
 run — `run_id`, `node_id`, `schedule_id`, and `webhook_trigger_id` never

@@ -65,6 +65,13 @@ func NewSQLiteEventStore(cfg SQLiteStoreConfig) (*SQLiteEventStore, error) {
 		return nil, fmt.Errorf("sqlitestore: create schema: %w", err)
 	}
 
+	// Migrate pre-tenant databases (tenant_id column for retention
+	// scoping and audit).
+	if err := migrateSQLiteEventsTenant(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlitestore: migrate: %w", err)
+	}
+
 	s := &SQLiteEventStore{
 		db:   db,
 		cfg:  cfg,
@@ -94,8 +101,8 @@ func (s *SQLiteEventStore) Append(ctx context.Context, event runtime.Event) erro
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO events (run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO events (run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.RunID,
 		event.Seq,
 		string(event.Kind),
@@ -107,6 +114,7 @@ func (s *SQLiteEventStore) Append(ctx context.Context, event runtime.Event) erro
 		string(payloadJSON),
 		event.TraceID,
 		event.SpanID,
+		event.TenantID,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlitestore: append: %w", err)
@@ -119,7 +127,7 @@ func (s *SQLiteEventStore) List(ctx context.Context, runID string, afterSeq uint
 	var rows *sql.Rows
 	var err error
 
-	query := `SELECT run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id
+	query := `SELECT run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id
 	           FROM events WHERE run_id = ? AND seq > ? ORDER BY seq ASC`
 	args := []any{runID, afterSeq}
 
@@ -187,11 +195,8 @@ func (s *SQLiteEventStore) Close() error {
 // Prune runs a single pruning pass. Exported for testing.
 func (s *SQLiteEventStore) Prune(ctx context.Context) error {
 	if s.cfg.RetentionAge > 0 {
-		cutoff := time.Now().Add(-s.cfg.RetentionAge).Format(time.RFC3339Nano)
-		if _, err := s.db.ExecContext(ctx,
-			`DELETE FROM events WHERE time < ?`, cutoff,
-		); err != nil {
-			return fmt.Errorf("sqlitestore: prune by age: %w", err)
+		if _, err := s.PruneBefore(ctx, time.Now().Add(-s.cfg.RetentionAge), ""); err != nil {
+			return err
 		}
 	}
 
@@ -245,6 +250,67 @@ func (s *SQLiteEventStore) pruneLoop() {
 	}
 }
 
+// PruneBefore deletes events older than the cutoff and returns the
+// number of rows removed. An empty tenantID prunes across all tenants;
+// a non-empty tenantID scopes the prune to that tenant only (other
+// tenants' events are untouched).
+func (s *SQLiteEventStore) PruneBefore(ctx context.Context, before time.Time, tenantID string) (int64, error) {
+	cutoff := before.Format(time.RFC3339Nano)
+	query := `DELETE FROM events WHERE time < ?`
+	args := []any{cutoff}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("sqlitestore: prune before %s: %w", cutoff, err)
+	}
+	removed, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("sqlitestore: prune rows affected: %w", err)
+	}
+	return removed, nil
+}
+
+// migrateSQLiteEventsTenant ensures the tenant_id column and its index
+// exist: databases created before tenant scoping get the column added
+// (the schema's CREATE TABLE IF NOT EXISTS is a no-op for them, so the
+// index is also created here for fresh databases).
+func migrateSQLiteEventsTenant(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(events)`)
+	if err != nil {
+		return fmt.Errorf("inspect columns: %w", err)
+	}
+	defer rows.Close()
+
+	hasTenant := false
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var dfltValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			return fmt.Errorf("scan column: %w", err)
+		}
+		if name == "tenant_id" {
+			hasTenant = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("inspect columns: %w", err)
+	}
+	if !hasTenant {
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add tenant_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_tenant_time ON events (tenant_id, time)`); err != nil {
+		return fmt.Errorf("index tenant_id: %w", err)
+	}
+	return nil
+}
+
 func scanEvents(rows *sql.Rows) ([]runtime.Event, error) {
 	var events []runtime.Event
 	for rows.Next() {
@@ -268,6 +334,7 @@ func scanEvents(rows *sql.Rows) ([]runtime.Event, error) {
 			&payloadJSON,
 			&e.TraceID,
 			&e.SpanID,
+			&e.TenantID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("sqlitestore: scan event: %w", err)

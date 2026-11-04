@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Sampling, event retention, and dropped-event observability with
+  alert guidance**
+  ([#228](https://github.com/petal-labs/petalflow/issues/228), part of
+  [#176](https://github.com/petal-labs/petalflow/issues/176)). The
+  operational policy layer over the telemetry wiring from #229/#230.
+  Sampling: the OTEL_* bootstrap honors the standard
+  `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` head-sampler
+  variables (always_on, always_off, traceidratio, parentbased_*;
+  invalid values rejected loudly; unset keeps the SDK default), and the
+  PetalTrace adapter now resolves `sample_overrides` against its
+  configured tags (highest matching override wins; overrides never
+  reduce the base rate). Retention: a new `observability.events` config
+  (`retention` age, `max_events_per_run` count bound, `prune_interval`)
+  activates the previously-dormant store retention in `petalflow serve`
+  for both SQLite and Postgres, with a background pruner and loud
+  validation. Events now carry `tenant_id` (stamped by the runtime at
+  emission, persisted in a new column with automatic migration of
+  pre-tenant databases) and the stores expose tenant-scoped
+  `PruneBefore` so a prune cannot affect other tenants. Dropped events:
+  the drop-not-block semantics of bus subscriber buffers and runtime
+  event channels are exported as the `petalflow.events.dropped` metric
+  (bounded `source` dimension; always observed including zero for
+  continuous rate series), wired in serve, with documented semantics
+  and alert guidance (`rate(petalflow.events.dropped[5m]) > 0`).
+  Sampling/retention/drop behavior is covered by tests; see the new
+  "Event Retention", "Dropped Events and Alerting", and "Sampling"
+  sections in `docs/operations.md`.
+
 - **GenAI semconv alignment, serve telemetry wiring, and cross-context
   trace correlation**
   ([#227](https://github.com/petal-labs/petalflow/issues/227), part of

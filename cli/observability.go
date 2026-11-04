@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/daemon"
 	petalotel "github.com/petal-labs/petalflow/otel"
 	petalruntime "github.com/petal-labs/petalflow/runtime"
@@ -39,19 +40,16 @@ type observabilityStack struct {
 
 // setupObservability bootstraps telemetry for serve:
 //
-//   - When observability.petaltrace is configured and valid, the
-//     PetalTrace (traceflow) adapter owns the trace pipeline and its
-//     capture ladder drives event content capture.
+//   - When a valid PetalTrace configuration is supplied (from
+//     observability.petaltrace), the PetalTrace (traceflow) adapter owns
+//     the trace pipeline and its capture ladder drives event content
+//     capture.
 //   - Otherwise, standard OTEL_* environment variables bootstrap OTLP
 //     trace and/or metric pipelines (no-op when unconfigured).
-func setupObservability(ctx context.Context, configPath string) (*observabilityStack, error) {
+func setupObservability(ctx context.Context, petaltraceCfg *daemon.PetalTraceConfig) (*observabilityStack, error) {
 	stack := &observabilityStack{shutdown: func(context.Context) error { return nil }}
 	var shutdowns []func(context.Context) error
 
-	petaltraceCfg, err := daemon.LoadPetalTraceConfig(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("loading petaltrace config: %w", err)
-	}
 	petaltraceOwnsTraces := false
 	if petaltraceCfg != nil && petaltraceCfg.Enabled && petaltraceCfg.IsValid() {
 		adapter := traceflow.NewAdapter(petaltraceCfg)
@@ -149,4 +147,18 @@ func (s *observabilityStack) emitDecorator() petalruntime.EventEmitterDecorator 
 	return func(emit petalruntime.EventEmitter) petalruntime.EventEmitter {
 		return petalotel.EnrichEmitter(emit, s.tracing)
 	}
+}
+
+// registerDropMetrics exports the process's dropped-event counters
+// (bus subscriber buffers, runtime event channels) as the
+// petalflow.events.dropped metric. The returned cleanup unregisters
+// the callback; it is nil when telemetry is disabled.
+func (s *observabilityStack) registerDropMetrics(eb *bus.MemBus) (func(), error) {
+	if s == nil || s.meter == nil {
+		return nil, nil
+	}
+	return petalotel.NewEventDropMetrics(s.meter, map[string]func() uint64{
+		"bus_subscriber":  eb.DroppedTotal,
+		"runtime_channel": petalruntime.DroppedEventsTotal,
+	})
 }

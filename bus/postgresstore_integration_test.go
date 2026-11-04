@@ -3,12 +3,16 @@
 package bus
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"hash/fnv"
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/petal-labs/petalflow/runtime"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -90,4 +94,47 @@ func schemaName(testName string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(testName))
 	return fmt.Sprintf("pf_test_%s_%08x", prefix, h.Sum32())
+}
+
+// TestPostgresEventStorePruneBeforeTenantScoping covers tenant-scoped
+// retention pruning against a real PostgreSQL store.
+func TestPostgresEventStorePruneBeforeTenantScoping(t *testing.T) {
+	dsn := os.Getenv("PETALFLOW_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("set PETALFLOW_TEST_POSTGRES_DSN to run postgres integration tests")
+	}
+
+	schema := uniqueSchema(t, dsn)
+	store, err := NewPostgresEventStore(PostgresStoreConfig{DSN: schema})
+	if err != nil {
+		t.Fatalf("new postgres store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	old := time.Now().Add(-2 * time.Hour)
+	appendEvent := func(runID string, seq uint64, tenant string, at time.Time) {
+		t.Helper()
+		event := makeEvent(runID, seq, runtime.EventNodeStarted)
+		event.TenantID = tenant
+		event.Time = at
+		if err := store.Append(ctx, event); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	appendEvent("run-a", 1, "tenant-a", old)
+	appendEvent("run-a", 2, "tenant-a", time.Now())
+	appendEvent("run-b", 1, "tenant-b", old)
+
+	removed, err := store.PruneBefore(ctx, time.Now().Add(-time.Hour), "tenant-a")
+	if err != nil {
+		t.Fatalf("PruneBefore: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	remainingB, _ := store.List(ctx, "run-b", 0, 0)
+	if len(remainingB) != 1 {
+		t.Errorf("tenant-b events = %d, want 1 (untouched)", len(remainingB))
+	}
 }

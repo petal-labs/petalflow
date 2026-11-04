@@ -3,6 +3,10 @@ package cli
 import (
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/petal-labs/petalflow/bus"
+	"github.com/petal-labs/petalflow/daemon"
 )
 
 func TestDetectBackend(t *testing.T) {
@@ -68,5 +72,34 @@ func TestOpenAuditStore(t *testing.T) {
 	// fails without one.
 	if _, err := openAuditStore("postgres://127.0.0.1:1/none", backendPostgres, ""); err == nil {
 		t.Fatal("postgres audit store without a server must fail")
+	}
+}
+
+func TestOpenEventStoreAppliesRetention(t *testing.T) {
+	retention := daemon.ParsedEventsRetention{
+		Age:       720 * time.Hour,
+		MaxPerRun: 1000,
+		Interval:  15 * time.Minute,
+	}
+
+	// SQLite: a pruner-capable store with retention configured.
+	store, err := openEventStore(t.TempDir()+"/events.db", backendSQLite, retention)
+	if err != nil {
+		t.Fatalf("openEventStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	if _, ok := store.(bus.EventPruner); !ok {
+		t.Error("sqlite event store should implement bus.EventPruner")
+	}
+
+	// Postgres branch is exercised (unreachable DSN fails loudly at
+	// schema creation).
+	if _, err := openEventStore("postgres://127.0.0.1:1/unreachable", backendPostgres, retention); err == nil {
+		t.Error("unreachable postgres DSN should fail loudly")
+	}
+
+	// Invalid retention never reaches the store: serve validates first.
+	if _, err := (&daemon.EventsRetentionConfig{Retention: "nope"}).Parse(); err == nil {
+		t.Error("invalid retention should be rejected")
 	}
 }

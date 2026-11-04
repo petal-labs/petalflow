@@ -83,6 +83,27 @@ func (b *MemBus) SubscribeAll() Subscription {
 	return sub
 }
 
+// DroppedTotal returns the cumulative number of events dropped across
+// all currently registered subscriptions because their buffers were
+// full. Counters of closed subscriptions are not retained. Exported as
+// the petalflow.events.dropped metric (source "bus_subscriber") for
+// drop-rate alerting.
+func (b *MemBus) DroppedTotal() uint64 {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var total uint64
+	for _, subs := range b.subs {
+		for _, sub := range subs {
+			total += sub.Dropped()
+		}
+	}
+	for _, sub := range b.globalSubs {
+		total += sub.Dropped()
+	}
+	return total
+}
+
 // Close shuts down the bus and all active subscriptions.
 func (b *MemBus) Close() error {
 	b.mu.Lock()

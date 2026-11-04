@@ -282,6 +282,24 @@ func (r *BasicRuntime) DroppedEvents() uint64 {
 	return r.droppedEvents.Load()
 }
 
+// droppedEventsTotal counts events dropped across every runtime instance
+// in the process (the Events() channel is per-run; operational metrics
+// need the process-level aggregate).
+var droppedEventsTotal atomic.Uint64
+
+// recordDroppedEvent increments the process-level dropped-event counter.
+func recordDroppedEvent() {
+	droppedEventsTotal.Add(1)
+}
+
+// DroppedEventsTotal returns the cumulative number of events dropped by
+// any runtime in this process because an Events() consumer fell behind.
+// Exported as the petalflow.events.dropped metric (source
+// "runtime_channel") for drop-rate alerting.
+func DroppedEventsTotal() uint64 {
+	return droppedEventsTotal.Load()
+}
+
 // NewRuntime creates a new runtime instance.
 func NewRuntime() *BasicRuntime {
 	return &BasicRuntime{
@@ -351,6 +369,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		defer emitMu.Unlock()
 
 		e.Seq = seq.Next()
+		// Tenant correlation rides on every event for retention
+		// scoping and audit.
+		e.TenantID = opts.TenantID
 		// Payload privacy is applied at the emit choke point so every
 		// downstream surface (event bus, EventHandler chain, event
 		// channel) inherits the same classification.
@@ -366,6 +387,7 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		default:
 			// Channel full: drop the event and record it for observability.
 			r.droppedEvents.Add(1)
+			recordDroppedEvent()
 		}
 	}
 	if opts.EventEmitterDecorator != nil {

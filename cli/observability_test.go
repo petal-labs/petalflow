@@ -8,10 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/daemon"
+
 	otelapi "go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/petal-labs/petalflow/bus"
 	petalotel "github.com/petal-labs/petalflow/otel"
 	petalruntime "github.com/petal-labs/petalflow/runtime"
 )
@@ -21,7 +25,7 @@ func TestSetupObservabilityNoopDefault(t *testing.T) {
 	t.Setenv("OTEL_METRICS_EXPORTER", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 
-	stack, err := setupObservability(context.Background(), "")
+	stack, err := setupObservability(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -47,7 +51,7 @@ func TestSetupObservabilityExplicitNoneStaysDisabled(t *testing.T) {
 	t.Setenv("OTEL_METRICS_EXPORTER", "none")
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
 
-	stack, err := setupObservability(context.Background(), "")
+	stack, err := setupObservability(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -77,7 +81,11 @@ observability:
     capture_mode: standard
 `)
 
-	stack, err := setupObservability(context.Background(), configPath)
+	petaltraceCfg, err := daemon.LoadPetalTraceConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadPetalTraceConfig: %v", err)
+	}
+	stack, err := setupObservability(context.Background(), petaltraceCfg)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -102,7 +110,7 @@ func TestSetupObservabilityOTelEnabledWiresHandlers(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
 	t.Setenv("OTEL_EXPORTER_OTLP_INSECURE", "true")
 
-	stack, err := setupObservability(context.Background(), "")
+	stack, err := setupObservability(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -229,7 +237,11 @@ observability:
     capture_mode: full
 `)
 
-	stack, err := setupObservability(context.Background(), configPath)
+	petaltraceCfg, err := daemon.LoadPetalTraceConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadPetalTraceConfig: %v", err)
+	}
+	stack, err := setupObservability(context.Background(), petaltraceCfg)
 	if err != nil {
 		t.Fatalf("setupObservability: %v", err)
 	}
@@ -274,4 +286,46 @@ func restoreOTelGlobals(t *testing.T) {
 		otelapi.SetTracerProvider(prevTracer)
 		otelapi.SetMeterProvider(prevMeter)
 	})
+}
+
+func TestRegisterDropMetricsDisabledWithoutMeter(t *testing.T) {
+	// Telemetry disabled (no meter): registration is a no-op.
+	stack := &observabilityStack{}
+	unregister, err := stack.registerDropMetrics(bus.NewMemBus(bus.MemBusConfig{}))
+	if err != nil {
+		t.Fatalf("registerDropMetrics: %v", err)
+	}
+	if unregister != nil {
+		t.Error("expected no registration without a meter")
+	}
+
+	var nilStack *observabilityStack
+	if _, err := nilStack.registerDropMetrics(nil); err != nil {
+		t.Errorf("nil stack should be a no-op: %v", err)
+	}
+}
+
+func TestRegisterDropMetricsRegistersSources(t *testing.T) {
+	eb := bus.NewMemBus(bus.MemBusConfig{})
+	defer eb.Close()
+
+	stack := &observabilityStack{meter: metricTestProvider(t).Meter("drops")}
+	unregister, err := stack.registerDropMetrics(eb)
+	if err != nil {
+		t.Fatalf("registerDropMetrics: %v", err)
+	}
+	if unregister == nil {
+		t.Fatal("expected registration with a meter")
+	}
+	unregister()
+}
+
+// metricTestProvider returns a meter provider backed by a manual reader
+// (imported as the sdk metric package).
+func metricTestProvider(t *testing.T) *sdkmetric.MeterProvider {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+	return provider
 }

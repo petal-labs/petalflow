@@ -59,6 +59,16 @@ func TestRunServeSmoke(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// A config file with event retention so the retention wiring path
+	// (config load, validation, store construction) is exercised.
+	configPath := writeTestFile(t, "petalflow.yaml", `
+observability:
+  events:
+    retention: 720h
+    max_events_per_run: 1000
+    prune_interval: 15m
+`)
+
 	cmd := NewServeCmd()
 	cmd.SetContext(ctx)
 	cmd.SetOut(io.Discard)
@@ -67,6 +77,7 @@ func TestRunServeSmoke(t *testing.T) {
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--sqlite-path", t.TempDir() + "/petalflow.db",
+		"--config", configPath,
 	})
 
 	done := make(chan error, 1)

@@ -1,7 +1,13 @@
 package traceflow
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"go.opentelemetry.io/otel"
 
 	"github.com/petal-labs/petalflow/daemon"
 )
@@ -179,5 +185,104 @@ func TestAdapterContentCaptureLadder(t *testing.T) {
 		if got := adapter.ContentCapture().Enabled; got != tt.enabled {
 			t.Errorf("ContentCapture(%v).Enabled = %v, want %v", tt.mode, got, tt.enabled)
 		}
+	}
+}
+
+func TestEffectiveSampleRate(t *testing.T) {
+	tests := []struct {
+		name      string
+		rate      float64
+		tags      map[string]string
+		overrides map[string]float64
+		want      float64
+	}{
+		{
+			name: "no overrides keeps base rate",
+			rate: 0.2,
+			want: 0.2,
+		},
+		{
+			name:      "matching tag override applies",
+			rate:      0.2,
+			tags:      map[string]string{"environment": "staging"},
+			overrides: map[string]float64{"environment:staging": 1.0},
+			want:      1.0,
+		},
+		{
+			name:      "non-matching override ignored",
+			rate:      0.2,
+			tags:      map[string]string{"environment": "production"},
+			overrides: map[string]float64{"environment:staging": 1.0},
+			want:      0.2,
+		},
+		{
+			name:      "highest matching override wins",
+			rate:      0.1,
+			tags:      map[string]string{"environment": "staging", "team": "platform"},
+			overrides: map[string]float64{"environment:staging": 0.5, "team:platform": 1.0},
+			want:      1.0,
+		},
+		{
+			name:      "lowering override never reduces the base rate",
+			rate:      0.8,
+			tags:      map[string]string{"environment": "production"},
+			overrides: map[string]float64{"environment:production": 0.1},
+			want:      0.8,
+		},
+		{
+			name:      "malformed override key ignored",
+			rate:      0.3,
+			tags:      map[string]string{"environment": "staging"},
+			overrides: map[string]float64{"environment": 1.0},
+			want:      0.3,
+		},
+		{
+			name:      "overrides without tags ignored",
+			rate:      0.3,
+			overrides: map[string]float64{"environment:staging": 1.0},
+			want:      0.3,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			adapter := &Adapter{SampleRate: tt.rate, Tags: tt.tags, SampleOverrides: tt.overrides}
+			if got := adapter.EffectiveSampleRate(); got != tt.want {
+				t.Errorf("EffectiveSampleRate() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAdapterInitializeSamplerBranches drives Initialize with the
+// effective rate at each sampler branch (never, ratio, always) against
+// a local collector; globals are restored afterwards.
+func TestAdapterInitializeSamplerBranches(t *testing.T) {
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(collector.Close)
+
+	prevTracer := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prevTracer) })
+
+	for _, rate := range []float64{0.0, 0.5, 1.0} {
+		t.Run(fmt.Sprintf("rate %.1f", rate), func(t *testing.T) {
+			adapter := NewAdapter(&daemon.PetalTraceConfig{
+				Enabled:     true,
+				Endpoint:    collector.URL,
+				CaptureMode: "minimal",
+				SampleRate:  rate,
+			})
+			if err := adapter.Initialize(context.Background()); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			if adapter.Tracer() == nil {
+				t.Fatal("tracer missing after Initialize")
+			}
+			if err := adapter.Shutdown(context.Background()); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+		})
 	}
 }
