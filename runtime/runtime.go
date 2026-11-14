@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/budget"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
@@ -119,6 +120,9 @@ type RunOptions struct {
 	// RunStore enables durable run records and checkpoints. When set, execution
 	// uses the sequential durable executor so a worker can resume safely.
 	RunStore RunStore
+	// ArtifactStore is the optional external blob store configured by the
+	// daemon. Nil preserves inline artifacts.
+	ArtifactStore artifact.Store
 
 	// RunID optionally supplies the ID for a new run. Resume sets this through
 	// BasicRuntime.Resume; normal callers generally leave it empty.

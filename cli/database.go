@@ -10,6 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/petal-labs/petalflow/artifact"
+	artifactpostgres "github.com/petal-labs/petalflow/artifact/postgres"
+	artifactsqlite "github.com/petal-labs/petalflow/artifact/sqlite"
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/daemon"
 	"github.com/petal-labs/petalflow/server"
@@ -180,5 +183,29 @@ func openAuditStore(dsn string, backend databaseBackend, scope string) (tool.Too
 		return tool.NewPostgresAuditStore(tool.PostgresAuditStoreConfig{DSN: dsn})
 	default:
 		return tool.NewSQLiteAuditStore(tool.SQLiteStoreConfig{DSN: dsn, Scope: scope})
+	}
+}
+
+type artifactStoreCloser interface {
+	artifact.Store
+	io.Closer
+}
+
+// openArtifactStore opens the optional durable artifact backend using the
+// same resolved DSN and backend as the daemon's other persistence stores.
+func openArtifactStore(dsn string, backend databaseBackend, config daemon.ParsedArtifactsConfig) (artifactStoreCloser, error) {
+	switch backend {
+	case backendPostgres:
+		return artifactpostgres.NewStore(artifactpostgres.Config{
+			DSN: dsn, MaxSizeBytes: config.MaxSizeBytes,
+			AllowedContentTypes: config.AllowedContentTypes,
+			DefaultRetention:    config.Retention, PruneInterval: config.PruneInterval,
+		})
+	default:
+		return artifactsqlite.NewStore(artifactsqlite.Config{
+			DSN: dsn, MaxSizeBytes: config.MaxSizeBytes,
+			AllowedContentTypes: config.AllowedContentTypes,
+			DefaultRetention:    config.Retention, PruneInterval: config.PruneInterval,
+		})
 	}
 }

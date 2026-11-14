@@ -191,6 +191,39 @@ observability:
 - Invalid values (non-Go durations, negative bounds, non-positive
   intervals) fail startup loudly.
 
+## Artifact Storage
+
+`petalflow serve` enables durable external artifacts only when an `artifacts`
+section is present. Without the section, current embedded and daemon behavior
+is unchanged: workflow artifacts remain inline, and serve prints a startup
+warning. Runtime offloading of inline envelope data is introduced separately;
+this section configures the durable store that path consumes.
+
+```yaml
+artifacts:
+  max_size_bytes: 67108864       # per artifact; default 64 MiB
+  allowed_content_types:         # omit to allow any valid media type
+    - application/json
+    - application/octet-stream
+    - text/plain
+  retention: 720h                # default expiry for new artifacts; default 30d
+  prune_interval: 1h             # expired-row cleanup cadence
+```
+
+- SQLite stores bytes as `BLOB`; PostgreSQL stores them as `BYTEA`. Each
+  artifact is one bounded row rather than a chunk set. Increase the 64 MiB
+  cap deliberately only after considering database memory, backup, and
+  replication costs.
+- Blob rows are content-addressed by SHA-256, size, and normalized content
+  type. Tenant/run metadata is stored separately, so listing and garbage
+  collection do not read blob content.
+- Every lookup and deletion includes tenant and run identifiers. A reference
+  outside that scope is reported as not found.
+- Inserts use atomic conflict handling, and failed reads or policy checks do
+  not expose partial metadata. Expired metadata and unreferenced blobs are
+  removed in a short transaction.
+- Invalid sizes, media types, durations, or prune intervals fail startup.
+
 ## Dropped Events and Alerting
 
 Event delivery is **drop-not-block**: a slow consumer never stalls

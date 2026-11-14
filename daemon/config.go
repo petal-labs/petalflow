@@ -26,6 +26,7 @@ const (
 type ToolConfigFile struct {
 	Tools         map[string]ToolDeclaration `yaml:"tools"`
 	Observability *ObservabilityConfig       `yaml:"observability,omitempty"`
+	Artifacts     *ArtifactsConfig           `yaml:"artifacts,omitempty"`
 	// ToolPolicy declares the statically configured default tenant tool
 	// policy. It applies to every tenant unless a per-tenant override is
 	// stored through the API. See tool.ToolPolicy for the rule shape;
