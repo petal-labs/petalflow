@@ -123,6 +123,10 @@ type RunOptions struct {
 	// ArtifactStore is the optional external blob store configured by the
 	// daemon. Nil preserves inline artifacts.
 	ArtifactStore artifact.Store
+	// ArtifactPolicy controls when inline content is offloaded and applies
+	// per-artifact and per-run resource limits.
+	ArtifactPolicy  ArtifactPolicy
+	artifactTracker *artifactRunTracker
 
 	// RunID optionally supplies the ID for a new run. Resume sets this through
 	// BasicRuntime.Resume; normal callers generally leave it empty.
@@ -360,6 +364,12 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 	}
 	env.Trace.RunID = runID
 	env.Trace.Started = opts.Now()
+	opts = prepareArtifactOptions(opts)
+	var artifactErr error
+	env, artifactErr = offloadEnvelope(ctx, env, "input", opts)
+	if artifactErr != nil {
+		return nil, artifactErr
+	}
 
 	// Create event emitter
 	seq := newSeqGen()
@@ -1294,6 +1304,13 @@ func (r *BasicRuntime) executeNode(
 	if opts.ToolApprovalVerifier != nil {
 		nodeCtx = ContextWithToolApprovalVerifier(nodeCtx, opts.ToolApprovalVerifier)
 	}
+	if opts.ArtifactStore != nil {
+		nodeCtx = artifact.ContextWithResolver(nodeCtx, artifact.Resolver{
+			Store:    opts.ArtifactStore,
+			Scope:    artifact.Scope{TenantID: opts.TenantID, RunID: runID},
+			MaxBytes: opts.ArtifactPolicy.MaxArtifactBytes,
+		})
+	}
 
 	// Execute node with panic recovery so a misbehaving node cannot crash
 	// the runtime (or the daemon hosting it). When a per-node timeout is
@@ -1307,6 +1324,9 @@ func (r *BasicRuntime) executeNode(
 		result, err = runNodeInterruptible(nodeCtx, node, env)
 	} else {
 		result, err = runNodeSafely(nodeCtx, node, env)
+	}
+	if err == nil {
+		result, err = offloadEnvelope(nodeCtx, result, nodeID, opts)
 	}
 
 	// Calculate elapsed time

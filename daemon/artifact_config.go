@@ -10,7 +10,10 @@ import (
 
 const (
 	// DefaultArtifactMaxSizeBytes is the per-row artifact limit used by serve.
-	DefaultArtifactMaxSizeBytes int64 = 64 << 20
+	DefaultArtifactMaxSizeBytes          int64 = 64 << 20
+	DefaultArtifactOffloadThresholdBytes int64 = 64 << 10
+	DefaultArtifactMaxRunBytes           int64 = 256 << 20
+	DefaultArtifactMaxArtifacts                = 1024
 	// DefaultArtifactRetention applies an expiration to artifacts without one.
 	DefaultArtifactRetention = 30 * 24 * time.Hour
 )
@@ -18,18 +21,28 @@ const (
 // ArtifactsConfig is the optional petalflow.yaml artifact storage policy.
 // Omitting the entire section preserves inline-artifact behavior.
 type ArtifactsConfig struct {
-	MaxSizeBytes        int64    `yaml:"max_size_bytes"`
-	AllowedContentTypes []string `yaml:"allowed_content_types,omitempty"`
-	Retention           string   `yaml:"retention"`
-	PruneInterval       string   `yaml:"prune_interval"`
+	OffloadThresholdBytes int64    `yaml:"offload_threshold_bytes"`
+	MaxSizeBytes          int64    `yaml:"max_size_bytes"`
+	MaxRunBytes           int64    `yaml:"max_run_bytes"`
+	MaxArtifacts          int      `yaml:"max_artifacts_per_run"`
+	AllowedContentTypes   []string `yaml:"allowed_content_types,omitempty"`
+	Retention             string   `yaml:"retention"`
+	PruneInterval         string   `yaml:"prune_interval"`
+	MaxRetries            int      `yaml:"max_retries"`
+	RetryBackoff          string   `yaml:"retry_backoff"`
 }
 
 // ParsedArtifactsConfig contains validated artifact storage policy values.
 type ParsedArtifactsConfig struct {
-	MaxSizeBytes        int64
-	AllowedContentTypes []string
-	Retention           time.Duration
-	PruneInterval       time.Duration
+	OffloadThresholdBytes int64
+	MaxSizeBytes          int64
+	MaxRunBytes           int64
+	MaxArtifacts          int
+	AllowedContentTypes   []string
+	Retention             time.Duration
+	PruneInterval         time.Duration
+	MaxRetries            int
+	RetryBackoff          time.Duration
 }
 
 // Parse validates artifact limits and applies daemon-safe defaults.
@@ -41,8 +54,26 @@ func (c *ArtifactsConfig) Parse() (ParsedArtifactsConfig, error) {
 	if c.MaxSizeBytes < 0 {
 		return parsed, errors.New("artifacts.max_size_bytes: must not be negative")
 	}
+	if c.OffloadThresholdBytes < 0 || c.MaxRunBytes < 0 || c.MaxArtifacts < 0 || c.MaxRetries < 0 {
+		return parsed, errors.New("artifacts: thresholds, run limits, counts, and retries must not be negative")
+	}
+	if c.OffloadThresholdBytes > 0 {
+		parsed.OffloadThresholdBytes = c.OffloadThresholdBytes
+	}
+	if c.MaxRunBytes > 0 {
+		parsed.MaxRunBytes = c.MaxRunBytes
+	}
+	if c.MaxArtifacts > 0 {
+		parsed.MaxArtifacts = c.MaxArtifacts
+	}
+	if c.MaxRetries > 0 {
+		parsed.MaxRetries = c.MaxRetries
+	}
 	if c.MaxSizeBytes > 0 {
 		parsed.MaxSizeBytes = c.MaxSizeBytes
+		if c.OffloadThresholdBytes == 0 && parsed.OffloadThresholdBytes > parsed.MaxSizeBytes {
+			parsed.OffloadThresholdBytes = parsed.MaxSizeBytes
+		}
 	}
 	types, err := parseArtifactContentTypes(c.AllowedContentTypes)
 	if err != nil {
@@ -54,6 +85,15 @@ func (c *ArtifactsConfig) Parse() (ParsedArtifactsConfig, error) {
 	}
 	if parsed.PruneInterval, err = parseArtifactDuration("prune_interval", c.PruneInterval, parsed.PruneInterval, true); err != nil {
 		return parsed, err
+	}
+	if parsed.RetryBackoff, err = parseArtifactDuration("retry_backoff", c.RetryBackoff, parsed.RetryBackoff, true); err != nil {
+		return parsed, err
+	}
+	if parsed.OffloadThresholdBytes > parsed.MaxSizeBytes {
+		return parsed, errors.New("artifacts.offload_threshold_bytes: must not exceed max_size_bytes")
+	}
+	if parsed.MaxRunBytes < parsed.MaxSizeBytes {
+		return parsed, errors.New("artifacts.max_run_bytes: must be at least max_size_bytes")
 	}
 	return parsed, nil
 }
@@ -80,9 +120,14 @@ func LoadArtifactsConfig(configPath string) (*ParsedArtifactsConfig, error) {
 
 func defaultArtifactsConfig() ParsedArtifactsConfig {
 	return ParsedArtifactsConfig{
-		MaxSizeBytes:  DefaultArtifactMaxSizeBytes,
-		Retention:     DefaultArtifactRetention,
-		PruneInterval: time.Hour,
+		OffloadThresholdBytes: DefaultArtifactOffloadThresholdBytes,
+		MaxSizeBytes:          DefaultArtifactMaxSizeBytes,
+		MaxRunBytes:           DefaultArtifactMaxRunBytes,
+		MaxArtifacts:          DefaultArtifactMaxArtifacts,
+		Retention:             DefaultArtifactRetention,
+		PruneInterval:         time.Hour,
+		MaxRetries:            2,
+		RetryBackoff:          50 * time.Millisecond,
 	}
 }
 

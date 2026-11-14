@@ -336,6 +336,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		EventStore:          es,
 		RunStore:            runStore,
 		ArtifactStore:       artifactStore,
+		ArtifactPolicy:      runtimeArtifactPolicy(artifactConfig),
 		RuntimeEvents:       observability.runtimeEvents(),
 		EmitDecorator:       observability.emitDecorator(),
 		ContentCapture:      observability.capture,
@@ -435,5 +436,20 @@ func runServe(cmd *cobra.Command, _ []string) error {
 			return exitError(exitRuntime, "server error: %v", err)
 		}
 		return nil
+	}
+}
+
+func runtimeArtifactPolicy(config *daemon.ParsedArtifactsConfig) petalruntime.ArtifactPolicy {
+	if config == nil {
+		return petalruntime.ArtifactPolicy{}
+	}
+	return petalruntime.ArtifactPolicy{
+		OffloadThresholdBytes: config.OffloadThresholdBytes,
+		MaxArtifactBytes:      config.MaxSizeBytes,
+		MaxRunBytes:           config.MaxRunBytes,
+		MaxArtifacts:          config.MaxArtifacts,
+		AllowedContentTypes:   append([]string(nil), config.AllowedContentTypes...),
+		MaxRetries:            config.MaxRetries,
+		RetryBackoff:          config.RetryBackoff,
 	}
 }

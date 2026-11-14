@@ -476,6 +476,10 @@ func ErrorCodeFor(err error) string {
 		return "human_pending"
 	case errors.Is(err, ErrMaxHopsExceeded):
 		return "max_hops_exceeded"
+	case errors.Is(err, ErrArtifactPolicy):
+		return "artifact_policy_rejected"
+	case errors.Is(err, ErrArtifactOffload):
+		return "artifact_offload_failed"
 	}
 	var exceeded *budget.BudgetExceededError
 	if errors.As(err, &exceeded) {

@@ -97,13 +97,16 @@ func EnvelopeToJSON(env *core.Envelope) EnvelopeJSON {
 			Name:     art.ID, // Use ID as name fallback
 			Type:     art.Type,
 			MimeType: art.MimeType,
-			Text:     art.Text,
 			URI:      art.URI,
 			Meta:     art.Meta,
 		}
-		// Base64-encode binary content.
-		if len(art.Bytes) > 0 {
-			aj.Content = base64.StdEncoding.EncodeToString(art.Bytes)
+		// A reference is authoritative. Never duplicate referenced content on
+		// the API boundary, even if a producer accidentally left inline fields.
+		if art.URI == "" {
+			aj.Text = art.Text
+			if len(art.Bytes) > 0 {
+				aj.Content = base64.StdEncoding.EncodeToString(art.Bytes)
+			}
 		}
 		result.Artifacts = append(result.Artifacts, aj)
 	}

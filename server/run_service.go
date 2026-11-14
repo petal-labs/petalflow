@@ -263,6 +263,7 @@ func (s *Server) executeWorkflowRunSync(
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
 	opts.ArtifactStore = s.artifactStore
+	opts.ArtifactPolicy = s.artifactPolicy
 	opts.WorkflowID = workflowID
 	opts.TenantID = plan.tenantID
 	opts.WorkflowVersion = plan.workflowVersion
@@ -335,6 +336,12 @@ func (s *Server) executeWorkflowRunSync(
 		}
 		if errors.Is(err, runtime.ErrInvalidResumeToken) {
 			return RunResponse{}, &runAPIError{Status: http.StatusForbidden, Code: "INVALID_RESUME_TOKEN", Message: "resume token is invalid"}
+		}
+		if errors.Is(err, runtime.ErrArtifactPolicy) {
+			return RunResponse{}, &runAPIError{Status: http.StatusUnprocessableEntity, Code: "ARTIFACT_POLICY_REJECTED", Message: err.Error()}
+		}
+		if errors.Is(err, runtime.ErrArtifactOffload) {
+			return RunResponse{}, &runAPIError{Status: http.StatusServiceUnavailable, Code: "ARTIFACT_OFFLOAD_FAILED", Message: err.Error()}
 		}
 		if runCtx.Err() == context.DeadlineExceeded {
 			return RunResponse{}, &runAPIError{Status: http.StatusGatewayTimeout, Code: "TIMEOUT", Message: err.Error()}
