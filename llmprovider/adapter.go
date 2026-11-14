@@ -5,12 +5,14 @@ package llmprovider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	iriscore "github.com/petal-labs/iris/core"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/core"
 )
 
@@ -21,7 +23,10 @@ type irisAdapter struct {
 
 // Complete sends a synchronous completion request via the iris provider.
 func (a *irisAdapter) Complete(ctx context.Context, req core.LLMRequest) (core.LLMResponse, error) {
-	chatReq := a.toRequest(req)
+	chatReq, err := a.toRequestWithArtifacts(ctx, req)
+	if err != nil {
+		return core.LLMResponse{}, err
+	}
 
 	chatResp, err := a.provider.Chat(ctx, chatReq)
 	if err != nil {
@@ -29,6 +34,52 @@ func (a *irisAdapter) Complete(ctx context.Context, req core.LLMRequest) (core.L
 	}
 
 	return a.fromResponse(chatResp, req), nil
+}
+
+func (a *irisAdapter) toRequestWithArtifacts(ctx context.Context, req core.LLMRequest) (*iriscore.ChatRequest, error) {
+	chatReq := a.toRequest(req)
+	resolver, ok := artifact.ResolverFromContext(ctx)
+	if !ok {
+		return chatReq, nil
+	}
+	for messageIndex := range chatReq.Messages {
+		for partIndex, part := range chatReq.Messages[messageIndex].Parts {
+			resolved, err := resolveIrisArtifactPart(ctx, resolver, part)
+			if err != nil {
+				return nil, fmt.Errorf("resolve LLM artifact: %w", err)
+			}
+			chatReq.Messages[messageIndex].Parts[partIndex] = resolved
+		}
+	}
+	return chatReq, nil
+}
+
+func resolveIrisArtifactPart(ctx context.Context, resolver artifact.Resolver, part iriscore.ContentPart) (iriscore.ContentPart, error) {
+	switch value := part.(type) {
+	case iriscore.InputFile:
+		if !strings.HasPrefix(value.FileURL, artifact.ReferenceScheme+"://") {
+			return part, nil
+		}
+		data, _, err := artifact.ResolveURI(ctx, resolver, value.FileURL)
+		if err != nil {
+			return nil, err
+		}
+		value.FileURL = ""
+		value.FileData = base64.StdEncoding.EncodeToString(data)
+		return value, nil
+	case iriscore.InputImage:
+		if !strings.HasPrefix(value.ImageURL, artifact.ReferenceScheme+"://") {
+			return part, nil
+		}
+		data, reference, err := artifact.ResolveURI(ctx, resolver, value.ImageURL)
+		if err != nil {
+			return nil, err
+		}
+		value.ImageURL = "data:" + reference.ContentType + ";base64," + base64.StdEncoding.EncodeToString(data)
+		return value, nil
+	default:
+		return part, nil
+	}
 }
 
 // toRequest converts a core.LLMRequest to an iris ChatRequest.
@@ -293,7 +344,10 @@ func toIrisRole(role string) iriscore.Role {
 // on a channel. The channel is closed when streaming is complete. The final chunk
 // has Done=true and includes Usage if available from the provider.
 func (a *irisAdapter) CompleteStream(ctx context.Context, req core.LLMRequest) (<-chan core.StreamChunk, error) {
-	chatReq := a.toRequest(req)
+	chatReq, err := a.toRequestWithArtifacts(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 
 	stream, err := a.provider.StreamChat(ctx, chatReq)
 	if err != nil {

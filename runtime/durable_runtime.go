@@ -32,6 +32,7 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 	if runID == "" {
 		runID = generateRunID()
 	}
+	opts = prepareArtifactOptions(opts)
 	record, loadErr := opts.RunStore.Get(ctx, runID)
 	resuming := loadErr == nil
 	if loadErr != nil && !errors.Is(loadErr, ErrRunNotFound) {
@@ -89,6 +90,11 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		}
 		env.Trace.RunID = runID
 		env.Trace.Started = opts.Now()
+		var artifactErr error
+		env, artifactErr = offloadEnvelope(ctx, env, "input", opts)
+		if artifactErr != nil {
+			return nil, artifactErr
+		}
 		record = &RunRecord{
 			ID:              runID,
 			TenantID:        opts.TenantID,
@@ -118,6 +124,11 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 	}
 	if env.Trace.RunID == "" {
 		env.Trace.RunID = runID
+	}
+	var artifactErr error
+	env, artifactErr = offloadEnvelope(ctx, env, "checkpoint", opts)
+	if artifactErr != nil {
+		return nil, artifactErr
 	}
 
 	seq := newSeqGenFrom(record.LastSeq)

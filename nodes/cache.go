@@ -13,6 +13,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/core"
 )
 
@@ -298,12 +299,7 @@ func toStableValue(v any) any {
 		// Convert artifacts to stable representation
 		result := make([]any, len(val))
 		for i, art := range val {
-			result[i] = toStableValue(map[string]any{
-				"id":   art.ID,
-				"type": art.Type,
-				"text": art.Text,
-				"meta": art.Meta,
-			})
+			result[i] = toStableValue(stableArtifactValue(art))
 		}
 		return result
 
@@ -311,6 +307,39 @@ func toStableValue(v any) any {
 		// Primitives are already stable
 		return val
 	}
+}
+
+func stableArtifactValue(value core.Artifact) map[string]any {
+	payload := stableArtifactPayload(value)
+	digest := ""
+	if value.Meta != nil {
+		digest, _ = value.Meta[artifact.MetaDigest].(string)
+	}
+	if digest == "" {
+		hash := sha256.Sum256(payload)
+		digest = hex.EncodeToString(hash[:])
+	}
+	meta := make(map[string]any, len(value.Meta))
+	for key, item := range value.Meta {
+		if key != artifact.MetaDigest && key != artifact.MetaSize && key != artifact.MetaContentType && key != artifact.MetaEncoding {
+			meta[key] = item
+		}
+	}
+	return map[string]any{"id": value.ID, "type": value.Type, "mime_type": value.MimeType, "digest": digest, "meta": meta}
+}
+
+func stableArtifactPayload(value core.Artifact) []byte {
+	if len(value.Bytes) == 0 {
+		return []byte(value.Text)
+	}
+	if value.Text == "" {
+		return value.Bytes
+	}
+	payload, _ := json.Marshal(struct {
+		Text  string `json:"text"`
+		Bytes []byte `json:"bytes"`
+	}{Text: value.Text, Bytes: value.Bytes})
+	return payload
 }
 
 // MemoryCacheStore is an in-memory cache implementation with TTL support.

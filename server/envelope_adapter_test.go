@@ -196,6 +196,18 @@ func TestEnvelopeToJSON_WithArtifacts(t *testing.T) {
 	}
 }
 
+func TestEnvelopeToJSON_ReferenceNeverDuplicatesInlineContent(t *testing.T) {
+	env := core.NewEnvelope()
+	env.Artifacts = []core.Artifact{{
+		ID: "referenced", Type: "file", URI: "artifact://sha256/example",
+		Text: "must not escape", Bytes: []byte("must not escape"),
+	}}
+	got := EnvelopeToJSON(env).Artifacts[0]
+	if got.Text != "" || got.Content != "" {
+		t.Fatalf("referenced artifact leaked inline content: %+v", got)
+	}
+}
+
 func TestEnvelopeToJSON_WithTrace(t *testing.T) {
 	env := core.NewEnvelope()
 	started := time.Date(2026, 2, 7, 12, 0, 0, 0, time.UTC)

@@ -19,21 +19,22 @@ import (
 
 // ServerConfig configures a Server instance.
 type ServerConfig struct {
-	Store         WorkflowStore
-	ScheduleStore WorkflowScheduleStore
-	ToolStore     tool.Store
-	Providers     hydrate.ProviderMap
-	ClientFactory hydrate.ClientFactory
-	Bus           bus.EventBus
-	EventStore    bus.EventStore
-	RunStore      runtime.RunStore
-	ArtifactStore artifact.Store
-	RuntimeEvents runtime.EventHandler
-	EmitDecorator runtime.EventEmitterDecorator
-	CORSOrigin    string
-	MaxBody       int64
-	Security      SecurityConfig
-	Logger        *slog.Logger
+	Store          WorkflowStore
+	ScheduleStore  WorkflowScheduleStore
+	ToolStore      tool.Store
+	Providers      hydrate.ProviderMap
+	ClientFactory  hydrate.ClientFactory
+	Bus            bus.EventBus
+	EventStore     bus.EventStore
+	RunStore       runtime.RunStore
+	ArtifactStore  artifact.Store
+	ArtifactPolicy runtime.ArtifactPolicy
+	RuntimeEvents  runtime.EventHandler
+	EmitDecorator  runtime.EventEmitterDecorator
+	CORSOrigin     string
+	MaxBody        int64
+	Security       SecurityConfig
+	Logger         *slog.Logger
 	// JobStore enables asynchronous run submission and execution.
 	JobStore RunJobStore
 	// DefaultTenantPolicy is the statically configured tenant tool
@@ -66,29 +67,30 @@ type SecurityConfig struct {
 
 // Server is the PetalFlow HTTP API server.
 type Server struct {
-	store         WorkflowStore
-	scheduleStore WorkflowScheduleStore
-	toolStore     tool.Store
-	providers     hydrate.ProviderMap
-	clientFactory hydrate.ClientFactory
-	bus           bus.EventBus
-	eventStore    bus.EventStore
-	runStore      runtime.RunStore
-	artifactStore artifact.Store
-	runtimeEvents runtime.EventHandler
-	emitDecorator runtime.EventEmitterDecorator
-	corsOrigin    string
-	security      SecurityConfig
-	requestSlots  chan struct{}
-	runSlots      chan struct{}
-	maxBody       int64
-	logger        *slog.Logger
-	activeMu      sync.Mutex
-	activeRuns    map[string]context.CancelFunc
-	pendingMu     sync.Mutex
-	replayMu      sync.Mutex
-	replayedHooks map[string]time.Time
-	jobStore      RunJobStore
+	store          WorkflowStore
+	scheduleStore  WorkflowScheduleStore
+	toolStore      tool.Store
+	providers      hydrate.ProviderMap
+	clientFactory  hydrate.ClientFactory
+	bus            bus.EventBus
+	eventStore     bus.EventStore
+	runStore       runtime.RunStore
+	artifactStore  artifact.Store
+	artifactPolicy runtime.ArtifactPolicy
+	runtimeEvents  runtime.EventHandler
+	emitDecorator  runtime.EventEmitterDecorator
+	corsOrigin     string
+	security       SecurityConfig
+	requestSlots   chan struct{}
+	runSlots       chan struct{}
+	maxBody        int64
+	logger         *slog.Logger
+	activeMu       sync.Mutex
+	activeRuns     map[string]context.CancelFunc
+	pendingMu      sync.Mutex
+	replayMu       sync.Mutex
+	replayedHooks  map[string]time.Time
+	jobStore       RunJobStore
 	// defaultTenantPolicy is the statically configured tenant tool policy.
 	defaultTenantPolicy *tool.ToolPolicy
 	// audit records the tool lifecycle trail; nil disables recording.
@@ -139,6 +141,7 @@ func NewServer(cfg ServerConfig) *Server {
 		eventStore:          cfg.EventStore,
 		runStore:            cfg.RunStore,
 		artifactStore:       cfg.ArtifactStore,
+		artifactPolicy:      cfg.ArtifactPolicy,
 		runtimeEvents:       cfg.RuntimeEvents,
 		emitDecorator:       cfg.EmitDecorator,
 		corsOrigin:          corsOrigin,

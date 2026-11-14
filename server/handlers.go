@@ -545,6 +545,7 @@ func (s *Server) startStreamingRuntime(
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
 	opts.ArtifactStore = s.artifactStore
+	opts.ArtifactPolicy = s.artifactPolicy
 	opts.RunID = runID
 	opts.WorkflowID = workflowID
 	opts.WorkflowVersion = workflowVersion

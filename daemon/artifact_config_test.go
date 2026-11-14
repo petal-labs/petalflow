@@ -10,15 +10,20 @@ import (
 
 func TestArtifactsConfigParse(t *testing.T) {
 	parsed, err := (&ArtifactsConfig{
-		MaxSizeBytes:        1024,
-		AllowedContentTypes: []string{"text/plain; charset=utf-8", "application/json"},
-		Retention:           "24h",
-		PruneInterval:       "15m",
+		OffloadThresholdBytes: 128,
+		MaxSizeBytes:          1024,
+		MaxRunBytes:           4096,
+		MaxArtifacts:          12,
+		AllowedContentTypes:   []string{"text/plain; charset=utf-8", "application/json"},
+		Retention:             "24h",
+		PruneInterval:         "15m",
+		MaxRetries:            3,
+		RetryBackoff:          "20ms",
 	}).Parse()
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if parsed.MaxSizeBytes != 1024 || parsed.Retention != 24*time.Hour || parsed.PruneInterval != 15*time.Minute {
+	if parsed.OffloadThresholdBytes != 128 || parsed.MaxSizeBytes != 1024 || parsed.MaxRunBytes != 4096 || parsed.MaxArtifacts != 12 || parsed.MaxRetries != 3 || parsed.RetryBackoff != 20*time.Millisecond || parsed.Retention != 24*time.Hour || parsed.PruneInterval != 15*time.Minute {
 		t.Fatalf("Parse = %+v, want configured values", parsed)
 	}
 	wantTypes := []string{"text/plain; charset=utf-8", "application/json"}

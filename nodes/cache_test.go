@@ -2,10 +2,13 @@ package nodes
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/core"
 )
 
@@ -443,6 +446,26 @@ func TestCacheNode_IncludeArtifacts(t *testing.T) {
 	meta = metaVal.(CacheResult)
 	if meta.Hit {
 		t.Error("expected cache miss for different artifacts")
+	}
+}
+
+func TestStableArtifactValueMatchesInlineAndReference(t *testing.T) {
+	inline := core.Artifact{ID: "a", Type: "document", MimeType: "text/plain", Text: "same content", Meta: map[string]any{"source": "test"}}
+	digest := sha256.Sum256([]byte(inline.Text))
+	referenced := core.Artifact{
+		ID: inline.ID, Type: inline.Type, MimeType: inline.MimeType, URI: "artifact://sha256/ref",
+		Meta: map[string]any{"source": "test", artifact.MetaDigest: hex.EncodeToString(digest[:]), artifact.MetaSize: int64(len(inline.Text)), artifact.MetaContentType: "text/plain", artifact.MetaEncoding: "text"},
+	}
+	inlineJSON, err := stableJSONMarshal([]core.Artifact{inline})
+	if err != nil {
+		t.Fatal(err)
+	}
+	referenceJSON, err := stableJSONMarshal([]core.Artifact{referenced})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(inlineJSON) != string(referenceJSON) {
+		t.Fatalf("cache representation differs: inline=%s reference=%s", inlineJSON, referenceJSON)
 	}
 }
 

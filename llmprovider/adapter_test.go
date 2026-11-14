@@ -1,7 +1,9 @@
 package llmprovider
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 
 	iriscore "github.com/petal-labs/iris/core"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/core"
 )
 
@@ -109,6 +112,31 @@ func TestComplete_SimplePrompt(t *testing.T) {
 	}
 	if mock.capturedReq.Messages[1].Content != "Say hello" {
 		t.Errorf("user message content = %q, want %q", mock.capturedReq.Messages[1].Content, "Say hello")
+	}
+}
+
+func TestCompleteResolvesStoredArtifactReference(t *testing.T) {
+	store, _ := artifact.NewInMemoryStore()
+	scope := artifact.Scope{TenantID: "tenant-1", RunID: "run-1"}
+	metadata, err := store.Put(context.Background(), artifact.PutRequest{Scope: scope, ContentType: "text/plain"}, bytes.NewReader([]byte("stored input")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock := &mockProvider{id: "test", chatResponse: &iriscore.ChatResponse{Model: "model"}}
+	adapter := &irisAdapter{provider: mock}
+	ctx := artifact.ContextWithResolver(context.Background(), artifact.Resolver{Store: store, Scope: scope})
+	_, err = adapter.Complete(ctx, core.LLMRequest{Model: "model", Messages: []core.LLMMessage{{
+		Role: "user", ArtifactRefs: []core.LLMArtifactReference{{URI: artifact.ReferenceURI(metadata.Reference), Filename: "input.txt"}},
+	}}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	file, ok := mock.capturedReq.Messages[0].Parts[0].(iriscore.InputFile)
+	if !ok {
+		t.Fatalf("part = %T, want InputFile", mock.capturedReq.Messages[0].Parts[0])
+	}
+	if file.FileURL != "" || file.FileData != base64.StdEncoding.EncodeToString([]byte("stored input")) {
+		t.Fatalf("resolved file = %+v", file)
 	}
 }
 
