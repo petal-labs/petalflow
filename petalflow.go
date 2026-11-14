@@ -17,6 +17,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/budget"
 	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
@@ -27,6 +28,29 @@ import (
 	"github.com/petal-labs/petalflow/replay"
 	"github.com/petal-labs/petalflow/routing"
 	"github.com/petal-labs/petalflow/runtime"
+)
+
+// =============================================================================
+// Artifact Package Re-exports
+// =============================================================================
+
+// Artifact storage package type aliases.
+type (
+	ArtifactStore          = artifact.Store
+	ArtifactReference      = artifact.Reference
+	ArtifactMetadata       = artifact.Metadata
+	ArtifactScope          = artifact.Scope
+	ArtifactPutRequest     = artifact.PutRequest
+	ArtifactInMemoryConfig = artifact.InMemoryConfig
+	ArtifactInMemoryStore  = artifact.InMemoryStore
+)
+
+// Artifact storage constructor and sentinel errors.
+var (
+	NewArtifactStore          = artifact.NewInMemoryStore
+	ArtifactErrNotFound       = artifact.ErrNotFound
+	ArtifactErrUnavailable    = artifact.ErrUnavailable
+	ArtifactErrPolicyRejected = artifact.ErrPolicyRejected
 )
 
 // =============================================================================
