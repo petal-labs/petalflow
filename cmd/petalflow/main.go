@@ -45,4 +45,5 @@ func init() {
 	rootCmd.AddCommand(cli.NewServeCmd())
 	rootCmd.AddCommand(cli.NewToolsCmd())
 	rootCmd.AddCommand(cli.NewEvalCmd())
+	rootCmd.AddCommand(cli.NewArtifactsCmd())
 }

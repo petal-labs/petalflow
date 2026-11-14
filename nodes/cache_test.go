@@ -454,7 +454,7 @@ func TestStableArtifactValueMatchesInlineAndReference(t *testing.T) {
 	digest := sha256.Sum256([]byte(inline.Text))
 	referenced := core.Artifact{
 		ID: inline.ID, Type: inline.Type, MimeType: inline.MimeType, URI: "artifact://sha256/ref",
-		Meta: map[string]any{"source": "test", artifact.MetaDigest: hex.EncodeToString(digest[:]), artifact.MetaSize: int64(len(inline.Text)), artifact.MetaContentType: "text/plain", artifact.MetaEncoding: "text"},
+		Meta: map[string]any{"source": "test", artifact.MetaDigest: hex.EncodeToString(digest[:]), artifact.MetaSize: int64(len(inline.Text)), artifact.MetaContentType: "text/plain", artifact.MetaEncoding: "text", artifact.MetaID: "opaque-id"},
 	}
 	inlineJSON, err := stableJSONMarshal([]core.Artifact{inline})
 	if err != nil {

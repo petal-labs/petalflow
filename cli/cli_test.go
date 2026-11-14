@@ -23,6 +23,7 @@ func newTestRoot() *cobra.Command {
 	root.AddCommand(NewCompileCmd())
 	root.AddCommand(NewValidateCmd())
 	root.AddCommand(NewToolsCmd())
+	root.AddCommand(NewArtifactsCmd())
 	return root
 }
 

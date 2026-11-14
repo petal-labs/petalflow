@@ -321,7 +321,7 @@ func stableArtifactValue(value core.Artifact) map[string]any {
 	}
 	meta := make(map[string]any, len(value.Meta))
 	for key, item := range value.Meta {
-		if key != artifact.MetaDigest && key != artifact.MetaSize && key != artifact.MetaContentType && key != artifact.MetaEncoding {
+		if key != artifact.MetaDigest && key != artifact.MetaSize && key != artifact.MetaContentType && key != artifact.MetaEncoding && key != artifact.MetaID {
 			meta[key] = item
 		}
 	}

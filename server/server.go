@@ -131,6 +131,13 @@ func NewServer(cfg ServerConfig) *Server {
 	if securityConfig.MaxConcurrentRuns <= 0 {
 		securityConfig.MaxConcurrentRuns = 32
 	}
+	artifactPolicy := cfg.ArtifactPolicy
+	if cfg.ArtifactStore != nil {
+		if artifactPolicy.MaxArtifactBytes <= 0 {
+			artifactPolicy.MaxArtifactBytes = runtime.DefaultArtifactMaxBytes
+		}
+		artifactPolicy.AllowedContentTypes = append([]string(nil), artifactPolicy.AllowedContentTypes...)
+	}
 	return &Server{
 		store:               cfg.Store,
 		scheduleStore:       cfg.ScheduleStore,
@@ -141,7 +148,7 @@ func NewServer(cfg ServerConfig) *Server {
 		eventStore:          cfg.EventStore,
 		runStore:            cfg.RunStore,
 		artifactStore:       cfg.ArtifactStore,
-		artifactPolicy:      cfg.ArtifactPolicy,
+		artifactPolicy:      artifactPolicy,
 		runtimeEvents:       cfg.RuntimeEvents,
 		emitDecorator:       cfg.EmitDecorator,
 		corsOrigin:          corsOrigin,
@@ -209,6 +216,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/workflows/{id}/schedules/{schedule_id}", s.handleUpdateWorkflowSchedule)
 	mux.HandleFunc("DELETE /api/workflows/{id}/schedules/{schedule_id}", s.handleDeleteWorkflowSchedule)
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
+	mux.HandleFunc("POST /api/runs/{run_id}/artifacts", s.handleUploadArtifact)
+	mux.HandleFunc("GET /api/runs/{run_id}/artifacts/{artifact_id}", s.handleDownloadArtifact)
 }
 
 // --- Middleware ---
@@ -297,9 +306,27 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 
 func (s *Server) maxBodyMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
+		limit := s.maxBody
+		if s.isArtifactUpload(r) && s.artifactPolicy.MaxArtifactBytes > 0 {
+			artifactLimit := s.artifactPolicy.MaxArtifactBytes
+			if artifactLimit <= (1<<63-1)-artifactMultipartOverhead {
+				artifactLimit += artifactMultipartOverhead
+			}
+			if artifactLimit > limit {
+				limit = artifactLimit
+			}
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) isArtifactUpload(r *http.Request) bool {
+	if r == nil || r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/api/runs/") {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/runs/"), "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] == "artifacts"
 }
 
 // --- JSON helpers ---

@@ -13,6 +13,7 @@ const (
 	MetaSize        = "artifact_size"
 	MetaContentType = "artifact_content_type"
 	MetaEncoding    = "artifact_encoding"
+	MetaID          = "artifact_id"
 )
 
 // ReferenceURI returns a self-describing, non-secret URI for stored content.
