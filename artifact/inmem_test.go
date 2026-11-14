@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -137,6 +138,9 @@ func TestInMemoryStoreDeleteRemovesOnlyScopedReference(t *testing.T) {
 		t.Fatalf("Get retained reference: %v", err)
 	}
 	_ = reader.Close()
+	if err := store.Delete(ctx, secondScope, second.Reference); err != nil {
+		t.Fatalf("Delete final reference: %v", err)
+	}
 }
 
 func TestInMemoryStoreRejectsPolicyViolationsAtomically(t *testing.T) {
@@ -183,6 +187,53 @@ func TestInMemoryStoreHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestInMemoryStoreValidatesOperationInputs(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	validScope := artifact.Scope{TenantID: "tenant-1", RunID: "run-1"}
+	validRef := artifact.Reference{Digest: strings.Repeat("0", artifact.SHA256HexLength), ContentType: "text/plain"}
+
+	if _, err := store.Put(ctx, artifact.PutRequest{Scope: validScope, ContentType: "text/plain"}, nil); err == nil {
+		t.Fatal("Put with nil reader error = nil, want validation error")
+	}
+	if _, err := store.Put(ctx, artifact.PutRequest{Scope: artifact.Scope{RunID: "run-1"}, ContentType: "text/plain"}, bytes.NewReader(nil)); err == nil {
+		t.Fatal("Put with invalid scope error = nil, want validation error")
+	}
+	if _, err := store.Get(ctx, artifact.Scope{RunID: "run-1"}, validRef); err == nil {
+		t.Fatal("Get with invalid scope error = nil, want validation error")
+	}
+	if _, err := store.Stat(ctx, validScope, artifact.Reference{}); err == nil {
+		t.Fatal("Stat with invalid reference error = nil, want validation error")
+	}
+	if err := store.Delete(ctx, validScope, validRef); !errors.Is(err, artifact.ErrNotFound) {
+		t.Fatalf("Delete missing error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.ListByRun(ctx, artifact.Scope{RunID: "run-1"}); err == nil {
+		t.Fatal("ListByRun with invalid scope error = nil, want validation error")
+	}
+}
+
+func TestInMemoryStoreOperationsHonorCanceledContext(t *testing.T) {
+	store := newStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	scope := artifact.Scope{TenantID: "tenant-1", RunID: "run-1"}
+	ref := artifact.Reference{Digest: strings.Repeat("0", artifact.SHA256HexLength), ContentType: "text/plain"}
+
+	if _, err := store.Get(ctx, scope, ref); !errors.Is(err, context.Canceled) {
+		t.Errorf("Get error = %v, want context.Canceled", err)
+	}
+	if _, err := store.Stat(ctx, scope, ref); !errors.Is(err, context.Canceled) {
+		t.Errorf("Stat error = %v, want context.Canceled", err)
+	}
+	if err := store.Delete(ctx, scope, ref); !errors.Is(err, context.Canceled) {
+		t.Errorf("Delete error = %v, want context.Canceled", err)
+	}
+	if _, err := store.ListByRun(ctx, scope); !errors.Is(err, context.Canceled) {
+		t.Errorf("ListByRun error = %v, want context.Canceled", err)
+	}
+}
+
 func TestInMemoryStoreReaderFailureIsAtomic(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
@@ -210,6 +261,9 @@ func TestNewInMemoryStoreRejectsInvalidConfig(t *testing.T) {
 		if _, err := artifact.NewInMemoryStore(config); err == nil {
 			t.Errorf("NewInMemoryStore(%+v) error = nil, want validation error", config)
 		}
+	}
+	if _, err := artifact.NewInMemoryStore(artifact.InMemoryConfig{}, artifact.InMemoryConfig{}); err == nil {
+		t.Error("NewInMemoryStore with two configs error = nil, want validation error")
 	}
 }
 

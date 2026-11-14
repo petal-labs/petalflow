@@ -40,6 +40,7 @@ func TestReferenceValidate(t *testing.T) {
 	}{
 		{name: "valid", ref: artifact.Reference{Digest: validDigest, Size: 3, ContentType: "text/plain"}},
 		{name: "bad digest", ref: artifact.Reference{Digest: "abc", Size: 3, ContentType: "text/plain"}, wantErr: true},
+		{name: "non-hex digest", ref: artifact.Reference{Digest: strings.Repeat("z", artifact.SHA256HexLength), Size: 3, ContentType: "text/plain"}, wantErr: true},
 		{name: "negative size", ref: artifact.Reference{Digest: validDigest, Size: -1, ContentType: "text/plain"}, wantErr: true},
 		{name: "bad content type", ref: artifact.Reference{Digest: validDigest, Size: 3, ContentType: "not a mime type"}, wantErr: true},
 	}
@@ -49,6 +50,36 @@ func TestReferenceValidate(t *testing.T) {
 			err := tt.ref.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestPutRequestValidate(t *testing.T) {
+	validScope := artifact.Scope{TenantID: "tenant-1", RunID: "run-1"}
+	tests := []struct {
+		name       string
+		request    artifact.PutRequest
+		wantPolicy bool
+	}{
+		{name: "valid", request: artifact.PutRequest{Scope: validScope, WorkflowID: "workflow-1", NodeID: "node-1", ContentType: "text/plain"}},
+		{name: "invalid scope", request: artifact.PutRequest{Scope: artifact.Scope{RunID: "run-1"}, ContentType: "text/plain"}},
+		{name: "invalid workflow", request: artifact.PutRequest{Scope: validScope, WorkflowID: "bad/workflow", ContentType: "text/plain"}},
+		{name: "invalid node", request: artifact.PutRequest{Scope: validScope, NodeID: "bad/node", ContentType: "text/plain"}},
+		{name: "missing content type", request: artifact.PutRequest{Scope: validScope}, wantPolicy: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.request.Validate()
+			if tt.name == "valid" && err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+			if tt.name != "valid" && err == nil {
+				t.Fatal("Validate() error = nil, want validation error")
+			}
+			if tt.wantPolicy && !errors.Is(err, artifact.ErrPolicyRejected) {
+				t.Fatalf("Validate() error = %v, want ErrPolicyRejected", err)
 			}
 		})
 	}
