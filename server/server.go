@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/bus"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/runtime"
@@ -26,6 +27,7 @@ type ServerConfig struct {
 	Bus           bus.EventBus
 	EventStore    bus.EventStore
 	RunStore      runtime.RunStore
+	ArtifactStore artifact.Store
 	RuntimeEvents runtime.EventHandler
 	EmitDecorator runtime.EventEmitterDecorator
 	CORSOrigin    string
@@ -72,6 +74,7 @@ type Server struct {
 	bus           bus.EventBus
 	eventStore    bus.EventStore
 	runStore      runtime.RunStore
+	artifactStore artifact.Store
 	runtimeEvents runtime.EventHandler
 	emitDecorator runtime.EventEmitterDecorator
 	corsOrigin    string
@@ -135,6 +138,7 @@ func NewServer(cfg ServerConfig) *Server {
 		bus:                 cfg.Bus,
 		eventStore:          cfg.EventStore,
 		runStore:            cfg.RunStore,
+		artifactStore:       cfg.ArtifactStore,
 		runtimeEvents:       cfg.RuntimeEvents,
 		emitDecorator:       cfg.EmitDecorator,
 		corsOrigin:          corsOrigin,

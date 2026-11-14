@@ -262,6 +262,7 @@ func (s *Server) executeWorkflowRunSync(
 	rt := runtime.NewRuntime()
 	opts := runtime.DefaultRunOptions()
 	opts.RunStore = s.runStore
+	opts.ArtifactStore = s.artifactStore
 	opts.WorkflowID = workflowID
 	opts.TenantID = plan.tenantID
 	opts.WorkflowVersion = plan.workflowVersion

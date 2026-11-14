@@ -67,6 +67,11 @@ observability:
     retention: 720h
     max_events_per_run: 1000
     prune_interval: 15m
+artifacts:
+  max_size_bytes: 1048576
+  allowed_content_types: [text/plain, application/json]
+  retention: 720h
+  prune_interval: 15m
 `)
 
 	cmd := NewServeCmd()

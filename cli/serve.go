@@ -143,6 +143,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	artifactConfig, err := daemon.LoadArtifactsConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading artifact config: %w", err)
+	}
+	var artifactStore artifactStoreCloser
+	if artifactConfig == nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: artifacts section not configured; workflow artifacts remain inline")
+	} else {
+		artifactStore, err = openArtifactStore(dsn, backend, *artifactConfig)
+		if err != nil {
+			return fmt.Errorf("opening artifact store: %w", err)
+		}
+		defer func() { _ = artifactStore.Close() }()
+		fmt.Fprintf(cmd.OutOrStdout(), "Artifact store: max %d bytes, retention %s (prune every %s)\n",
+			artifactConfig.MaxSizeBytes, artifactConfig.Retention, artifactConfig.PruneInterval)
+	}
+
 	// --- Daemon tool server (Phase 3) ---
 	toolStore, err := openToolStore(dsn, backend, scope)
 	if err != nil {
@@ -318,6 +335,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Bus:                 eb,
 		EventStore:          es,
 		RunStore:            runStore,
+		ArtifactStore:       artifactStore,
 		RuntimeEvents:       observability.runtimeEvents(),
 		EmitDecorator:       observability.emitDecorator(),
 		ContentCapture:      observability.capture,
