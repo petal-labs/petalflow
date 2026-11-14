@@ -142,3 +142,30 @@ func TestWriteVerifiedArtifactRequiresDigestAndExclusiveOutput(t *testing.T) {
 		t.Fatalf("existing output changed: %q", data)
 	}
 }
+
+func TestOpenRootedArtifactOutputRejectsDirectoryPath(t *testing.T) {
+	if _, _, _, err := openRootedArtifactOutput(t.TempDir()); err == nil {
+		t.Fatal("directory output path error = nil")
+	}
+}
+
+func TestWriteVerifiedArtifactDoesNotFollowOutputSymlink(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "target")
+	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(directory, "download")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	response := &http.Response{Header: make(http.Header), Body: io.NopCloser(strings.NewReader("replacement"))}
+	response.Header.Set("X-Artifact-SHA256", "a2a3d57dd0a0717fdb31543bd0cc1f79902454f2e8b3a9771e3d71f9a178e7b")
+	if err := writeVerifiedArtifact(link, response); err == nil {
+		t.Fatal("symlink output error = nil")
+	}
+	data, err := os.ReadFile(target)
+	if err != nil || string(data) != "original" {
+		t.Fatalf("target=%q err=%v", data, err)
+	}
+}

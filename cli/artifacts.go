@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -140,7 +141,7 @@ func writeVerifiedArtifact(path string, response *http.Response) (err error) {
 	if decoded, decodeErr := hex.DecodeString(expected); decodeErr != nil || len(decoded) != sha256.Size {
 		return errors.New("artifact response is missing a valid SHA-256 digest")
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	root, file, name, err := openRootedArtifactOutput(path)
 	if err != nil {
 		return fmt.Errorf("creating artifact output: %w", err)
 	}
@@ -153,7 +154,12 @@ func writeVerifiedArtifact(path string, response *http.Response) (err error) {
 			keep = false
 		}
 		if !keep {
-			_ = os.Remove(path)
+			if removeErr := root.Remove(name); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				err = fmt.Errorf("%w; removing partial artifact: %v", err, removeErr)
+			}
+		}
+		if closeErr := root.Close(); err == nil && closeErr != nil {
+			err = closeErr
 		}
 	}()
 	hash := sha256.New()
@@ -166,6 +172,25 @@ func writeVerifiedArtifact(path string, response *http.Response) (err error) {
 	}
 	keep = true
 	return nil
+}
+
+func openRootedArtifactOutput(path string) (*os.Root, *os.File, string, error) {
+	cleaned := filepath.Clean(path)
+	directory := filepath.Dir(cleaned)
+	name := filepath.Base(cleaned)
+	if name == "" || name == "." || name == ".." {
+		return nil, nil, "", errors.New("artifact output must name a file")
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		_ = root.Close()
+		return nil, nil, "", err
+	}
+	return root, file, name, nil
 }
 
 func artifactAPIStatusError(response *http.Response) error {
