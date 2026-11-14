@@ -41,6 +41,9 @@ func TestRuntimeOffloadsLargeArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseReferenceURI: %v", err)
 	}
+	if got.Meta[artifact.MetaID] != artifact.ReferenceID(ref) {
+		t.Fatalf("artifact ID metadata = %v", got.Meta[artifact.MetaID])
+	}
 	reader, err := store.Get(context.Background(), artifact.Scope{TenantID: "tenant-1", RunID: result.Trace.RunID}, ref)
 	if err != nil {
 		t.Fatalf("Get: %v", err)

@@ -100,6 +100,48 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 | `GET` | `/api/runs/{run_id}/pending-actions` | List the pending human action |
 | `POST` | `/api/runs/{run_id}/pending-actions/{action_id}` | Complete a pending human action once |
 | `GET` | `/api/runs/{run_id}/events` | Read persisted run events |
+| `POST` | `/api/runs/{run_id}/artifacts` | Stream an artifact upload into the run scope |
+| `GET` | `/api/runs/{run_id}/artifacts/{artifact_id}` | Stream an artifact download |
+
+### Run artifacts
+
+Artifact routes require the same bearer identity and tenant ownership as the
+run routes. A run owned by another tenant and a missing run or artifact all
+return the same `404 NOT_FOUND` response.
+
+Upload a raw body:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/runs/$RUN_ID/artifacts" \
+  -H "Authorization: Bearer $PETALFLOW_API_TOKEN" \
+  -H 'Content-Type: application/pdf' \
+  --data-binary @report.pdf | jq
+```
+
+Multipart uploads are also accepted when the file part is named `file` and
+declares its own `Content-Type`. Successful uploads return `artifact_id`,
+`uri`, `download_url`, `digest`, `size`, and `content_type`. The configured
+artifact size and media-type policies apply while the body streams; rejected
+uploads are not partially committed.
+
+Downloads always use `Content-Disposition: attachment` and include
+`Content-Length`, `Digest`, `X-Artifact-SHA256`, and `ETag` verification
+headers. The daemon does not fetch arbitrary external artifact URLs; any future
+server-side external fetch must pass the outbound egress policy first.
+
+The CLI provides the same flow without placing the bearer token in command
+history:
+
+```bash
+export PETALFLOW_API_TOKEN='...'
+export PETALFLOW_API_URL='https://petalflow.example.com'
+
+petalflow artifacts upload "$RUN_ID" report.pdf --content-type application/pdf
+petalflow artifacts download "$RUN_ID" "$ARTIFACT_ID" --output report.pdf
+```
+
+Downloads refuse to overwrite an existing file, remove partial files on
+failure, and verify `X-Artifact-SHA256` before completing.
 
 ### Tools
 
@@ -214,6 +256,9 @@ Errors are returned as:
 
 ## Notes
 
-- Default max request body is `1 MiB` (`--max-body` to change).
+- Default max request body is `1 MiB` (`--max-body` to change). When artifact
+  storage is explicitly configured, artifact uploads instead use the artifact
+  maximum plus bounded multipart overhead; all other endpoints retain the
+  normal request limit.
 - `GET /api/runs/{run_id}/events` returns SSE when supported by the response writer.
 - Sensitive tool config values are masked in API responses.

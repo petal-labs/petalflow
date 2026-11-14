@@ -226,6 +226,12 @@ artifacts:
 - References retain artifact ID, type, MIME type, digest, size, and storage
   content type. API responses and durable checkpoints do not duplicate the
   referenced text or base64 bytes.
+- Run-scoped upload and download routes authorize against the durable run's
+  tenant. Downloads are forced to attachment disposition and stream with
+  digest headers; uploads use the configured size/media policy atomically.
+- Operators can transfer artifacts with `petalflow artifacts upload` and
+  `petalflow artifacts download`. Set `PETALFLOW_API_URL` and
+  `PETALFLOW_API_TOKEN`; downloads verify SHA-256 and never overwrite files.
 - Every lookup and deletion includes tenant and run identifiers. A reference
   outside that scope is reported as not found.
 - Inserts use atomic conflict handling, and failed reads or policy checks do

@@ -298,7 +298,7 @@ func (t *artifactRunTracker) release(digest string, size int64) {
 }
 
 func artifactReferenceMeta(meta map[string]any, reference artifact.Reference, encoding string) map[string]any {
-	result := make(map[string]any, len(meta)+4)
+	result := make(map[string]any, len(meta)+5)
 	for key, value := range meta {
 		result[key] = value
 	}
@@ -306,6 +306,7 @@ func artifactReferenceMeta(meta map[string]any, reference artifact.Reference, en
 	result[artifact.MetaSize] = reference.Size
 	result[artifact.MetaContentType] = reference.ContentType
 	result[artifact.MetaEncoding] = encoding
+	result[artifact.MetaID] = artifact.ReferenceID(reference)
 	return result
 }
 
