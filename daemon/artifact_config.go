@@ -6,6 +6,8 @@ import (
 	"mime"
 	"strings"
 	"time"
+
+	"github.com/petal-labs/petalflow/artifact"
 )
 
 const (
@@ -21,15 +23,17 @@ const (
 // ArtifactsConfig is the optional petalflow.yaml artifact storage policy.
 // Omitting the entire section preserves inline-artifact behavior.
 type ArtifactsConfig struct {
-	OffloadThresholdBytes int64    `yaml:"offload_threshold_bytes"`
-	MaxSizeBytes          int64    `yaml:"max_size_bytes"`
-	MaxRunBytes           int64    `yaml:"max_run_bytes"`
-	MaxArtifacts          int      `yaml:"max_artifacts_per_run"`
-	AllowedContentTypes   []string `yaml:"allowed_content_types,omitempty"`
-	Retention             string   `yaml:"retention"`
-	PruneInterval         string   `yaml:"prune_interval"`
-	MaxRetries            int      `yaml:"max_retries"`
-	RetryBackoff          string   `yaml:"retry_backoff"`
+	OffloadThresholdBytes int64             `yaml:"offload_threshold_bytes"`
+	MaxSizeBytes          int64             `yaml:"max_size_bytes"`
+	MaxRunBytes           int64             `yaml:"max_run_bytes"`
+	MaxArtifacts          int               `yaml:"max_artifacts_per_run"`
+	AllowedContentTypes   []string          `yaml:"allowed_content_types,omitempty"`
+	Retention             string            `yaml:"retention"`
+	TenantRetention       map[string]string `yaml:"tenant_retention,omitempty"`
+	WorkflowRetention     map[string]string `yaml:"workflow_retention,omitempty"`
+	PruneInterval         string            `yaml:"prune_interval"`
+	MaxRetries            int               `yaml:"max_retries"`
+	RetryBackoff          string            `yaml:"retry_backoff"`
 }
 
 // ParsedArtifactsConfig contains validated artifact storage policy values.
@@ -40,6 +44,8 @@ type ParsedArtifactsConfig struct {
 	MaxArtifacts          int
 	AllowedContentTypes   []string
 	Retention             time.Duration
+	TenantRetention       map[string]time.Duration
+	WorkflowRetention     map[string]time.Duration
 	PruneInterval         time.Duration
 	MaxRetries            int
 	RetryBackoff          time.Duration
@@ -83,6 +89,15 @@ func (c *ArtifactsConfig) Parse() (ParsedArtifactsConfig, error) {
 	if parsed.Retention, err = parseArtifactDuration("retention", c.Retention, parsed.Retention, false); err != nil {
 		return parsed, err
 	}
+	if parsed.TenantRetention, err = parseArtifactRetentionOverrides("tenant_retention", c.TenantRetention); err != nil {
+		return parsed, err
+	}
+	if parsed.WorkflowRetention, err = parseArtifactRetentionOverrides("workflow_retention", c.WorkflowRetention); err != nil {
+		return parsed, err
+	}
+	if err := parsed.RetentionPolicy().Validate(); err != nil {
+		return parsed, fmt.Errorf("artifacts: %w", err)
+	}
 	if parsed.PruneInterval, err = parseArtifactDuration("prune_interval", c.PruneInterval, parsed.PruneInterval, true); err != nil {
 		return parsed, err
 	}
@@ -96,6 +111,14 @@ func (c *ArtifactsConfig) Parse() (ParsedArtifactsConfig, error) {
 		return parsed, errors.New("artifacts.max_run_bytes: must be at least max_size_bytes")
 	}
 	return parsed, nil
+}
+
+// RetentionPolicy returns an immutable copy of the parsed precedence policy.
+func (c ParsedArtifactsConfig) RetentionPolicy() artifact.RetentionPolicy {
+	return artifact.RetentionPolicy{
+		Default: c.Retention, Tenants: cloneDurationMap(c.TenantRetention),
+		Workflows: cloneDurationMap(c.WorkflowRetention),
+	}
 }
 
 // LoadArtifactsConfig loads and validates the optional artifacts section.
@@ -159,4 +182,27 @@ func parseArtifactDuration(field, value string, fallback time.Duration, positive
 		return fallback, fmt.Errorf("artifacts.%s: %s", field, constraint)
 	}
 	return parsed, nil
+}
+
+func parseArtifactRetentionOverrides(field string, values map[string]string) (map[string]time.Duration, error) {
+	parsed := make(map[string]time.Duration, len(values))
+	for id, value := range values {
+		retention, err := parseArtifactDuration(field+"."+id, value, 0, false)
+		if err != nil {
+			return nil, err
+		}
+		parsed[id] = retention
+	}
+	return parsed, nil
+}
+
+func cloneDurationMap(values map[string]time.Duration) map[string]time.Duration {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]time.Duration, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
 }

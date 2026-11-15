@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -40,6 +42,33 @@ func TestArtifactsUploadCommandStreamsFile(t *testing.T) {
 	}
 	if gotAuthorization != "Bearer secret-token" || gotContentType != "text/plain" || gotBody != "upload body" {
 		t.Fatalf("authorization=%q content-type=%q body=%q", gotAuthorization, gotContentType, gotBody)
+	}
+}
+
+func TestArtifactsExportCommandVerifiesBundleDigest(t *testing.T) {
+	const bundle = "compressed bundle"
+	digest := sha256.Sum256([]byte(bundle))
+	var gotPath, gotAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotAuthorization = r.URL.Path, r.Header.Get("Authorization")
+		w.Header().Set("X-Export-SHA256", hex.EncodeToString(digest[:]))
+		_, _ = io.WriteString(w, bundle)
+	}))
+	defer server.Close()
+	t.Setenv("PETALFLOW_API_TOKEN", "secret-token")
+	output := filepath.Join(t.TempDir(), "run.tar.gz")
+	cmd := NewArtifactsCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"export", "run-1", "--server", server.URL, "--output", output})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil || string(data) != bundle {
+		t.Fatalf("export=%q err=%v", data, err)
+	}
+	if gotPath != "/api/runs/run-1/export" || gotAuthorization != "Bearer secret-token" {
+		t.Fatalf("path=%q authorization=%q", gotPath, gotAuthorization)
 	}
 }
 

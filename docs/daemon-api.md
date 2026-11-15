@@ -102,6 +102,7 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 | `GET` | `/api/runs/{run_id}/events` | Read persisted run events |
 | `POST` | `/api/runs/{run_id}/artifacts` | Stream an artifact upload into the run scope |
 | `GET` | `/api/runs/{run_id}/artifacts/{artifact_id}` | Stream an artifact download |
+| `GET` | `/api/runs/{run_id}/export` | Export a terminal run, events, and referenced artifacts |
 
 ### Run artifacts
 
@@ -138,10 +139,17 @@ export PETALFLOW_API_URL='https://petalflow.example.com'
 
 petalflow artifacts upload "$RUN_ID" report.pdf --content-type application/pdf
 petalflow artifacts download "$RUN_ID" "$ARTIFACT_ID" --output report.pdf
+petalflow artifacts export "$RUN_ID" --output "$RUN_ID.tar.gz"
 ```
 
 Downloads refuse to overwrite an existing file, remove partial files on
 failure, and verify `X-Artifact-SHA256` before completing.
+
+Run export is limited to terminal runs and returns a gzip-compressed tar archive
+containing `manifest.json`, `run.json`, `events.json`, and referenced artifact
+files. The manifest carries per-entry SHA-256 digests, while
+`X-Export-SHA256` covers the entire response. Resume tokens are omitted. Import
+is not supported.
 
 ### Tools
 

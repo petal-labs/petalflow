@@ -211,6 +211,10 @@ artifacts:
     - application/octet-stream
     - text/plain
   retention: 720h                # default expiry for new artifacts; default 30d
+  tenant_retention:              # tenant default overrides global retention
+    tenant-a: 336h
+  workflow_retention:            # highest precedence; workflow ID scoped
+    monthly-report: 2160h
   prune_interval: 1h             # expired-row cleanup cadence
   max_retries: 2                 # transient store write retries
   retry_backoff: 50ms
@@ -234,10 +238,43 @@ artifacts:
   `PETALFLOW_API_TOKEN`; downloads verify SHA-256 and never overwrite files.
 - Every lookup and deletion includes tenant and run identifiers. A reference
   outside that scope is reported as not found.
+- Retention precedence is deterministic: workflow override, tenant default,
+  then global `retention`. A duration of `0s` at an override disables automatic
+  expiry for that scope. New writes persist the resolved expiry timestamp.
+- The reference-aware collector examines expired rows in bounded batches. It
+  never deletes artifacts for running, paused, or human-waiting runs, and it
+  scans durable run/checkpoint, pending-action, and event data before a
+  tenant-scoped conditional delete. Expiry extensions that race a pass win;
+  shared blob bytes remain until their last scoped reference is removed.
+- Collector audit records use tool `artifact_gc`, action `delete`, and stable
+  decisions/reasons without artifact content. OpenTelemetry exports cumulative
+  `petalflow.artifacts.gc.candidates`, `.deletions`, `.bytes`, and `.errors`
+  counters when metrics are enabled.
 - Inserts use atomic conflict handling, and failed reads or policy checks do
-  not expose partial metadata. Expired metadata and unreferenced blobs are
-  removed in a short transaction.
+  not expose partial metadata.
 - Invalid sizes, media types, durations, or prune intervals fail startup.
+
+### Run export and sizing
+
+Terminal runs (`completed`, `failed`, or `canceled`) can be exported with:
+
+```bash
+petalflow artifacts export "$RUN_ID" --output "$RUN_ID.tar.gz"
+```
+
+The authenticated endpoint is `GET /api/runs/{run_id}/export`. The compressed
+tar archive contains `manifest.json`, `run.json`, `events.json`, and only the
+artifacts referenced by the run/checkpoint or persisted events. The manifest
+records SHA-256 digests for the run, events, and every artifact; the response's
+`X-Export-SHA256` covers the complete archive. The CLI verifies that digest,
+refuses to overwrite existing files, and removes partial output. Resume tokens
+are excluded from exports. Import is intentionally out of scope.
+
+Size storage for the configured worst case: `max_run_bytes` times the expected
+number of simultaneously retained runs, plus event/checkpoint and database
+index overhead. Keep `prune_interval` comfortably below the retention window,
+leave room for at least one interval of newly expired data, and account for
+content-addressed sharing only as a bonus rather than guaranteed savings.
 
 ## Dropped Events and Alerting
 

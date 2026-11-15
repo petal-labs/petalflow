@@ -115,7 +115,7 @@ func TestStoreConcurrentIdempotentPut(t *testing.T) {
 	}
 }
 
-func TestStorePruneExpired(t *testing.T) {
+func TestStoreLifecycleDeleteExpired(t *testing.T) {
 	store := newStore(t, artifactsqlite.Config{DSN: t.TempDir() + "/artifacts.db"})
 	ctx := context.Background()
 	scope := artifact.Scope{TenantID: "tenant-1", RunID: "run-1"}
@@ -125,12 +125,16 @@ func TestStorePruneExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	removed, err := store.PruneExpired(ctx, time.Now())
+	candidates, err := store.ListExpired(ctx, time.Now(), scope.TenantID, 0, 10)
 	if err != nil {
-		t.Fatalf("PruneExpired: %v", err)
+		t.Fatalf("ListExpired: %v", err)
 	}
-	if removed != 1 {
-		t.Fatalf("PruneExpired removed = %d, want 1", removed)
+	if len(candidates) != 1 {
+		t.Fatalf("ListExpired count = %d, want 1", len(candidates))
+	}
+	removed, err := store.DeleteExpired(ctx, candidates[0], time.Now())
+	if err != nil || !removed {
+		t.Fatalf("DeleteExpired = %v, %v; want true, nil", removed, err)
 	}
 	if _, err := store.Stat(ctx, scope, metadata.Reference); !errors.Is(err, artifact.ErrNotFound) {
 		t.Fatalf("Stat pruned artifact error = %v, want ErrNotFound", err)

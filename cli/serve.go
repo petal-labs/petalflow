@@ -352,6 +352,23 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		Logger: logger,
 	})
 
+	if artifactStore != nil {
+		gcObserver, observerErr := observability.artifactGCObserver()
+		if observerErr != nil {
+			return fmt.Errorf("creating artifact garbage-collection metrics: %w", observerErr)
+		}
+		artifactCollector, collectorErr := server.NewArtifactCollector(server.ArtifactCollectorConfig{
+			Store: artifactStore, RunStore: runStore, EventStore: es,
+			AuditStore: auditStore, Observer: gcObserver,
+			Interval: artifactConfig.PruneInterval, Logger: logger,
+		})
+		if collectorErr != nil {
+			return fmt.Errorf("creating artifact collector: %w", collectorErr)
+		}
+		artifactCollector.Start(cmd.Context())
+		defer func() { _ = artifactCollector.Stop(context.Background()) }()
+	}
+
 	runWorker, err := server.NewRunWorker(server.RunWorkerConfig{
 		Runner:        workflowServer,
 		Store:         workflowStore,

@@ -218,6 +218,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runs/{run_id}/events", s.handleRunEvents)
 	mux.HandleFunc("POST /api/runs/{run_id}/artifacts", s.handleUploadArtifact)
 	mux.HandleFunc("GET /api/runs/{run_id}/artifacts/{artifact_id}", s.handleDownloadArtifact)
+	mux.HandleFunc("GET /api/runs/{run_id}/export", s.handleExportRun)
 }
 
 // --- Middleware ---

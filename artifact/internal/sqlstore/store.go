@@ -30,6 +30,7 @@ type Config struct {
 	MaxSizeBytes        int64
 	AllowedContentTypes []string
 	DefaultRetention    time.Duration
+	Retention           artifact.RetentionPolicy
 	PruneInterval       time.Duration
 	Logger              *slog.Logger
 }
@@ -39,11 +40,7 @@ type Store struct {
 	dialect      string
 	maxSize      int64
 	allowedTypes map[string]struct{}
-	retention    time.Duration
-	pruneEvery   time.Duration
-	logger       *slog.Logger
-	stop         chan struct{}
-	done         chan struct{}
+	retention    artifact.RetentionPolicy
 	closeOnce    sync.Once
 	closeErr     error
 }
@@ -59,24 +56,15 @@ func New(db *sql.DB, dialect string, config Config) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	pruneEnabled := config.DefaultRetention > 0 || config.PruneInterval > 0
-	if config.PruneInterval == 0 {
-		config.PruneInterval = time.Hour
-	}
-	if config.Logger == nil {
-		config.Logger = slog.Default()
+	if config.Retention.Default == 0 {
+		config.Retention.Default = config.DefaultRetention
 	}
 	store := &Store{
 		db: db, dialect: dialect, maxSize: config.MaxSizeBytes,
-		allowedTypes: allowed, retention: config.DefaultRetention,
-		pruneEvery: config.PruneInterval, logger: config.Logger,
-		stop: make(chan struct{}), done: make(chan struct{}),
+		allowedTypes: allowed, retention: config.Retention.Clone(),
 	}
-	if pruneEnabled {
-		go store.pruneLoop()
-	} else {
-		close(store.done)
-	}
+	// Reference-aware garbage collection is coordinated by the server. The
+	// storage layer deliberately does not delete expiry candidates on its own.
 	return store, nil
 }
 
@@ -199,40 +187,83 @@ ORDER BY created_at, digest, size, content_type`), scope.TenantID, scope.RunID)
 	return items, nil
 }
 
-func (s *Store) PruneExpired(ctx context.Context, before time.Time) (int64, error) {
+// ListExpired returns a bounded deterministic snapshot of expiry candidates.
+func (s *Store) ListExpired(ctx context.Context, before time.Time, tenantID string, offset, limit int) ([]artifact.Metadata, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if offset < 0 || limit <= 0 || limit > 10_000 {
+		return nil, errors.New("artifact sql list expired: offset must not be negative and limit must be between 1 and 10000")
+	}
+	if tenantID != "" {
+		if err := (artifact.Scope{TenantID: tenantID, RunID: "gc"}).Validate(); err != nil {
+			return nil, fmt.Errorf("artifact sql list expired: %w", err)
+		}
+	}
+	query := metadataSelect + `
+WHERE expires_at IS NOT NULL AND expires_at <= ?`
+	args := []any{formatTime(before)}
+	if tenantID != "" {
+		query += ` AND tenant_id = ?`
+		args = append(args, tenantID)
+	}
+	query += ` ORDER BY expires_at, tenant_id, run_id, digest, size, content_type LIMIT ? OFFSET ?`
+	args = append(args, limit, offset)
+	rows, err := s.db.QueryContext(ctx, s.query(query), args...)
+	if err != nil {
+		return nil, classifyError("artifact sql list expired", err)
+	}
+	defer rows.Close()
+	items := make([]artifact.Metadata, 0)
+	for rows.Next() {
+		metadata, scanErr := scanMetadata(rows)
+		if scanErr != nil {
+			return nil, classifyError("artifact sql list expired scan", scanErr)
+		}
+		items = append(items, metadata)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, classifyError("artifact sql list expired rows", err)
+	}
+	return items, nil
+}
+
+// DeleteExpired conditionally deletes one tenant-scoped candidate.
+func (s *Store) DeleteExpired(ctx context.Context, metadata artifact.Metadata, before time.Time) (bool, error) {
+	if err := validateLookup(ctx, metadata.Scope, metadata.Reference); err != nil {
+		return false, fmt.Errorf("artifact sql delete expired: %w", err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, classifyError("artifact sql prune begin", err)
+		return false, classifyError("artifact sql delete expired begin", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, s.query(`DELETE FROM artifact_entries
-WHERE expires_at IS NOT NULL AND expires_at <= ?`), formatTime(before))
+WHERE tenant_id = ? AND run_id = ? AND digest = ? AND size = ? AND content_type = ?
+  AND expires_at IS NOT NULL AND expires_at <= ?`), metadata.Scope.TenantID,
+		metadata.Scope.RunID, metadata.Reference.Digest, metadata.Reference.Size,
+		metadata.Reference.ContentType, formatTime(before))
 	if err != nil {
-		return 0, classifyError("artifact sql prune entries", err)
+		return false, classifyError("artifact sql delete expired entry", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return 0, classifyError("artifact sql prune result", err)
+		return false, classifyError("artifact sql delete expired result", err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM artifact_blobs
-WHERE NOT EXISTS (
-  SELECT 1 FROM artifact_entries AS e
-  WHERE e.digest = artifact_blobs.digest
-    AND e.size = artifact_blobs.size
-    AND e.content_type = artifact_blobs.content_type
-)`); err != nil {
-		return 0, classifyError("artifact sql prune blobs", err)
+	if affected == 0 {
+		return false, nil
+	}
+	if err := s.deleteOrphan(ctx, tx, metadata.Reference); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, classifyError("artifact sql prune commit", err)
+		return false, classifyError("artifact sql delete expired commit", err)
 	}
-	return affected, nil
+	return true, nil
 }
 
 func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
-		close(s.stop)
-		<-s.done
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr
@@ -247,8 +278,9 @@ func (s *Store) putData(ctx context.Context, request artifact.PutRequest, conten
 	reference := artifact.Reference{Digest: hex.EncodeToString(digest[:]), Size: int64(len(data)), ContentType: contentType}
 	createdAt := time.Now().UTC()
 	expiresAt := request.ExpiresAt
-	if expiresAt.IsZero() && s.retention > 0 {
-		expiresAt = createdAt.Add(s.retention)
+	retention := s.retention.Resolve(request.Scope.TenantID, request.WorkflowID)
+	if expiresAt.IsZero() && retention > 0 {
+		expiresAt = createdAt.Add(retention)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -318,22 +350,6 @@ WHERE digest = ? AND size = ? AND content_type = ?
 	return nil
 }
 
-func (s *Store) pruneLoop() {
-	defer close(s.done)
-	ticker := time.NewTicker(s.pruneEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-s.stop:
-			return
-		case now := <-ticker.C:
-			if _, err := s.PruneExpired(context.Background(), now); err != nil {
-				s.logger.Warn("artifact expiration prune failed", "error", err)
-			}
-		}
-	}
-}
-
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -385,6 +401,9 @@ func validateConfig(config Config) (map[string]struct{}, error) {
 	}
 	if config.DefaultRetention < 0 {
 		return nil, errors.New("artifact sql store: default retention must not be negative")
+	}
+	if err := config.Retention.Validate(); err != nil {
+		return nil, fmt.Errorf("artifact sql store: %w", err)
 	}
 	if config.PruneInterval < 0 {
 		return nil, errors.New("artifact sql store: prune interval must not be negative")
