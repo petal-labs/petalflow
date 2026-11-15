@@ -187,7 +187,7 @@ func openAuditStore(dsn string, backend databaseBackend, scope string) (tool.Too
 }
 
 type artifactStoreCloser interface {
-	artifact.Store
+	artifact.LifecycleStore
 	io.Closer
 }
 
@@ -199,13 +199,13 @@ func openArtifactStore(dsn string, backend databaseBackend, config daemon.Parsed
 		return artifactpostgres.NewStore(artifactpostgres.Config{
 			DSN: dsn, MaxSizeBytes: config.MaxSizeBytes,
 			AllowedContentTypes: config.AllowedContentTypes,
-			DefaultRetention:    config.Retention, PruneInterval: config.PruneInterval,
+			DefaultRetention:    config.Retention, Retention: config.RetentionPolicy(), PruneInterval: config.PruneInterval,
 		})
 	default:
 		return artifactsqlite.NewStore(artifactsqlite.Config{
 			DSN: dsn, MaxSizeBytes: config.MaxSizeBytes,
 			AllowedContentTypes: config.AllowedContentTypes,
-			DefaultRetention:    config.Retention, PruneInterval: config.PruneInterval,
+			DefaultRetention:    config.Retention, Retention: config.RetentionPolicy(), PruneInterval: config.PruneInterval,
 		})
 	}
 }

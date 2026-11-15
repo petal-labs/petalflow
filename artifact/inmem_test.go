@@ -187,6 +187,71 @@ func TestInMemoryStoreHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestInMemoryStoreResolvesRetentionAtWriteTime(t *testing.T) {
+	store, err := artifact.NewInMemoryStore(artifact.InMemoryConfig{Retention: artifact.RetentionPolicy{
+		Default: 3 * time.Hour, Tenants: map[string]time.Duration{"tenant-1": 2 * time.Hour},
+		Workflows: map[string]time.Duration{"workflow-1": time.Hour},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.Put(context.Background(), artifact.PutRequest{
+		Scope:      artifact.Scope{TenantID: "tenant-1", RunID: "run-1"},
+		WorkflowID: "workflow-1", ContentType: "text/plain",
+	}, strings.NewReader("retained"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := time.Until(metadata.ExpiresAt)
+	if remaining <= 59*time.Minute || remaining > time.Hour {
+		t.Fatalf("workflow retention remaining = %s, want about 1h", remaining)
+	}
+}
+
+func TestInMemoryStoreLifecycleCandidatesAndConditionalDelete(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	put := func(tenant, run string, expires time.Time) artifact.Metadata {
+		metadata, err := store.Put(ctx, artifact.PutRequest{
+			Scope:       artifact.Scope{TenantID: tenant, RunID: run},
+			ContentType: "text/plain", ExpiresAt: expires,
+		}, strings.NewReader(tenant+run))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return metadata
+	}
+	first := put("tenant-1", "run-a", now.Add(-2*time.Hour))
+	second := put("tenant-1", "run-b", now.Add(-time.Hour))
+	_ = put("tenant-2", "run-c", now.Add(-time.Hour))
+	_ = put("tenant-1", "run-future", now.Add(time.Hour))
+
+	items, err := store.ListExpired(ctx, now, "tenant-1", 1, 1)
+	if err != nil || len(items) != 1 || items[0].Scope.RunID != second.Scope.RunID {
+		t.Fatalf("ListExpired = %+v, %v", items, err)
+	}
+	deleted, err := store.DeleteExpired(ctx, first, now)
+	if err != nil || !deleted {
+		t.Fatalf("DeleteExpired = %v, %v", deleted, err)
+	}
+	deleted, err = store.DeleteExpired(ctx, first, now)
+	if err != nil || deleted {
+		t.Fatalf("second DeleteExpired = %v, %v", deleted, err)
+	}
+	if _, err := store.ListExpired(ctx, now, "bad tenant", 0, 1); err == nil {
+		t.Fatal("invalid tenant error = nil")
+	}
+	if _, err := store.ListExpired(ctx, now, "", -1, 1); err == nil {
+		t.Fatal("negative offset error = nil")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := store.ListExpired(canceled, now, "", 0, 1); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled ListExpired error = %v", err)
+	}
+}
+
 func TestInMemoryStoreValidatesOperationInputs(t *testing.T) {
 	store := newStore(t)
 	ctx := context.Background()
@@ -256,6 +321,7 @@ func TestNewInMemoryStoreRejectsInvalidConfig(t *testing.T) {
 	tests := []artifact.InMemoryConfig{
 		{MaxSizeBytes: -1},
 		{AllowedContentTypes: []string{"invalid"}},
+		{Retention: artifact.RetentionPolicy{Default: -time.Second}},
 	}
 	for _, config := range tests {
 		if _, err := artifact.NewInMemoryStore(config); err == nil {

@@ -65,6 +65,7 @@ func TestArtifactRoutesHideCrossTenantRuns(t *testing.T) {
 	for _, request := range []*http.Request{
 		httptest.NewRequest(http.MethodPost, "/api/runs/run-1/artifacts", strings.NewReader("denied")),
 		httptest.NewRequest(http.MethodGet, "/api/runs/run-1/artifacts/"+artifact.ReferenceID(metadata.Reference), nil),
+		httptest.NewRequest(http.MethodGet, "/api/runs/run-1/export", nil),
 	} {
 		request.Header.Set("Authorization", "Bearer test-token")
 		request.Header.Set("Content-Type", "text/plain")

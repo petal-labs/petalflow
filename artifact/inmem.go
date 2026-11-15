@@ -18,6 +18,7 @@ import (
 type InMemoryConfig struct {
 	MaxSizeBytes        int64
 	AllowedContentTypes []string
+	Retention           RetentionPolicy
 }
 
 // InMemoryStore is a concurrent, process-local Store implementation intended
@@ -46,6 +47,7 @@ func NewInMemoryStore(configs ...InMemoryConfig) (*InMemoryStore, error) {
 		return nil, err
 	}
 	config.AllowedContentTypes = append([]string(nil), config.AllowedContentTypes...)
+	config.Retention = config.Retention.Clone()
 	return &InMemoryStore{
 		config:       config,
 		allowedTypes: allowed,
@@ -160,9 +162,79 @@ func (s *InMemoryStore) ListByRun(ctx context.Context, scope Scope) ([]Metadata,
 	return items, nil
 }
 
+// ListExpired returns a bounded deterministic snapshot of expiry candidates.
+func (s *InMemoryStore) ListExpired(ctx context.Context, before time.Time, tenantID string, offset, limit int) ([]Metadata, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if offset < 0 || limit <= 0 || limit > 10_000 {
+		return nil, fmt.Errorf("artifact list expired: offset must not be negative and limit must be between 1 and 10000")
+	}
+	if tenantID != "" {
+		if err := (Scope{TenantID: tenantID, RunID: "gc"}).Validate(); err != nil {
+			return nil, fmt.Errorf("artifact list expired: %w", err)
+		}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	items := make([]Metadata, 0)
+	for _, entries := range s.entries {
+		for _, metadata := range entries {
+			if (tenantID == "" || metadata.Scope.TenantID == tenantID) &&
+				!metadata.ExpiresAt.IsZero() && !metadata.ExpiresAt.After(before) {
+				items = append(items, metadata)
+			}
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if !items[i].ExpiresAt.Equal(items[j].ExpiresAt) {
+			return items[i].ExpiresAt.Before(items[j].ExpiresAt)
+		}
+		left := scopeKey(items[i].Scope) + "\x00" + referenceKey(items[i].Reference)
+		right := scopeKey(items[j].Scope) + "\x00" + referenceKey(items[j].Reference)
+		return left < right
+	})
+	if offset >= len(items) {
+		return []Metadata{}, nil
+	}
+	items = items[offset:]
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+// DeleteExpired deletes a candidate only if it is still expired at cutoff.
+func (s *InMemoryStore) DeleteExpired(ctx context.Context, metadata Metadata, before time.Time) (bool, error) {
+	if err := validateLookup(ctx, metadata.Scope, metadata.Reference); err != nil {
+		return false, fmt.Errorf("artifact delete expired: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries := s.entries[scopeKey(metadata.Scope)]
+	key := referenceKey(metadata.Reference)
+	current, ok := entries[key]
+	if !ok || current.ExpiresAt.IsZero() || current.ExpiresAt.After(before) {
+		return false, nil
+	}
+	delete(entries, key)
+	if len(entries) == 0 {
+		delete(s.entries, scopeKey(metadata.Scope))
+	}
+	s.references[key]--
+	if s.references[key] == 0 {
+		delete(s.references, key)
+		delete(s.blobs, key)
+	}
+	return true, nil
+}
+
 func validateInMemoryConfig(config InMemoryConfig) (map[string]struct{}, error) {
 	if config.MaxSizeBytes < 0 {
 		return nil, fmt.Errorf("artifact in-memory store: max size must not be negative")
+	}
+	if err := config.Retention.Validate(); err != nil {
+		return nil, fmt.Errorf("artifact in-memory store: %w", err)
 	}
 	allowed := make(map[string]struct{}, len(config.AllowedContentTypes))
 	for _, value := range config.AllowedContentTypes {
@@ -209,9 +281,13 @@ func (s *InMemoryStore) commit(request PutRequest, contentType string, data []by
 	if existing, ok := s.entries[scope][key]; ok {
 		return existing
 	}
+	expiresAt := request.ExpiresAt
+	if retention := s.config.Retention.Resolve(request.Scope.TenantID, request.WorkflowID); expiresAt.IsZero() && retention > 0 {
+		expiresAt = time.Now().UTC().Add(retention)
+	}
 	metadata := Metadata{
 		Reference: reference, Scope: request.Scope, WorkflowID: request.WorkflowID,
-		NodeID: request.NodeID, CreatedAt: time.Now().UTC(), ExpiresAt: request.ExpiresAt,
+		NodeID: request.NodeID, CreatedAt: time.Now().UTC(), ExpiresAt: expiresAt,
 	}
 	if s.entries[scope] == nil {
 		s.entries[scope] = make(map[string]Metadata)

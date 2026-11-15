@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,9 +51,9 @@ func TestStorePolicyPruneAndUnavailable(t *testing.T) {
 	if _, err := store.Put(ctx, artifact.PutRequest{Scope: scope, ContentType: "text/plain"}, bytes.NewReader([]byte("oversized"))); !errors.Is(err, artifact.ErrPolicyRejected) {
 		t.Fatalf("oversized Put error = %v, want ErrPolicyRejected", err)
 	}
-	removed, err := store.PruneExpired(ctx, time.Now())
-	if err != nil || removed != 1 {
-		t.Fatalf("PruneExpired = %d, %v; want 1, nil", removed, err)
+	removed, err := store.DeleteExpired(ctx, metadata, time.Now())
+	if err != nil || !removed {
+		t.Fatalf("DeleteExpired = %v, %v; want true, nil", removed, err)
 	}
 	if _, err := store.Stat(ctx, scope, metadata.Reference); !errors.Is(err, artifact.ErrNotFound) {
 		t.Fatalf("Stat pruned error = %v, want ErrNotFound", err)
@@ -67,6 +68,60 @@ func TestStorePolicyPruneAndUnavailable(t *testing.T) {
 	}
 	if _, err := store.Get(ctx, scope, metadata.Reference); !errors.Is(err, artifact.ErrUnavailable) {
 		t.Fatalf("Get corrupt error = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestLifecyclePruneIsTenantScopedAndRaceSafe(t *testing.T) {
+	store, db := newSQLStore(t, sqlstore.Config{})
+	ctx := context.Background()
+	expired := time.Now().UTC().Add(-time.Hour)
+	request := artifact.PutRequest{
+		Scope:       artifact.Scope{TenantID: "tenant-a", RunID: "run-a"},
+		ContentType: "text/plain", ExpiresAt: expired,
+	}
+	metadata, err := store.Put(ctx, request, bytes.NewReader([]byte("candidate")))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if _, err := store.Put(ctx, artifact.PutRequest{
+		Scope:       artifact.Scope{TenantID: "tenant-b", RunID: "run-b"},
+		ContentType: "text/plain", ExpiresAt: expired,
+	}, bytes.NewReader([]byte("other"))); err != nil {
+		t.Fatalf("Put other tenant: %v", err)
+	}
+
+	candidates, err := store.ListExpired(ctx, time.Now().UTC(), "tenant-a", 0, 10)
+	if err != nil || len(candidates) != 1 || candidates[0].Scope.TenantID != "tenant-a" {
+		t.Fatalf("ListExpired = %+v, %v", candidates, err)
+	}
+
+	// Simulate a concurrent retention extension after candidate selection.
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	if _, err := db.Exec(`UPDATE artifact_entries SET expires_at = ? WHERE tenant_id = ? AND run_id = ?`,
+		future, metadata.Scope.TenantID, metadata.Scope.RunID); err != nil {
+		t.Fatalf("extend expiry: %v", err)
+	}
+	deleted, err := store.DeleteExpired(ctx, metadata, time.Now().UTC())
+	if err != nil || deleted {
+		t.Fatalf("DeleteExpired after extension = %v, %v; want false, nil", deleted, err)
+	}
+}
+
+func TestStoreResolvesWorkflowRetentionBeforeTenantAndDefault(t *testing.T) {
+	store, _ := newSQLStore(t, sqlstore.Config{Retention: artifact.RetentionPolicy{
+		Default: 3 * time.Hour, Tenants: map[string]time.Duration{"tenant-a": 2 * time.Hour},
+		Workflows: map[string]time.Duration{"workflow-a": time.Hour},
+	}})
+	metadata, err := store.Put(context.Background(), artifact.PutRequest{
+		Scope:      artifact.Scope{TenantID: "tenant-a", RunID: "run-a"},
+		WorkflowID: "workflow-a", ContentType: "text/plain",
+	}, strings.NewReader("retained"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := time.Until(metadata.ExpiresAt)
+	if remaining <= 59*time.Minute || remaining > time.Hour {
+		t.Fatalf("workflow retention remaining = %s, want about 1h", remaining)
 	}
 }
 

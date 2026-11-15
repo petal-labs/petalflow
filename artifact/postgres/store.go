@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/artifact/internal/sqlstore"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -30,6 +31,7 @@ type Config struct {
 	MaxSizeBytes        int64
 	AllowedContentTypes []string
 	DefaultRetention    time.Duration
+	Retention           artifact.RetentionPolicy
 	PruneInterval       time.Duration
 	Logger              *slog.Logger
 }
@@ -53,7 +55,8 @@ func NewStore(config Config) (*Store, error) {
 	}
 	store, err := sqlstore.New(db, sqlstore.DialectPostgres, sqlstore.Config{
 		MaxSizeBytes: config.MaxSizeBytes, AllowedContentTypes: config.AllowedContentTypes,
-		DefaultRetention: config.DefaultRetention, PruneInterval: config.PruneInterval, Logger: config.Logger,
+		DefaultRetention: config.DefaultRetention, Retention: config.Retention,
+		PruneInterval: config.PruneInterval, Logger: config.Logger,
 	})
 	if err != nil {
 		_ = db.Close()

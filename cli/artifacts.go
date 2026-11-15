@@ -27,10 +27,20 @@ var artifactPathSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // NewArtifactsCmd creates operator commands for run-scoped artifact transfer.
 func NewArtifactsCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "artifacts", Short: "Upload and download run artifacts"}
+	cmd := &cobra.Command{Use: "artifacts", Short: "Transfer artifacts and export completed runs"}
 	cmd.PersistentFlags().String("server", defaultArtifactServerURL(), "PetalFlow daemon URL")
 	cmd.PersistentFlags().Duration("timeout", 5*time.Minute, "Transfer timeout")
-	cmd.AddCommand(newArtifactUploadCmd(), newArtifactDownloadCmd())
+	cmd.AddCommand(newArtifactUploadCmd(), newArtifactDownloadCmd(), newArtifactExportCmd())
+	return cmd
+}
+
+func newArtifactExportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "export <run-id>", Short: "Export and verify a terminal run bundle",
+		Args: cobra.ExactArgs(1), RunE: runArtifactExport,
+	}
+	cmd.Flags().StringP("output", "o", "", "Output .tar.gz file (required; existing files are not overwritten)")
+	_ = cmd.MarkFlagRequired("output")
 	return cmd
 }
 
@@ -96,6 +106,23 @@ func runArtifactDownload(cmd *cobra.Command, args []string) error {
 	return writeVerifiedArtifact(output, response)
 }
 
+func runArtifactExport(cmd *cobra.Command, args []string) error {
+	output, _ := cmd.Flags().GetString("output")
+	request, client, err := newArtifactAPIRequest(cmd, http.MethodGet, []string{"api", "runs", args[0], "export"}, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return exitError(exitRuntime, "exporting run: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return artifactAPIStatusError(response)
+	}
+	return writeVerifiedDownload(output, response, "X-Export-SHA256", "run export")
+}
+
 func newArtifactAPIRequest(cmd *cobra.Command, method string, path []string, body io.Reader) (*http.Request, *http.Client, error) {
 	token := strings.TrimSpace(os.Getenv("PETALFLOW_API_TOKEN"))
 	if token == "" {
@@ -137,13 +164,17 @@ func artifactAPIURL(serverURL string, path []string) (string, error) {
 }
 
 func writeVerifiedArtifact(path string, response *http.Response) (err error) {
-	expected := strings.ToLower(strings.TrimSpace(response.Header.Get("X-Artifact-SHA256")))
+	return writeVerifiedDownload(path, response, "X-Artifact-SHA256", "artifact")
+}
+
+func writeVerifiedDownload(path string, response *http.Response, digestHeader, kind string) (err error) {
+	expected := strings.ToLower(strings.TrimSpace(response.Header.Get(digestHeader)))
 	if decoded, decodeErr := hex.DecodeString(expected); decodeErr != nil || len(decoded) != sha256.Size {
-		return errors.New("artifact response is missing a valid SHA-256 digest")
+		return fmt.Errorf("%s response is missing a valid SHA-256 digest", kind)
 	}
 	root, file, name, err := openRootedArtifactOutput(path)
 	if err != nil {
-		return fmt.Errorf("creating artifact output: %w", err)
+		return fmt.Errorf("creating %s output: %w", kind, err)
 	}
 	keep := false
 	defer func() {
@@ -155,7 +186,7 @@ func writeVerifiedArtifact(path string, response *http.Response) (err error) {
 		}
 		if !keep {
 			if removeErr := root.Remove(name); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				err = fmt.Errorf("%w; removing partial artifact: %v", err, removeErr)
+				err = fmt.Errorf("%w; removing partial %s: %v", err, kind, removeErr)
 			}
 		}
 		if closeErr := root.Close(); err == nil && closeErr != nil {
@@ -164,11 +195,11 @@ func writeVerifiedArtifact(path string, response *http.Response) (err error) {
 	}()
 	hash := sha256.New()
 	if _, err = io.Copy(io.MultiWriter(file, hash), response.Body); err != nil {
-		return fmt.Errorf("writing artifact: %w", err)
+		return fmt.Errorf("writing %s: %w", kind, err)
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if actual != expected {
-		return errors.New("artifact digest verification failed")
+		return fmt.Errorf("%s digest verification failed", kind)
 	}
 	keep = true
 	return nil

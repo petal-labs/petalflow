@@ -18,6 +18,7 @@ import (
 	"github.com/petal-labs/petalflow/daemon"
 	petalotel "github.com/petal-labs/petalflow/otel"
 	petalruntime "github.com/petal-labs/petalflow/runtime"
+	"github.com/petal-labs/petalflow/server"
 	"github.com/petal-labs/petalflow/traceflow"
 )
 
@@ -161,4 +162,11 @@ func (s *observabilityStack) registerDropMetrics(eb *bus.MemBus) (func(), error)
 		"bus_subscriber":  eb.DroppedTotal,
 		"runtime_channel": petalruntime.DroppedEventsTotal,
 	})
+}
+
+func (s *observabilityStack) artifactGCObserver() (server.ArtifactGCObserver, error) {
+	if s == nil || s.meter == nil {
+		return nil, nil
+	}
+	return petalotel.NewArtifactGCMetrics(s.meter)
 }
