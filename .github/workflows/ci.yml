@@ -32,6 +32,20 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     environment: CI
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: petalflow
+          POSTGRES_PASSWORD: petalflow-test-only
+          POSTGRES_DB: petalflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U petalflow -d petalflow"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -54,11 +68,16 @@ jobs:
         working-directory: examples
         run: go test -race ./...
 
+      - name: Run PostgreSQL compatibility tests
+        env:
+          PETALFLOW_TEST_POSTGRES_DSN: postgres://petalflow:petalflow-test-only@localhost:5432/petalflow?sslmode=disable
+        run: go test -tags=integration -race -coverprofile=postgres-coverage.out -covermode=atomic ./artifact/postgres ./bus ./server ./tool
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./coverage.out
+          files: ./coverage.out,./postgres-coverage.out
           fail_ci_if_error: true
 
   build:

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/nodes"
 	"github.com/petal-labs/petalflow/security"
 )
@@ -101,6 +102,9 @@ func TestSecurity_DefaultCORSIsDisabledAndAllowlistIsExact(t *testing.T) {
 	allowlisted.Handler().ServeHTTP(allowedResp, allowedReq)
 	if got := allowedResp.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example" {
 		t.Fatalf("allowlisted CORS origin = %q", got)
+	}
+	if got := allowedResp.Header().Get("Access-Control-Expose-Headers"); got != contract.APIVersionHeader {
+		t.Fatalf("CORS exposed headers = %q, want %q", got, contract.APIVersionHeader)
 	}
 	blockedReq := httptest.NewRequest(http.MethodGet, "/health", nil)
 	blockedReq.Header.Set("Origin", "https://evil.example")

@@ -1,5 +1,10 @@
 # Daemon API Guide
 
+All HTTP and SSE responses advertise their contract through
+`PetalFlow-API-Version: 1.0.0`. Clients should accept compatible `1.x.x`
+versions and reject unknown major versions. Serialized runtime events also
+carry `schema_version`; see the [compatibility contract](./compatibility.md).
+
 `petalflow serve` starts a single HTTP server that combines:
 
 - Workflow APIs (`/api/workflows/*`, `/api/runs/*`, `/api/node-types`)

@@ -39,6 +39,7 @@ func NewMemBus(config MemBusConfig) *MemBus {
 // and global subscribers receive all events. If the bus is closed,
 // the event is silently dropped.
 func (b *MemBus) Publish(event runtime.Event) {
+	event = event.WithDefaultSchemaVersion()
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 

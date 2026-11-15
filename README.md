@@ -222,6 +222,9 @@ Common endpoints:
 
 See full API docs: [`docs/daemon-api.md`](./docs/daemon-api.md)
 
+Supported contract and dependency versions are published in the
+[`docs/compatibility.md`](./docs/compatibility.md) matrix.
+
 ## Events and OpenTelemetry
 
 PetalFlow emits structured runtime events like:

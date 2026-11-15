@@ -11,6 +11,7 @@ import (
 
 	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/bus"
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/hydrate"
 	"github.com/petal-labs/petalflow/runtime"
 	"github.com/petal-labs/petalflow/security"
@@ -184,7 +185,15 @@ func (s *Server) Middleware(next http.Handler) http.Handler {
 	handler = s.requestLimitMiddleware(handler)
 	handler = s.maxBodyMiddleware(handler)
 	handler = securityHeadersMiddleware(handler)
+	handler = apiVersionMiddleware(handler)
 	return handler
+}
+
+func apiVersionMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(contract.APIVersionHeader, contract.APIVersion)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RegisterRoutes mounts workflow API routes onto an existing mux.
@@ -228,6 +237,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		origin := strings.TrimSpace(r.Header.Get("Origin"))
 		if origin != "" && s.corsOriginAllowed(origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Expose-Headers", contract.APIVersionHeader)
 			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-PetalFlow-Tenant")

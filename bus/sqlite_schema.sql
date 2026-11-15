@@ -3,6 +3,7 @@
 
 CREATE TABLE IF NOT EXISTS events (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    schema_version TEXT NOT NULL DEFAULT '1.0.0',
     run_id    TEXT    NOT NULL,
     seq       INTEGER NOT NULL,
     kind      TEXT    NOT NULL,

@@ -5,8 +5,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/runtime"
 )
+
+func TestMemBusStampsMissingEventSchemaVersion(t *testing.T) {
+	b := NewMemBus(MemBusConfig{})
+	sub := b.Subscribe("run-versioned")
+	defer sub.Close()
+
+	b.Publish(runtime.Event{RunID: "run-versioned", Kind: runtime.EventRunStarted})
+	select {
+	case event := <-sub.Events():
+		if event.SchemaVersion != contract.EventSchemaVersion {
+			t.Fatalf("SchemaVersion = %q, want %q", event.SchemaVersion, contract.EventSchemaVersion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}
 
 func TestMemBus_PublishSubscribe(t *testing.T) {
 	b := NewMemBus(MemBusConfig{})

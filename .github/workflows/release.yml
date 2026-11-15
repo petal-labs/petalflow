@@ -11,6 +11,20 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: petalflow
+          POSTGRES_PASSWORD: petalflow-test-only
+          POSTGRES_DB: petalflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U petalflow -d petalflow"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -21,7 +35,26 @@ jobs:
           go-version: '1.25'
 
       - name: Run tests
-        run: go test -v ./...
+        run: go test -race -v ./...
+
+      - name: Run irisadapter module tests
+        working-directory: irisadapter
+        run: go test -race ./...
+
+      - name: Run examples module tests
+        working-directory: examples
+        run: go test -race ./...
+
+      - name: Run PostgreSQL compatibility tests
+        env:
+          PETALFLOW_TEST_POSTGRES_DSN: postgres://petalflow:petalflow-test-only@localhost:5432/petalflow?sslmode=disable
+        run: go test -tags=integration -race ./artifact/postgres ./bus ./server ./tool
+
+      - name: Build all modules
+        run: |
+          go build ./...
+          (cd irisadapter && go build ./...)
+          (cd examples && go build ./...)
 
   build:
     needs: test

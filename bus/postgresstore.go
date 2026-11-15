@@ -66,6 +66,10 @@ func NewPostgresEventStore(cfg PostgresStoreConfig) (*PostgresEventStore, error)
 		_ = db.Close()
 		return nil, fmt.Errorf("postgresstore: migrate: %w", err)
 	}
+	if _, err := db.Exec(`ALTER TABLE events ADD COLUMN IF NOT EXISTS schema_version TEXT NOT NULL DEFAULT '1.0.0'`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("postgresstore: migrate schema version: %w", err)
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_tenant_time ON events (tenant_id, time)`); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("postgresstore: migrate index: %w", err)
@@ -90,6 +94,10 @@ func NewPostgresEventStore(cfg PostgresStoreConfig) (*PostgresEventStore, error)
 
 // Append stores an event in the database.
 func (s *PostgresEventStore) Append(ctx context.Context, event runtime.Event) error {
+	event = event.WithDefaultSchemaVersion()
+	if err := event.ValidateSchemaVersion(); err != nil {
+		return fmt.Errorf("postgresstore: event schema: %w", err)
+	}
 	payload := event.Payload
 	if payload == nil {
 		payload = map[string]any{}
@@ -100,8 +108,9 @@ func (s *PostgresEventStore) Append(ctx context.Context, event runtime.Event) er
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		sqldialect.Rebind(`INSERT INTO events (run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		sqldialect.Rebind(`INSERT INTO events (schema_version, run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		event.SchemaVersion,
 		event.RunID,
 		event.Seq,
 		string(event.Kind),
@@ -126,7 +135,7 @@ func (s *PostgresEventStore) List(ctx context.Context, runID string, afterSeq ui
 	var rows *sql.Rows
 	var err error
 
-	query := `SELECT run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id
+	query := `SELECT schema_version, run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id
 	           FROM events WHERE run_id = ? AND seq > ? ORDER BY seq ASC`
 	args := []any{runID, afterSeq}
 
