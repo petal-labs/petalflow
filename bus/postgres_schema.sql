@@ -1,6 +1,7 @@
 -- PostgreSQL schema for PetalFlow event store. Mirrors bus/sqlite_schema.sql.
 CREATE TABLE IF NOT EXISTS events (
     id        BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    schema_version TEXT NOT NULL DEFAULT '1.0.0',
     run_id    TEXT    NOT NULL,
     seq       BIGINT  NOT NULL,
     kind      TEXT    NOT NULL,

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/security"
 	"github.com/petal-labs/petalflow/tool"
@@ -135,6 +136,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(contract.APIVersionHeader, contract.APIVersion)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		// Statically configured policy applies to every tool invocation

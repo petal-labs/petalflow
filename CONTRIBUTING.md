@@ -6,7 +6,7 @@ This guide focuses on fast, low-friction contributions that match current CI beh
 
 ## Prerequisites
 
-- Go `1.24` (same as CI)
+- Go `1.25.x` (the modules declare `1.25.0`; CI uses the latest matching toolchain)
 - `make` (optional, but convenient)
 - `golangci-lint` (for local lint parity)
 - `gosec` (`go install github.com/securego/gosec/v2/cmd/gosec@v2.22.11`)

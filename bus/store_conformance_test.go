@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/runtime"
 )
 
@@ -29,6 +30,9 @@ func runEventStoreConformance(t *testing.T, newStore func(t *testing.T) EventSto
 		}
 		if len(got) != 1 || got[0].Seq != 1 {
 			t.Fatalf("list = %+v, want 1 event seq=1", got)
+		}
+		if got[0].SchemaVersion != contract.EventSchemaVersion {
+			t.Fatalf("event schema version = %q, want %q", got[0].SchemaVersion, contract.EventSchemaVersion)
 		}
 		latest, err := s.LatestSeq(ctx, "run-1")
 		if err != nil {
@@ -64,6 +68,16 @@ func runEventStoreConformance(t *testing.T, newStore func(t *testing.T) EventSto
 		}
 		if latest != 0 {
 			t.Fatalf("latestseq unknown = %d, want 0", latest)
+		}
+	})
+
+	t.Run("rejects_breaking_event_schema", func(t *testing.T) {
+		s := newStore(t)
+		event := runtime.NewEvent(runtime.EventRunStarted, "run-breaking")
+		event.Seq = 1
+		event.SchemaVersion = "2.0.0"
+		if err := s.Append(context.Background(), event); err == nil {
+			t.Fatal("Append() error = nil, want unsupported schema major error")
 		}
 	})
 }

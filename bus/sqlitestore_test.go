@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/runtime"
 
@@ -727,7 +728,7 @@ CREATE TABLE IF NOT EXISTS events (
 		t.Fatalf("close raw: %v", err)
 	}
 
-	// Opening through the store migrates the tenant column.
+	// Opening through the store migrates the tenant and schema-version columns.
 	store, err := NewSQLiteEventStore(SQLiteStoreConfig{DSN: dsn})
 	if err != nil {
 		t.Fatalf("NewSQLiteEventStore (migrate): %v", err)
@@ -742,6 +743,9 @@ CREATE TABLE IF NOT EXISTS events (
 	}
 	if len(events) != 1 || events[0].TenantID != "" {
 		t.Fatalf("pre-tenant row = %+v, want empty tenant", events)
+	}
+	if events[0].SchemaVersion != contract.EventSchemaVersion {
+		t.Fatalf("migrated schema version = %q, want %q", events[0].SchemaVersion, contract.EventSchemaVersion)
 	}
 
 	// New rows carry the tenant and prune scoping works.

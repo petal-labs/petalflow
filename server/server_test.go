@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/petal-labs/petalflow/bus"
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"
 )
@@ -41,6 +42,9 @@ func TestHealth(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d", w.Code, http.StatusOK)
 	}
+	if got := w.Header().Get(contract.APIVersionHeader); got != contract.APIVersion {
+		t.Fatalf("%s = %q, want %q", contract.APIVersionHeader, got, contract.APIVersion)
+	}
 
 	var body map[string]string
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
@@ -59,6 +63,9 @@ func TestCORSHeaders(t *testing.T) {
 
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("CORS origin = %q, want %q", got, "*")
+	}
+	if got := w.Header().Get("Access-Control-Expose-Headers"); got != "" {
+		t.Fatalf("unexpected exposed headers without a browser Origin: %q", got)
 	}
 }
 

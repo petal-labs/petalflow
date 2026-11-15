@@ -65,9 +65,8 @@ func NewSQLiteEventStore(cfg SQLiteStoreConfig) (*SQLiteEventStore, error) {
 		return nil, fmt.Errorf("sqlitestore: create schema: %w", err)
 	}
 
-	// Migrate pre-tenant databases (tenant_id column for retention
-	// scoping and audit).
-	if err := migrateSQLiteEventsTenant(db); err != nil {
+	// Migrate databases created before tenant and contract versioning.
+	if err := migrateSQLiteEvents(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlitestore: migrate: %w", err)
 	}
@@ -91,6 +90,10 @@ func NewSQLiteEventStore(cfg SQLiteStoreConfig) (*SQLiteEventStore, error) {
 
 // Append stores an event in the database.
 func (s *SQLiteEventStore) Append(ctx context.Context, event runtime.Event) error {
+	event = event.WithDefaultSchemaVersion()
+	if err := event.ValidateSchemaVersion(); err != nil {
+		return fmt.Errorf("sqlitestore: event schema: %w", err)
+	}
 	payload := event.Payload
 	if payload == nil {
 		payload = map[string]any{}
@@ -101,8 +104,9 @@ func (s *SQLiteEventStore) Append(ctx context.Context, event runtime.Event) erro
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO events (run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO events (schema_version, run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.SchemaVersion,
 		event.RunID,
 		event.Seq,
 		string(event.Kind),
@@ -127,7 +131,7 @@ func (s *SQLiteEventStore) List(ctx context.Context, runID string, afterSeq uint
 	var rows *sql.Rows
 	var err error
 
-	query := `SELECT run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id
+	query := `SELECT schema_version, run_id, seq, kind, node_id, node_kind, time, attempt, elapsed, payload, trace_id, span_id, tenant_id
 	           FROM events WHERE run_id = ? AND seq > ? ORDER BY seq ASC`
 	args := []any{runID, afterSeq}
 
@@ -273,11 +277,11 @@ func (s *SQLiteEventStore) PruneBefore(ctx context.Context, before time.Time, te
 	return removed, nil
 }
 
-// migrateSQLiteEventsTenant ensures the tenant_id column and its index
-// exist: databases created before tenant scoping get the column added
+// migrateSQLiteEvents ensures versioning and tenant columns and indexes exist.
+// Databases created before either contract get compatible defaults
 // (the schema's CREATE TABLE IF NOT EXISTS is a no-op for them, so the
 // index is also created here for fresh databases).
-func migrateSQLiteEventsTenant(db *sql.DB) error {
+func migrateSQLiteEvents(db *sql.DB) error {
 	rows, err := db.Query(`PRAGMA table_info(events)`)
 	if err != nil {
 		return fmt.Errorf("inspect columns: %w", err)
@@ -285,6 +289,7 @@ func migrateSQLiteEventsTenant(db *sql.DB) error {
 	defer rows.Close()
 
 	hasTenant := false
+	hasSchemaVersion := false
 	for rows.Next() {
 		var cid int
 		var name, colType string
@@ -296,6 +301,9 @@ func migrateSQLiteEventsTenant(db *sql.DB) error {
 		if name == "tenant_id" {
 			hasTenant = true
 		}
+		if name == "schema_version" {
+			hasSchemaVersion = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("inspect columns: %w", err)
@@ -303,6 +311,11 @@ func migrateSQLiteEventsTenant(db *sql.DB) error {
 	if !hasTenant {
 		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add tenant_id: %w", err)
+		}
+	}
+	if !hasSchemaVersion {
+		if _, err := db.Exec(`ALTER TABLE events ADD COLUMN schema_version TEXT NOT NULL DEFAULT '1.0.0'`); err != nil {
+			return fmt.Errorf("add schema_version: %w", err)
 		}
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_tenant_time ON events (tenant_id, time)`); err != nil {
@@ -323,6 +336,7 @@ func scanEvents(rows *sql.Rows) ([]runtime.Event, error) {
 			payloadJSON string
 		)
 		err := rows.Scan(
+			&e.SchemaVersion,
 			&e.RunID,
 			&e.Seq,
 			&kind,
@@ -343,6 +357,9 @@ func scanEvents(rows *sql.Rows) ([]runtime.Event, error) {
 		e.Kind = runtime.EventKind(kind)
 		e.NodeKind = core.NodeKind(nodeKind)
 		e.Elapsed = time.Duration(elapsedNano)
+		if err := e.ValidateSchemaVersion(); err != nil {
+			return nil, fmt.Errorf("sqlitestore: event schema: %w", err)
+		}
 
 		t, err := time.Parse(time.RFC3339Nano, timeStr)
 		if err != nil {

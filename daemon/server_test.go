@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/petal-labs/petalflow/agent"
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/graph"
 	"github.com/petal-labs/petalflow/registry"
 	"github.com/petal-labs/petalflow/tool"
@@ -56,6 +57,9 @@ func TestServer_ToolCRUDEndpoints(t *testing.T) {
 	})
 	if resp.Code != http.StatusCreated {
 		t.Fatalf("POST /api/tools status = %d, want 201; body=%s", resp.Code, resp.Body.String())
+	}
+	if got := resp.Header().Get(contract.APIVersionHeader); got != contract.APIVersion {
+		t.Fatalf("%s = %q, want %q", contract.APIVersionHeader, got, contract.APIVersion)
 	}
 
 	listResp := requestJSON(t, server.Handler(), http.MethodGet, "/api/tools", nil)

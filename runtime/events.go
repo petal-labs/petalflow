@@ -4,6 +4,7 @@ package runtime
 import (
 	"time"
 
+	"github.com/petal-labs/petalflow/contract"
 	"github.com/petal-labs/petalflow/core"
 )
 
@@ -137,6 +138,9 @@ func (k EventKind) String() string {
 // Events should be kept small; large data should be stored via RunStore
 // or referenced via artifact URIs.
 type Event struct {
+	// SchemaVersion identifies the event payload contract.
+	SchemaVersion string `json:"schema_version"`
+
 	// Kind identifies the event type.
 	Kind EventKind
 
@@ -181,12 +185,27 @@ type Event struct {
 // NewEvent creates a new event with the current timestamp.
 func NewEvent(kind EventKind, runID string) Event {
 	return Event{
-		Kind:    kind,
-		RunID:   runID,
-		Time:    time.Now(),
-		Attempt: 1,
-		Payload: make(map[string]any),
+		SchemaVersion: contract.EventSchemaVersion,
+		Kind:          kind,
+		RunID:         runID,
+		Time:          time.Now(),
+		Attempt:       1,
+		Payload:       make(map[string]any),
 	}
+}
+
+// ValidateSchemaVersion rejects malformed and breaking event schema versions.
+func (e Event) ValidateSchemaVersion() error {
+	return contract.ValidateVersion(e.SchemaVersion, contract.EventSchemaVersion)
+}
+
+// WithDefaultSchemaVersion stamps legacy in-memory events that omitted a
+// version before they cross a persistence or transport boundary.
+func (e Event) WithDefaultSchemaVersion() Event {
+	if e.SchemaVersion == "" {
+		e.SchemaVersion = contract.EventSchemaVersion
+	}
+	return e
 }
 
 // WithNode sets the node information on the event.
