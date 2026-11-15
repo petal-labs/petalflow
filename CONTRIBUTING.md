@@ -84,6 +84,16 @@ Optional matrix expansion:
 export ANTHROPIC_API_KEY=...
 ```
 
+PostgreSQL compatibility tests require a disposable PostgreSQL 16 database:
+
+```bash
+export PETALFLOW_TEST_POSTGRES_DSN='postgres://petalflow:petalflow-test-only@localhost:5432/petalflow?sslmode=disable'
+go test -tags=integration -race ./artifact/postgres ./bus ./server ./tool
+```
+
+Release candidates must also follow the [1.0 release guide](./docs/release.md)
+and [pre-1.0 upgrade guide](./docs/upgrade-to-1.0.md).
+
 ## Code Style Expectations
 
 - Keep changes scoped to the issue/feature.

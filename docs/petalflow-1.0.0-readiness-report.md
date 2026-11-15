@@ -110,16 +110,19 @@ See the MCP specification for [transports](https://modelcontextprotocol.io/speci
 
 ## Release and quality gaps
 
-The repository’s root tests passed locally, and the auxiliary `irisadapter` and `examples` modules also passed. However, the measured root package coverage is uneven: `bus` 64.3%, `server` 62.4%, `daemon` 51.2%, `llmprovider` 45.8%, `otel` 55.3%, `tool` 65.0%, `tool/mcp` 73.8%, and `traceflow` 10.3%. The CI workflow uploads coverage but does not enforce a threshold. The release workflow runs root tests only, without race detection, auxiliary-module tests, integration tests, or security scans.
+At audit time, root and auxiliary module tests passed but coverage was uneven.
+Since then, CI and the release workflow have added race-tested root,
+`irisadapter`, and examples validation plus PostgreSQL conformance, security,
+compatibility, and documentation checks. Codecov still owns the patch coverage
+gate; a repository-wide threshold and broader release provenance remain future
+hardening work.
 
 Specific release hygiene items:
 
-- Update `CONTRIBUTING.md`, which still says Go 1.24 while the modules and workflows require Go 1.25.
-- Add a 1.0 compatibility matrix covering the root module, `irisadapter`, examples, Iris, Cortex, Go, and supported providers.
 - Make CI fail on a documented coverage threshold, at least for critical packages and integration paths, rather than treating aggregate Codecov as informational.
-- Add release checks for `go test -race`, build of all three modules, integration/conformance tests for SQLite/PostgreSQL and MCP, `gosec`, `govulncheck`, and dependency/license review.
+- Add `govulncheck`, dependency/license review, and MCP conformance to the release gate.
 - Produce reproducible release metadata: version, commit, build time, checksums, SBOM, and signed/provenance-attested artifacts. The current workflow creates binaries and SHA-256 checksums, but does not show SBOM generation or artifact signing.
-- Ensure release notes identify supported/unsupported Iris 1.0 capabilities and any schema/API compatibility commitments.
+- Keep release notes synchronized with the published Iris 1.0 and schema/API compatibility contracts.
 
 ## Proposed 1.0 acceptance gates
 

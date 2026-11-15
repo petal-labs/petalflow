@@ -378,6 +378,11 @@ providers/models) or a fixed enum.
 
 ## Recommended Pre-Release Checks
 
+The authoritative prerequisites, provider integration tests, migration
+rehearsal, release checklist, and rollback policy are in the
+[1.0 release guide](./release.md). Upgrades from the pre-1.0 line must also
+follow the [1.0 upgrade guide](./upgrade-to-1.0.md).
+
 ```bash
 # Root module
 go test -race -coverprofile=coverage.out -covermode=atomic ./...
@@ -387,8 +392,19 @@ go build ./...
 (cd irisadapter && go test -race ./... && go build ./...)
 (cd examples && go test -race ./... && go build ./...)
 
+# PostgreSQL compatibility (use a disposable PostgreSQL 16 database)
+PETALFLOW_TEST_POSTGRES_DSN='postgres://petalflow:petalflow-test-only@localhost:5432/petalflow?sslmode=disable' \
+  go test -tags=integration -race ./artifact/postgres ./bus ./server ./tool
+
+# Provider integration (requires protected credentials)
+OPENAI_API_KEY="$OPENAI_API_KEY" \
+  go test -tags=integration ./tests/integration/... -count=1 -v -timeout 120s
+
 # Security scans
 $(go env GOPATH)/bin/gosec -severity medium -exclude-dir=examples -exclude-dir=irisadapter ./...
 (cd irisadapter && $(go env GOPATH)/bin/gosec -severity medium ./...)
 (cd examples && $(go env GOPATH)/bin/gosec -severity medium ./...)
+
+# Documentation contract
+go test ./compatibility -run 'Test(CurrentDocumentation|ReleaseDocumentation)'
 ```

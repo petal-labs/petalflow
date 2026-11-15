@@ -316,6 +316,10 @@ go test -tags=integration ./tests/integration/... -count=1 -v
 
 Repo docs live in [`docs/`](./docs).
 
+- [1.0 compatibility matrix](./docs/compatibility.md)
+- [1.0 release guide](./docs/release.md)
+- [Upgrade from pre-1.0](./docs/upgrade-to-1.0.md)
+
 ## License
 
 MIT. See [LICENSE](./LICENSE).
