@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **PetalFlow 1.0 release and pre-1.0 upgrade documentation**
+  ([#179](https://github.com/petal-labs/petalflow/issues/179)). The release
+  guide now defines Go 1.25 prerequisites, the supported Iris contract,
+  provider and PostgreSQL integration expectations, the release checklist,
+  and rollback policy. The companion upgrade guide covers dependency,
+  workflow schema, API/event, database, and MCP migration steps. CI and release
+  workflows run documentation-contract tests that reject stale Go-version
+  claims, missing compatibility commitments, and broken local guide links.
+
 - **Sampling, event retention, and dropped-event observability with
   alert guidance**
   ([#228](https://github.com/petal-labs/petalflow/issues/228), part of

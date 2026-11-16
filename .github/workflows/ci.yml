@@ -60,6 +60,9 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Verify release documentation
+        run: go test ./compatibility -run 'Test(CurrentDocumentation|ReleaseDocumentation)'
+
       - name: Run irisadapter module tests
         working-directory: irisadapter
         run: go test -race ./...

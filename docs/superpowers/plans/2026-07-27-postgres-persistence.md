@@ -6,7 +6,7 @@
 
 **Architecture:** Each SQLite store gets a sibling PostgreSQL implementation in the same package, satisfying the same existing interface. A shared `sqldialect.Rebind` helper rewrites `?`→`$N` so query text stays nearly identical to the proven SQLite queries. A single DSN resolver + factory in the `cli` package selects the backend everywhere a store is opened. The SQLite code is not modified.
 
-**Tech Stack:** Go 1.24, `database/sql`, `github.com/jackc/pgx/v5` (stdlib mode, pure Go / CGO-free), existing `modernc.org/sqlite`.
+**Tech Stack:** Go 1.25, `database/sql`, `github.com/jackc/pgx/v5` (stdlib mode, pure Go / CGO-free), existing `modernc.org/sqlite`.
 
 ## Global Constraints
 

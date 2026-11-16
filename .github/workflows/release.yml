@@ -37,6 +37,9 @@ jobs:
       - name: Run tests
         run: go test -race -v ./...
 
+      - name: Verify release documentation
+        run: go test ./compatibility -run 'Test(CurrentDocumentation|ReleaseDocumentation)'
+
       - name: Run irisadapter module tests
         working-directory: irisadapter
         run: go test -race ./...
