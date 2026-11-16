@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 ### Added
 
+- **Signed release artifacts, SBOMs, and build provenance**
+  ([#182](https://github.com/petal-labs/petalflow/issues/182)). Release binaries
+  now ship with per-platform SPDX JSON SBOMs, allowlisted provenance manifests,
+  keyless Sigstore bundles, preserved SHA-256 checksums, and GitHub build
+  attestations. The workflow verifies every expected artifact and signature
+  before publishing, uses reproducible build inputs, retains intermediate
+  artifacts for seven days, and documents end-user verification commands.
+
 - **PetalFlow 1.0 release and pre-1.0 upgrade documentation**
   ([#179](https://github.com/petal-labs/petalflow/issues/179)). The release
   guide now defines Go 1.25 prerequisites, the supported Iris contract,

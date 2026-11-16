@@ -114,14 +114,15 @@ At audit time, root and auxiliary module tests passed but coverage was uneven.
 Since then, CI and the release workflow have added race-tested root,
 `irisadapter`, and examples validation plus PostgreSQL conformance, security,
 compatibility, and documentation checks. Codecov still owns the patch coverage
-gate; a repository-wide threshold and broader release provenance remain future
-hardening work.
+gate; a repository-wide threshold remains future hardening work. Release
+binaries now include per-platform SPDX SBOMs, keyless signatures, allowlisted
+provenance manifests, and GitHub build attestations.
 
 Specific release hygiene items:
 
 - Make CI fail on a documented coverage threshold, at least for critical packages and integration paths, rather than treating aggregate Codecov as informational.
 - Add `govulncheck`, dependency/license review, and MCP conformance to the release gate.
-- Produce reproducible release metadata: version, commit, build time, checksums, SBOM, and signed/provenance-attested artifacts. The current workflow creates binaries and SHA-256 checksums, but does not show SBOM generation or artifact signing.
+- Keep release signing, SBOM generation, provenance, and verification tooling current as their upstream formats evolve.
 - Keep release notes synchronized with the published Iris 1.0 and schema/API compatibility contracts.
 
 ## Proposed 1.0 acceptance gates
