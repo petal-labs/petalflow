@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   test:
@@ -84,24 +84,99 @@ jobs:
           go-version: '1.25'
 
       - name: Build binary
+        id: build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
+          set -euo pipefail
           VERSION=${GITHUB_REF#refs/tags/v}
           OUTPUT="petalflow-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}"
-          go build -ldflags="-s -w -X main.version=${VERSION}" -o "${OUTPUT}" ./cmd/petalflow
+          SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          export SOURCE_DATE_EPOCH
+          go build -trimpath -buildvcs=true -ldflags="-s -w -X main.version=${VERSION}" -o "${OUTPUT}" ./cmd/petalflow
+          {
+            echo "output=${OUTPUT}"
+            echo "version=${VERSION}"
+            echo "source_date_epoch=${SOURCE_DATE_EPOCH}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          file: ${{ steps.build.outputs.output }}
+          format: spdx-json
+          output-file: ${{ steps.build.outputs.output }}.sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Write build provenance manifest
+        env:
+          ARTIFACT: ${{ steps.build.outputs.output }}
+          VERSION: ${{ steps.build.outputs.version }}
+          SOURCE_DATE_EPOCH: ${{ steps.build.outputs.source_date_epoch }}
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGET_GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          ARTIFACT_SHA256=$(sha256sum "$ARTIFACT" | cut -d ' ' -f1)
+          GO_MOD_SHA256=$(sha256sum go.mod | cut -d ' ' -f1)
+          GO_SUM_SHA256=$(sha256sum go.sum | cut -d ' ' -f1)
+          GO_VERSION=$(go env GOVERSION)
+          BUILD_TIME=$(git show -s --format=%cI "$GITHUB_SHA")
+          jq -n \
+            --arg artifact "$(basename "$ARTIFACT")" \
+            --arg artifact_sha256 "$ARTIFACT_SHA256" \
+            --arg version "$VERSION" \
+            --arg commit "$GITHUB_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg ref "$GITHUB_REF" \
+            --arg go_version "$GO_VERSION" \
+            --arg goos "$TARGET_GOOS" \
+            --arg goarch "$TARGET_GOARCH" \
+            --arg build_time "$BUILD_TIME" \
+            --arg source_date_epoch "$SOURCE_DATE_EPOCH" \
+            --arg go_mod_sha256 "$GO_MOD_SHA256" \
+            --arg go_sum_sha256 "$GO_SUM_SHA256" \
+            '{
+              schema_version: "1.0.0",
+              artifact: {name: $artifact, sha256: $artifact_sha256},
+              release: {version: $version},
+              source: {repository: $repository, commit: $commit, ref: $ref},
+              build: {
+                go_version: $go_version,
+                goos: $goos,
+                goarch: $goarch,
+                cgo_enabled: false,
+                trimpath: true,
+                ldflags: ("-s -w -X main.version=" + $version),
+                build_time: $build_time,
+                source_date_epoch: ($source_date_epoch | tonumber)
+              },
+              inputs: {go_mod_sha256: $go_mod_sha256, go_sum_sha256: $go_sum_sha256}
+            }' > "${ARTIFACT}.provenance.json"
+          jq -e '.artifact.sha256 and .source.commit and .build.go_version and .inputs.go_sum_sha256' \
+            "${ARTIFACT}.provenance.json" > /dev/null
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: petalflow-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: petalflow-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.suffix }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ steps.build.outputs.output }}
+            ${{ steps.build.outputs.output }}.sbom.spdx.json
+            ${{ steps.build.outputs.output }}.provenance.json
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -116,18 +191,72 @@ jobs:
       - name: Prepare release assets
         id: prepare
         run: |
+          set -euo pipefail
           VERSION=${GITHUB_REF#refs/tags/v}
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
           mkdir -p release
-          # Move binaries from artifact subdirectories into release/
           for dir in artifacts/*/; do
             cp "${dir}"* release/
           done
 
-          # Generate checksums
-          cd release
-          sha256sum petalflow-* > checksums-sha256.txt
+          expected_binaries=(
+            petalflow-linux-amd64
+            petalflow-darwin-arm64
+            petalflow-windows-amd64.exe
+          )
+          for binary in "${expected_binaries[@]}"; do
+            test -s "release/${binary}"
+            test -s "release/${binary}.sbom.spdx.json"
+            test -s "release/${binary}.provenance.json"
+            jq -e '.spdxVersion | startswith("SPDX-")' "release/${binary}.sbom.spdx.json" > /dev/null
+            jq -e --arg binary "$binary" --arg version "$VERSION" --arg commit "$GITHUB_SHA" \
+              '.artifact.name == $binary and .release.version == $version and .source.commit == $commit' \
+              "release/${binary}.provenance.json" > /dev/null
+          done
+
+          (
+            cd release
+            sha256sum "${expected_binaries[@]}" > checksums-sha256.txt
+            sha256sum -c checksums-sha256.txt
+          )
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v4.1.0
+
+      - name: Sign release assets with Sigstore
+        run: |
+          set -euo pipefail
+          while IFS= read -r artifact; do
+            cosign sign-blob "$artifact" --bundle "${artifact}.sigstore.json" --yes
+          done < <(find release -maxdepth 1 -type f ! -name '*.sigstore.json' -print | sort)
+
+      - name: Verify checksums, signatures, SBOMs, and provenance
+        env:
+          COSIGN_CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+          COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+        run: |
+          set -euo pipefail
+          (
+            cd release
+            sha256sum -c checksums-sha256.txt
+          )
+          while IFS= read -r artifact; do
+            test -s "${artifact}.sigstore.json"
+            cosign verify-blob "$artifact" \
+              --bundle "${artifact}.sigstore.json" \
+              --certificate-identity "$COSIGN_CERTIFICATE_IDENTITY" \
+              --certificate-oidc-issuer "$COSIGN_CERTIFICATE_OIDC_ISSUER"
+          done < <(find release -maxdepth 1 -type f ! -name '*.sigstore.json' -print | sort)
+
+      - name: Generate GitHub build provenance attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            release/petalflow-linux-amd64
+            release/petalflow-darwin-arm64
+            release/petalflow-windows-amd64.exe
+            release/checksums-sha256.txt
 
       - name: Extract release notes
         run: |
@@ -151,6 +280,7 @@ jobs:
           files: |
             release/petalflow-*
             release/checksums-sha256.txt
+            release/checksums-sha256.txt.sigstore.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

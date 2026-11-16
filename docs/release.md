@@ -71,7 +71,8 @@ present. Unit tests must not call paid providers or rely on developer secrets.
 6. Tag the reviewed `main` commit. Tags are immutable; never move a published
    tag to a different commit.
 7. Verify the GitHub release contains every platform binary and
-   `checksums-sha256.txt`, then smoke-test one downloaded binary.
+   `checksums-sha256.txt`, its SBOMs, provenance manifests, and Sigstore
+   bundles, then smoke-test one downloaded binary.
 8. Confirm the Go proxy can resolve the root module and any separately tagged
    submodule releases.
 
@@ -81,6 +82,75 @@ update its root PetalFlow requirement to the release tag and publish it with a
 submodule tag such as `irisadapter/v1.0.0`; do not rely on a local replacement
 in the published graph. The examples module remains a checkout validation
 module unless it is deliberately released separately.
+
+## Release artifacts and retention
+
+Binary names are stable and identify their target platform:
+
+- `petalflow-linux-amd64`
+- `petalflow-darwin-arm64`
+- `petalflow-windows-amd64.exe`
+
+Each binary has two machine-readable companion files and each published
+payload has a keyless Sigstore bundle:
+
+- `<binary>.sbom.spdx.json` is an SPDX JSON SBOM generated from that binary.
+- `<binary>.provenance.json` records the release version, source commit/ref,
+  repository, Go toolchain, target OS/architecture, CGO and trimpath settings,
+  deterministic commit build time/`SOURCE_DATE_EPOCH`, linker flags, artifact
+  digest, and `go.mod`/`go.sum` input digests. The manifest contains an
+  allowlisted set of fields and never copies environment variables or secrets.
+- `<payload>.sigstore.json` contains its Cosign signature, short-lived signing
+  certificate, timestamp, and transparency-log proof.
+- `checksums-sha256.txt` preserves SHA-256 checksums for the three binaries;
+  `checksums-sha256.txt.sigstore.json` signs that checksum set.
+
+Intermediate GitHub Actions artifacts are retained for 7 days. Published
+GitHub release assets follow the release's retention lifecycle; do not delete
+an asset independently of its SBOM, provenance manifest, or signature bundle.
+GitHub stores build-provenance attestations separately against the repository
+and source workflow identity.
+
+## Verify a downloaded release
+
+Download the release assets, install Cosign and GitHub CLI, and run the checks
+below. Replace `v1.0.0` with the release tag being verified.
+
+```bash
+VERSION=v1.0.0
+REPOSITORY=petal-labs/petalflow
+ARTIFACT=petalflow-linux-amd64
+
+gh release download "$VERSION" --repo "$REPOSITORY" --dir "petalflow-$VERSION"
+cd "petalflow-$VERSION"
+
+# Verify binary digests (macOS: shasum -a 256 -c checksums-sha256.txt)
+sha256sum -c checksums-sha256.txt
+
+# Verify the workflow identity, certificate, and transparency-log proof.
+IDENTITY="https://github.com/$REPOSITORY/.github/workflows/release.yml@refs/tags/$VERSION"
+cosign verify-blob "$ARTIFACT" \
+  --bundle "$ARTIFACT.sigstore.json" \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+cosign verify-blob checksums-sha256.txt \
+  --bundle checksums-sha256.txt.sigstore.json \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+# Verify GitHub's signed build-provenance attestation.
+gh attestation verify "$ARTIFACT" --repo "$REPOSITORY"
+
+# Inspect the SBOM and provenance manifest.
+jq '.spdxVersion, .packages' "$ARTIFACT.sbom.spdx.json"
+jq . "$ARTIFACT.provenance.json"
+```
+
+Repeat `cosign verify-blob` for an SBOM or provenance payload when consuming it
+directly; its adjacent `.sigstore.json` bundle uses the same identity. The
+release workflow fails before publication if an expected binary, SBOM,
+provenance field, checksum, signature bundle, signature verification, or
+GitHub attestation cannot be produced.
 
 ## Migration and rollback policy
 
