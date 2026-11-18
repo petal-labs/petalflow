@@ -285,6 +285,7 @@ func (s *Server) executeWorkflowRunSync(
 		opts.HumanRequestHandler = s.durableHumanRequestHandler
 		opts.ToolApprovalHandler = s.durableToolApprovalHandler()
 		opts.ToolApprovalVerifier = s.toolApprovalVerifier()
+		opts.ToolApprovalInvocationVerifier = s.toolApprovalInvocationVerifier()
 	}
 	opts.EventEmitterDecorator = combineEmitDecorators(s.emitDecorator, extraDecorator)
 	opts.ContentCapture = s.contentCapture
@@ -542,7 +543,16 @@ func (s *Server) durableToolApprovalHandler() runtime.ToolApprovalHandler {
 				if pending.Completed || pending.Response != nil {
 					// Consume the decision exactly once.
 					response, ledger := decodeToolApprovalDecision(pending)
+					// The decision covers only the invocation the operator
+					// saw: a rebuilt invocation with another reference or
+					// other arguments burns the approval and fails closed.
+					// Requests stored before invocation binding carry no
+					// digest and are matched by reference alone.
+					approved := decodeToolApprovalRequestData(pending.Data)
+					mismatch := response.Approved() && (approved.Reference != req.Reference ||
+						(approved.ArgumentsDigest != "" && approved.ArgumentsDigest != req.ArgumentsDigest))
 					if ledger != nil {
+						ledger.Executed = mismatch
 						record.ApprovalRecords = append(record.ApprovalRecords, *ledger)
 					}
 					record.PendingAction = nil
@@ -551,6 +561,15 @@ func (s *Server) durableToolApprovalHandler() runtime.ToolApprovalHandler {
 					if err := s.runStore.Update(ctx, record); err != nil {
 						return nil, err
 					}
+					if mismatch {
+						s.recordApprovalLifecycleAudit(ctx, record, req.NodeID, req.ToolName, req.Action, runtime.ToolApprovalApproved,
+							"approval refused: invocation does not match the approved action or arguments")
+						return nil, fmt.Errorf("%w: approval %q was granted for %q with arguments %s",
+							nodes.ErrToolApprovalMismatch, pending.ID, approved.Reference, approved.ArgumentsDigest)
+					}
+					// The grant and its claim use the stored request's ID,
+					// which is the ID recorded in the ledger.
+					req.ID = pending.ID
 					return response, nil
 				}
 				// No decision yet (resume during a still-open window).
@@ -572,7 +591,7 @@ func (s *Server) durableToolApprovalHandler() runtime.ToolApprovalHandler {
 			record.ApprovalRecords = append(record.ApprovalRecords, runtime.ApprovalRecord{
 				ID: req.ID, RunID: req.RunID, WorkflowID: record.WorkflowID, NodeID: req.NodeID,
 				TenantID: record.TenantID, ToolName: req.ToolName, Action: req.Action,
-				Reference: req.Reference, PolicySource: req.PolicySource,
+				Reference: req.Reference, ArgumentsDigest: req.ArgumentsDigest, PolicySource: req.PolicySource,
 				Decision: runtime.ToolApprovalExpired, Note: "decision window expired",
 				CreatedAt: req.CreatedAt, DecidedAt: now, ExpiresAt: req.ExpiresAt,
 			})
@@ -624,9 +643,9 @@ func decodeToolApprovalDecision(pending *runtime.PendingAction) (*nodes.ToolAppr
 		ID: pending.ID, RunID: pending.RunID, NodeID: pending.NodeID,
 		WorkflowID: request.WorkflowID, TenantID: request.TenantID,
 		ToolName: request.ToolName, Action: request.Action, Reference: request.Reference,
-		PolicySource: request.PolicySource,
-		Decision:     runtime.ToolApprovalRejected,
-		DecisionBy:   response.DecisionBy, Note: response.Note,
+		ArgumentsDigest: request.ArgumentsDigest, PolicySource: request.PolicySource,
+		Decision:   runtime.ToolApprovalRejected,
+		DecisionBy: response.DecisionBy, Note: response.Note,
 		CreatedAt: pending.CreatedAt, DecidedAt: response.DecisionAt,
 		ExpiresAt: request.ExpiresAt,
 	}
@@ -663,8 +682,8 @@ func (s *Server) enforceToolApprovalExpiry(record *runtime.RunRecord, pending *r
 		ID: pending.ID, RunID: pending.RunID, NodeID: pending.NodeID,
 		WorkflowID: record.WorkflowID, TenantID: record.TenantID,
 		ToolName: request.ToolName, Action: request.Action, Reference: request.Reference,
-		PolicySource: request.PolicySource,
-		Decision:     runtime.ToolApprovalExpired, Note: "decision window expired",
+		ArgumentsDigest: request.ArgumentsDigest, PolicySource: request.PolicySource,
+		Decision: runtime.ToolApprovalExpired, Note: "decision window expired",
 		CreatedAt: pending.CreatedAt, DecidedAt: now, ExpiresAt: request.ExpiresAt,
 	})
 	record.PendingAction = nil
@@ -769,6 +788,64 @@ func (s *Server) toolApprovalVerifier() runtime.ToolApprovalVerifier {
 		record.UpdatedAt = now
 		if err := s.runStore.Update(ctx, record); err != nil {
 			return err
+		}
+		return nil
+	}
+}
+
+// toolApprovalInvocationVerifier validates and single-use-claims the
+// approval a tool node spends on one invocation. Beyond the decision,
+// consumption, and expiry checks it refuses an approval recorded for
+// another reference or other arguments; a refused mismatch still burns
+// the approval so it cannot be retried with different arguments.
+// Records written before invocation binding carry no digest and are
+// matched by reference alone.
+func (s *Server) toolApprovalInvocationVerifier() runtime.ToolApprovalInvocationVerifier {
+	return func(ctx context.Context, inv runtime.ToolApprovalInvocation) error {
+		if s.runStore == nil {
+			return fmt.Errorf("approval grants require a durable run store")
+		}
+		if inv.ApprovalID == "" {
+			return fmt.Errorf("approval claim for %q requires an approval ID", inv.Reference)
+		}
+		s.pendingMu.Lock()
+		defer s.pendingMu.Unlock()
+
+		record, err := s.runStore.Get(ctx, inv.RunID)
+		if err != nil {
+			return err
+		}
+		var entry *runtime.ApprovalRecord
+		for i := range record.ApprovalRecords {
+			if record.ApprovalRecords[i].ID == inv.ApprovalID {
+				entry = &record.ApprovalRecords[i]
+				break
+			}
+		}
+		now := time.Now().UTC()
+		switch {
+		case entry == nil:
+			return fmt.Errorf("approval %q not found in run %q", inv.ApprovalID, inv.RunID)
+		case entry.Decision != runtime.ToolApprovalApproved:
+			return fmt.Errorf("approval %q is not approved (decision %q)", entry.ID, entry.Decision)
+		case entry.Executed:
+			return fmt.Errorf("approval %q was already consumed", entry.ID)
+		case !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now):
+			return fmt.Errorf("approval %q expired at %s", entry.ID, entry.ExpiresAt.Format(time.RFC3339))
+		}
+
+		mismatch := entry.Reference != inv.Reference ||
+			(entry.ArgumentsDigest != "" && entry.ArgumentsDigest != inv.ArgumentsDigest)
+		entry.Executed = true
+		record.UpdatedAt = now
+		if err := s.runStore.Update(ctx, record); err != nil {
+			return err
+		}
+		if mismatch {
+			s.recordApprovalLifecycleAudit(ctx, record, entry.NodeID, inv.ToolName, entry.Action, runtime.ToolApprovalApproved,
+				"approval refused: invocation does not match the approved action or arguments")
+			return fmt.Errorf("%w: approval %q was granted for %q with arguments %s, not %q with arguments %s",
+				nodes.ErrToolApprovalMismatch, entry.ID, entry.Reference, entry.ArgumentsDigest, inv.Reference, inv.ArgumentsDigest)
 		}
 		return nil
 	}

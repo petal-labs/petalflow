@@ -247,3 +247,128 @@ func TestGuardianApprovalCheck(t *testing.T) {
 	}
 	_ = time.Now
 }
+
+// grantVerifyingTool is a native tool that checks the attached approval
+// grant against its own canonical digest of the arguments it receives.
+type grantVerifyingTool struct {
+	name    string
+	grant   toolpolicy.ApprovalGrant
+	granted bool
+	calls   int
+}
+
+func (t *grantVerifyingTool) Name() string { return t.name }
+
+func (t *grantVerifyingTool) Invoke(ctx context.Context, args map[string]any) (map[string]any, error) {
+	t.calls++
+	t.grant, t.granted = toolpolicy.ApprovalGrantForInvocation(ctx, t.name, toolpolicy.ArgumentsDigest(t.name, args))
+	if !t.granted {
+		return nil, errors.New("invocation is not covered by the approval grant")
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+func TestToolNode_ApprovalBindsReferenceAndArguments(t *testing.T) {
+	tool := &grantVerifyingTool{name: "computer.exec"}
+	node := NewToolNode("exec_node", tool, ToolNodeConfig{
+		OutputKey:  "out",
+		StaticArgs: map[string]any{"cmd": "ls -la"},
+	})
+	wantDigest := toolpolicy.ArgumentsDigest("computer.exec", map[string]any{"cmd": "ls -la"})
+
+	var events []runtime.Event
+	var seen *ToolApprovalRequest
+	var claimed []runtime.ToolApprovalInvocation
+	runCtx := toolpolicy.ContextWithPolicyEvaluator(context.Background(),
+		toolpolicy.PolicyEvaluatorFunc(func(string) toolpolicy.PolicyDecision {
+			return toolpolicy.PolicyNeedsApproval
+		}))
+	runCtx = runtime.ContextWithEmitter(runCtx, func(e runtime.Event) { events = append(events, e) })
+	runCtx = approvalBridgeContext(runCtx, func(_ context.Context, value any) (any, error) {
+		seen = value.(*ToolApprovalRequest)
+		// A durable bridge replays the stored request's ID.
+		seen.ID = "appr-stored"
+		return &ToolApprovalResponse{Decision: ToolApprovalDecisionApproved, DecisionBy: "op"}, nil
+	})
+	runCtx = runtime.ContextWithToolApprovalInvocationVerifier(runCtx, func(_ context.Context, inv runtime.ToolApprovalInvocation) error {
+		claimed = append(claimed, inv)
+		return nil
+	})
+
+	env := core.NewEnvelope()
+	env.Trace.RunID = "run-1"
+	if _, err := node.Run(runCtx, env); err != nil {
+		t.Fatalf("approved invocation: %v", err)
+	}
+
+	if seen == nil || seen.Reference != "computer.exec" || seen.Action != "exec" || seen.ArgumentsDigest != wantDigest {
+		t.Fatalf("approval request = %#v, want reference/action/digest bound", seen)
+	}
+	if !tool.granted || tool.grant.ApprovalID != "appr-stored" || tool.grant.DecidedBy != "op" || tool.grant.ToolName != "computer" {
+		t.Fatalf("native tool grant = %#v, granted=%v", tool.grant, tool.granted)
+	}
+	want := runtime.ToolApprovalInvocation{
+		RunID: "run-1", ApprovalID: "appr-stored", ToolName: "computer",
+		Reference: "computer.exec", ArgumentsDigest: wantDigest,
+	}
+	if len(claimed) != 1 || claimed[0] != want {
+		t.Fatalf("verifier claims = %#v, want exactly %#v", claimed, want)
+	}
+
+	digests := map[runtime.EventKind]any{}
+	for _, e := range events {
+		if e.Kind == runtime.EventApprovalRequested || e.Kind == runtime.EventApprovalDecided {
+			digests[e.Kind] = e.Payload["arguments_digest"]
+		}
+	}
+	if digests[runtime.EventApprovalRequested] != wantDigest || digests[runtime.EventApprovalDecided] != wantDigest {
+		t.Fatalf("approval event digests = %v, want %q on both", digests, wantDigest)
+	}
+}
+
+func TestToolNode_ApprovalVerifierRefusalBlocksInvocation(t *testing.T) {
+	tool := &grantVerifyingTool{name: "computer.exec"}
+	node := NewToolNode("exec_node", tool, ToolNodeConfig{OutputKey: "out", StaticArgs: map[string]any{"cmd": "ls"}})
+
+	runCtx := toolpolicy.ContextWithPolicyEvaluator(context.Background(),
+		toolpolicy.PolicyEvaluatorFunc(func(string) toolpolicy.PolicyDecision {
+			return toolpolicy.PolicyNeedsApproval
+		}))
+	runCtx = approvalBridgeContext(runCtx, func(context.Context, any) (any, error) {
+		return &ToolApprovalResponse{Decision: ToolApprovalDecisionApproved}, nil
+	})
+	runCtx = runtime.ContextWithToolApprovalInvocationVerifier(runCtx, func(context.Context, runtime.ToolApprovalInvocation) error {
+		return fmt.Errorf("%w: already consumed", ErrToolApprovalMismatch)
+	})
+
+	_, err := node.Run(runCtx, core.NewEnvelope())
+	if !errors.Is(err, ErrToolApprovalMismatch) {
+		t.Fatalf("refused claim error = %v, want ErrToolApprovalMismatch", err)
+	}
+	if tool.calls != 0 {
+		t.Fatalf("tool invoked %d times after a refused claim, want 0", tool.calls)
+	}
+}
+
+func TestToolNode_ApprovalUnencodableArgumentsFailClosed(t *testing.T) {
+	tool := &grantVerifyingTool{name: "computer.exec"}
+	node := NewToolNode("exec_node", tool, ToolNodeConfig{OutputKey: "out", StaticArgs: map[string]any{"ch": make(chan int)}})
+
+	bridged := false
+	runCtx := toolpolicy.ContextWithPolicyEvaluator(context.Background(),
+		toolpolicy.PolicyEvaluatorFunc(func(string) toolpolicy.PolicyDecision {
+			return toolpolicy.PolicyNeedsApproval
+		}))
+	runCtx = approvalBridgeContext(runCtx, func(context.Context, any) (any, error) {
+		bridged = true
+		return &ToolApprovalResponse{Decision: ToolApprovalDecisionApproved}, nil
+	})
+
+	_, err := node.Run(runCtx, core.NewEnvelope())
+	if !toolpolicy.IsApprovalRequired(err) {
+		t.Fatalf("unencodable arguments error = %v, want approval-required wrap", err)
+	}
+	if bridged || tool.calls != 0 {
+		t.Fatalf("bridge called=%v, tool calls=%d; want neither", bridged, tool.calls)
+	}
+}

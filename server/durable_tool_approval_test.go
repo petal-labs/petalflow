@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,14 @@ func TestDurableToolApproval_LifecycleAndRestartSurvival(t *testing.T) {
 	entry := record.ApprovalRecords[0]
 	if entry.Decision != runtime.ToolApprovalApproved || entry.DecisionBy != "operator" {
 		t.Fatalf("ledger entry = %#v", entry)
+	}
+	// The decision is bound to the approved arguments and was claimed
+	// exactly once by the tool node that spent it.
+	if !strings.HasPrefix(entry.ArgumentsDigest, "sha256:") || entry.Reference != "http_fetch.fetch" {
+		t.Fatalf("ledger entry binding = %#v, want reference and arguments digest", entry)
+	}
+	if !entry.Executed {
+		t.Fatalf("ledger entry = %#v, want the approval claimed by the invocation", entry)
 	}
 
 	// A second resume of the same approval cannot re-execute the tool:

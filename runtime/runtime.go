@@ -158,6 +158,11 @@ type RunOptions struct {
 	// nodes that check grants (e.g. Guardian approval checks).
 	ToolApprovalVerifier ToolApprovalVerifier
 
+	// ToolApprovalInvocationVerifier validates and claims approvals for
+	// tool nodes, refusing an approval spent on another action or other
+	// arguments than the ones approved.
+	ToolApprovalInvocationVerifier ToolApprovalInvocationVerifier
+
 	// MaxHops protects against infinite cycles (default: 100).
 	MaxHops int
 
@@ -1303,6 +1308,9 @@ func (r *BasicRuntime) executeNode(
 	}
 	if opts.ToolApprovalVerifier != nil {
 		nodeCtx = ContextWithToolApprovalVerifier(nodeCtx, opts.ToolApprovalVerifier)
+	}
+	if opts.ToolApprovalInvocationVerifier != nil {
+		nodeCtx = ContextWithToolApprovalInvocationVerifier(nodeCtx, opts.ToolApprovalInvocationVerifier)
 	}
 	if opts.ArtifactStore != nil {
 		nodeCtx = artifact.ContextWithResolver(nodeCtx, artifact.Resolver{

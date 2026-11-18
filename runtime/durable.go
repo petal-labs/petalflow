@@ -114,21 +114,25 @@ const (
 // audit queries and grant verification (e.g. Guardian approval checks)
 // can consult decisions after the run resumed.
 type ApprovalRecord struct {
-	ID           string               `json:"id"`
-	RunID        string               `json:"run_id"`
-	WorkflowID   string               `json:"workflow_id,omitempty"`
-	NodeID       string               `json:"node_id"`
-	TenantID     string               `json:"tenant_id,omitempty"`
-	ToolName     string               `json:"tool_name"`
-	Action       string               `json:"action,omitempty"`
-	Reference    string               `json:"reference,omitempty"`
-	PolicySource string               `json:"policy_source,omitempty"`
-	Decision     ToolApprovalDecision `json:"decision"`
-	DecisionBy   string               `json:"decision_by,omitempty"`
-	Note         string               `json:"note,omitempty"`
-	CreatedAt    time.Time            `json:"created_at"`
-	DecidedAt    time.Time            `json:"decided_at,omitempty"`
-	ExpiresAt    time.Time            `json:"expires_at,omitempty"`
+	ID         string `json:"id"`
+	RunID      string `json:"run_id"`
+	WorkflowID string `json:"workflow_id,omitempty"`
+	NodeID     string `json:"node_id"`
+	TenantID   string `json:"tenant_id,omitempty"`
+	ToolName   string `json:"tool_name"`
+	Action     string `json:"action,omitempty"`
+	Reference  string `json:"reference,omitempty"`
+	// ArgumentsDigest binds the decision to the exact arguments the
+	// operator approved (tool.ArgumentsDigest). Empty on records written
+	// before invocation binding.
+	ArgumentsDigest string               `json:"arguments_digest,omitempty"`
+	PolicySource    string               `json:"policy_source,omitempty"`
+	Decision        ToolApprovalDecision `json:"decision"`
+	DecisionBy      string               `json:"decision_by,omitempty"`
+	Note            string               `json:"note,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
+	DecidedAt       time.Time            `json:"decided_at,omitempty"`
+	ExpiresAt       time.Time            `json:"expires_at,omitempty"`
 	// Executed marks the single-use grant consumed by whichever flow
 	// acted on the approval (tool execution or Guardian grant claim).
 	Executed bool `json:"executed,omitempty"`

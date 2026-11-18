@@ -199,6 +199,90 @@ tool_policy:
     - downstream_write
 ```
 
+### Approval Binding
+
+An approval authorizes exactly one invocation: the same tool, the same
+action, and the same arguments the operator approved, spent once.
+
+When a tool node needs approval it computes an arguments digest from the
+arguments it built and records it on the approval request
+(`arguments_digest`). The digest also appears on the `approval.requested`
+and `approval.decided` events and in the run's durable approval ledger.
+It identifies the invocation without revealing it, so it is safe to
+show to approvers and in audit tooling.
+
+The digest is `tool.ArgumentsDigest(reference, args)`: `sha256:`
+followed by the lowercase hex SHA-256 of the canonical JSON
+
+```json
+{"arguments":{...},"reference":"tool.action"}
+```
+
+with object keys sorted, no insignificant whitespace, and no HTML
+escaping. Numbers encode by value (`5` and `5.0` digest the same), and
+missing arguments digest like `{}`. Arguments that cannot be encoded as
+JSON, such as NaN, cannot be approved.
+
+Once the operator decides:
+
+- **Resume replays only the approved invocation.** On resume the node
+  rebuilds its arguments. If the reference or digest differs from the
+  approved request, the approval is consumed and the invocation fails
+  with `nodes.ErrToolApprovalMismatch`. It never runs with arguments
+  the operator did not see.
+- **Approvals are single use.** Before invoking, the node claims the
+  approval through the runtime's `ToolApprovalInvocationVerifier`. The
+  durable verifier refuses an approval that is unknown, not approved,
+  expired, already consumed, or recorded for another reference or
+  digest. A refused mismatch still consumes the approval.
+- **The grant travels with the invocation.** The node attaches a
+  `tool.ApprovalGrant` carrying `Reference` and `ArgumentsDigest` to the
+  invocation context.
+
+#### For Tool Authors
+
+HTTP, MCP, and stdio tools registered with the daemon run through the
+tool service gate. It accepts a grant only when `tool.action` and the
+invocation inputs match the grant exactly, so these adapters need no
+changes.
+
+Native tools that enforce approval themselves should check the grant
+against their own canonical digest of the arguments they received:
+
+```go
+func (t *execTool) Invoke(ctx context.Context, args map[string]any) (map[string]any, error) {
+	digest := tool.ArgumentsDigest(t.Name(), args)
+	grant, ok := tool.ApprovalGrantForInvocation(ctx, t.Name(), digest)
+	if !ok {
+		return nil, errors.New("invocation is not covered by an approval")
+	}
+	// grant.ApprovalID and grant.DecidedBy identify the decision.
+	return t.run(ctx, args, grant)
+}
+```
+
+`tool.ApprovalGrantFromContext` returns the attached grant for tools
+that need to inspect `Reference` and `ArgumentsDigest` directly.
+
+#### Compatibility
+
+Workflows without approval policies are unaffected. Existing approval
+APIs keep working:
+
+- `tool.ApprovalGrantForTool` still matches by base tool name. It
+  ignores action and arguments, so prefer `ApprovalGrantForInvocation`
+  wherever the invocation is known.
+- Grants built without a digest (`ApprovalGrant.Bound()` is false) are
+  legacy grants. The tool service gate still accepts them by tool name.
+- Ledger entries and paused requests written before approval binding
+  have no digest. They are matched by reference alone, so runs paused
+  across an upgrade still resume.
+- `runtime.ToolApprovalVerifier` and Guardian `approval` checks are
+  unchanged. Tool nodes use the separate
+  `RunOptions.ToolApprovalInvocationVerifier`. When it is nil (embedded
+  use without a durable server), the approval bridge's decision stands
+  without a claim.
+
 ## Payload Limits and Validation
 
 Every invocation validates its inputs against the registered action
