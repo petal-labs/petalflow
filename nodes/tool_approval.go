@@ -43,6 +43,10 @@ type ToolApprovalRequest struct {
 	Action string `json:"action,omitempty"`
 	// Reference is the name as invoked (e.g. "tool.action").
 	Reference string `json:"reference,omitempty"`
+	// ArgumentsDigest is tool.ArgumentsDigest(Reference, args) for the
+	// exact arguments being approved. The approval authorizes only an
+	// invocation with this reference and digest.
+	ArgumentsDigest string `json:"arguments_digest,omitempty"`
 	// PolicySource records where the approval requirement came from
 	// ("policy" for config-driven rules, "guardian" for graph-declared
 	// checks).
@@ -99,6 +103,11 @@ var ErrToolApprovalRejected = fmt.Errorf("tool approval rejected by operator")
 // ErrToolApprovalExpired marks a request whose decision window passed:
 // approvals fail closed.
 var ErrToolApprovalExpired = fmt.Errorf("tool approval expired")
+
+// ErrToolApprovalMismatch marks an approval spent on an invocation other
+// than the one approved (another action or other arguments). The
+// approval is consumed and the invocation fails closed.
+var ErrToolApprovalMismatch = fmt.Errorf("tool approval does not match the invocation")
 
 var _ runtime.PendingError = (*ToolApprovalPendingError)(nil)
 

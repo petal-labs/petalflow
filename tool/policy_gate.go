@@ -1,7 +1,11 @@
 package tool
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -234,10 +238,24 @@ func IsApprovalRequired(err error) bool {
 // approval decision. Nodes that replay an approval install it so the
 // service-level gate lets this one invocation through.
 type ApprovalGrant struct {
+	// ToolName is the base registered tool name ("tool").
 	ToolName   string
 	ApprovalID string
 	// DecidedBy records who approved for the invocation trail.
 	DecidedBy string
+	// Reference is the approved name as invoked ("tool.action").
+	Reference string
+	// ArgumentsDigest is ArgumentsDigest(Reference, args) for the exact
+	// arguments the operator approved. Empty only on legacy grants built
+	// without invocation binding.
+	ArgumentsDigest string
+}
+
+// Bound reports whether the grant is bound to one exact invocation
+// (reference and arguments digest), as opposed to a legacy tool-name
+// grant.
+func (g ApprovalGrant) Bound() bool {
+	return g.Reference != "" && g.ArgumentsDigest != ""
 }
 
 type approvalGrantKey struct{}
@@ -248,14 +266,98 @@ func ContextWithApprovalGrant(ctx context.Context, grant ApprovalGrant) context.
 	return context.WithValue(ctx, approvalGrantKey{}, grant)
 }
 
-// ApprovalGrantForTool returns the attached grant when it matches the given
-// the tool name.
-func ApprovalGrantForTool(ctx context.Context, toolName string) (ApprovalGrant, bool) {
+// ApprovalGrantFromContext returns the attached grant, if any, so a tool
+// can inspect the approved reference and arguments digest and compare
+// them against its own canonical ArgumentsDigest.
+func ApprovalGrantFromContext(ctx context.Context) (ApprovalGrant, bool) {
 	grant, ok := ctx.Value(approvalGrantKey{}).(ApprovalGrant)
+	return grant, ok
+}
+
+// ApprovalGrantForTool returns the attached grant when it matches the
+// given base tool name.
+//
+// This is the weaker, compatibility lookup: it ignores the action and
+// arguments the grant was approved for. Gates that know the invocation
+// should use ApprovalGrantForInvocation.
+func ApprovalGrantForTool(ctx context.Context, toolName string) (ApprovalGrant, bool) {
+	grant, ok := ApprovalGrantFromContext(ctx)
 	if !ok || grant.ToolName != toolName {
 		return ApprovalGrant{}, false
 	}
 	return grant, true
+}
+
+// ApprovalGrantForInvocation returns the attached grant only when it is
+// bound to exactly this invocation: the same reference ("tool.action")
+// and the same arguments digest (see ArgumentsDigest). Legacy grants
+// without a digest never match.
+func ApprovalGrantForInvocation(ctx context.Context, reference, digest string) (ApprovalGrant, bool) {
+	grant, ok := ApprovalGrantFromContext(ctx)
+	if !ok || !grant.Bound() || reference == "" || digest == "" {
+		return ApprovalGrant{}, false
+	}
+	if grant.Reference != reference || grant.ArgumentsDigest != digest {
+		return ApprovalGrant{}, false
+	}
+	return grant, true
+}
+
+// approvalGrantForAction is the service-level grant lookup for one action
+// invocation. A bound grant authorizes only the exact reference
+// ("tool.action", as registered action tools are named) and inputs; a
+// legacy grant without a digest falls back to the tool-name match.
+func approvalGrantForAction(ctx context.Context, toolName, action string, inputs map[string]any) (ApprovalGrant, bool) {
+	grant, ok := ApprovalGrantFromContext(ctx)
+	if !ok {
+		return ApprovalGrant{}, false
+	}
+	if !grant.Bound() {
+		return ApprovalGrantForTool(ctx, toolName)
+	}
+	reference := toolName
+	if action != "" {
+		reference = toolName + "." + action
+	}
+	return ApprovalGrantForInvocation(ctx, reference, ArgumentsDigest(reference, inputs))
+}
+
+// argumentsDigestPrefix names the digest algorithm so the format can
+// evolve without ambiguity.
+const argumentsDigestPrefix = "sha256:"
+
+// ArgumentsDigest returns the canonical digest that binds an approval to
+// one invocation: "sha256:" followed by the lowercase hex SHA-256 of the
+// canonical JSON encoding of
+//
+//	{"arguments": <args>, "reference": <reference>}
+//
+// Canonical JSON here is encoding/json output with object keys sorted,
+// no insignificant whitespace, and no HTML escaping. A nil args map
+// digests the same as an empty one. Numbers encode by value, so an
+// argument digests identically before and after a JSON round trip
+// (int 5 and float64 5 both encode as 5).
+//
+// The digest is not sensitive: it identifies the invocation without
+// revealing its arguments. It returns "" when args cannot be encoded
+// (for example NaN or a channel); an empty digest never matches a grant,
+// so such invocations cannot be approved.
+func ArgumentsDigest(reference string, args map[string]any) string {
+	if args == nil {
+		args = map[string]any{}
+	}
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	err := encoder.Encode(struct {
+		Arguments map[string]any `json:"arguments"`
+		Reference string         `json:"reference"`
+	}{Arguments: args, Reference: reference})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(bytes.TrimSuffix(buf.Bytes(), []byte("\n")))
+	return argumentsDigestPrefix + hex.EncodeToString(sum[:])
 }
 
 // PolicyErrorCode maps a gate rejection to its stable error code; empty

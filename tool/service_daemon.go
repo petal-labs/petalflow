@@ -377,8 +377,10 @@ func (s *DaemonToolService) TestAction(ctx context.Context, name string, action 
 	if gateErr != nil && IsApprovalRequired(gateErr) {
 		// A durable approval grant replays through the invocation
 		// context after the operator decision was recorded; it authorizes
-		// exactly this invocation.
-		if grant, granted := ApprovalGrantForTool(ctx, reg.Name); granted {
+		// exactly this invocation. Bound grants must match the reference
+		// and arguments; legacy grants without a digest keep the weaker
+		// tool-name match for compatibility.
+		if grant, granted := approvalGrantForAction(ctx, reg.Name, action, inputs); granted {
 			gateErr = nil
 			s.auditInvocation(ctx, reg, action, ToolAuditApproval, ToolAuditApproved,
 				fmt.Sprintf("approval %q replayed by %q", grant.ApprovalID, grant.DecidedBy))

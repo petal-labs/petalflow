@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Tool approvals bind to the exact action and arguments they approve**
+  ([#246](https://github.com/petal-labs/petalflow/issues/246)). Approval
+  requests, `approval.requested`/`approval.decided` events, and durable ledger
+  entries now carry a canonical `arguments_digest` (`tool.ArgumentsDigest`).
+  `ApprovalGrant` gains `Reference` and `ArgumentsDigest`, and the new
+  `tool.ApprovalGrantForInvocation` matches only the exact invocation. Tool
+  nodes claim each approval once through the new
+  `runtime.ToolApprovalInvocationVerifier`. A resumed run whose rebuilt
+  invocation differs from the approved one fails closed with
+  `nodes.ErrToolApprovalMismatch`, and the approval is consumed. The tool
+  service gate enforces bound grants. Legacy grants and pre-binding ledger
+  records keep their previous matching, so existing workflows are unaffected.
+
 ## [1.0.0] - 2026-11-15
 
 ### Added

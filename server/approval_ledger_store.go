@@ -33,7 +33,9 @@ func newApprovalLedgerStore(store runtime.RunStore) (*approvalLedgerStore, bool)
 
 // mergeApprovalLedger unions ledger entries by ID: entries recorded by
 // the approval bridge that the caller's stale copy is missing are
-// restored; the stored entry wins per ID.
+// restored. Consumption is monotonic: an entry the stored record marks
+// executed stays executed, so a stale copy cannot revive a spent
+// single-use approval.
 func (w *approvalLedgerStore) mergeApprovalLedger(ctx context.Context, incoming *runtime.RunRecord) {
 	if w == nil || incoming == nil {
 		return
@@ -43,15 +45,19 @@ func (w *approvalLedgerStore) mergeApprovalLedger(ctx context.Context, incoming 
 		return
 	}
 
-	existing := make(map[string]struct{}, len(incoming.ApprovalRecords))
-	for _, entry := range incoming.ApprovalRecords {
-		existing[entry.ID] = struct{}{}
+	existing := make(map[string]int, len(incoming.ApprovalRecords))
+	for i, entry := range incoming.ApprovalRecords {
+		existing[entry.ID] = i
 	}
 	for _, entry := range stored.ApprovalRecords {
-		if _, present := existing[entry.ID]; !present {
-			incoming.ApprovalRecords = append(incoming.ApprovalRecords, entry)
-			existing[entry.ID] = struct{}{}
+		if i, present := existing[entry.ID]; present {
+			if entry.Executed {
+				incoming.ApprovalRecords[i].Executed = true
+			}
+			continue
 		}
+		incoming.ApprovalRecords = append(incoming.ApprovalRecords, entry)
+		existing[entry.ID] = len(incoming.ApprovalRecords) - 1
 	}
 }
 

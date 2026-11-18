@@ -139,28 +139,18 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 	// never retried. Without an installed evaluator, enforcement was
 	// not opted into and invocation proceeds.
 	gateName := tool.Name()
-	baseName, _ := toolpolicy.ReferenceNames(gateName)
 	if gateErr := toolpolicy.CheckPolicy(ctx, gateName); gateErr != nil {
 		// Durable approval flow: an approval requirement pauses the run
 		// for an operator decision when the runtime provides a bridge;
 		// without one the requirement stays a hard block.
 		if toolpolicy.IsApprovalRequired(gateErr) {
-			approved, approvalID, decidedBy, approvalErr := n.requestToolApproval(ctx, emit, env, gateName, gateErr)
+			grant, approvalErr := n.requestToolApproval(ctx, emit, env, gateName, args, gateErr)
 			if approvalErr != nil {
-				var pendingErr *ToolApprovalPendingError
-				if errors.As(approvalErr, &pendingErr) {
-					return nil, approvalErr
-				}
 				return nil, approvalErr
 			}
-			if approved {
-				// Replayed approval authorizes exactly this invocation.
-				ctx = toolpolicy.ContextWithApprovalGrant(ctx, toolpolicy.ApprovalGrant{
-					ToolName:   baseName,
-					ApprovalID: approvalID,
-					DecidedBy:  decidedBy,
-				})
-			}
+			// The grant is bound to this reference and these arguments,
+			// so it authorizes exactly this invocation.
+			ctx = toolpolicy.ContextWithApprovalGrant(ctx, grant)
 		} else {
 			emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
 				WithNode(n.ID(), n.Kind()).
@@ -229,36 +219,55 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 // approval-gated tool. Behavior by bridge outcome:
 //   - no bridge → hard block with the typed policy error,
 //   - pending → approval.requested event and a run pause,
-//   - approved → proceed to invocation,
-//   - rejected/expired → deterministic typed failure.
+//   - approved → a grant bound to this reference and these arguments,
+//     claimed once through the invocation verifier when one is installed,
+//   - rejected/expired/mismatched → deterministic typed failure.
 func (n *ToolNode) requestToolApproval(
 	ctx context.Context,
 	emit runtime.EventEmitter,
 	env *core.Envelope,
 	toolName string,
+	args map[string]any,
 	gateErr error,
-) (bool, string, string, error) {
-	handler := runtime.ToolApprovalHandlerFromContext(ctx)
-	if handler == nil {
-		emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+) (toolpolicy.ApprovalGrant, error) {
+	blocked := func(decision string) {
+		event := runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
 			WithNode(n.ID(), n.Kind()).
 			WithPayload("tool_name", toolName).
 			WithPayload("is_error", true).
 			WithPayload("policy_rejected", true).
-			WithPayload("error_code", toolpolicy.ToolErrorCodePolicyApprovalRequired))
-		return false, "", "", fmt.Errorf("tool %q approval required but no approval flow is configured: %w", toolName, gateErr)
+			WithPayload("error_code", toolpolicy.ToolErrorCodePolicyApprovalRequired)
+		if decision != "" {
+			event = event.WithPayload("approval_decision", decision)
+		}
+		emit(event)
+	}
+
+	handler := runtime.ToolApprovalHandlerFromContext(ctx)
+	if handler == nil {
+		blocked("")
+		return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q approval required but no approval flow is configured: %w", toolName, gateErr)
+	}
+
+	// The digest binds the approval to the arguments built above; an
+	// invocation whose arguments cannot be encoded cannot be approved.
+	digest := toolpolicy.ArgumentsDigest(toolName, args)
+	if digest == "" {
+		blocked("")
+		return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q arguments cannot be bound to an approval: %w", toolName, gateErr)
 	}
 
 	base, action := parseApprovalReference(toolName)
 	req := &ToolApprovalRequest{
-		ID:           uuid.New().String(),
-		NodeID:       n.ID(),
-		RunID:        env.Trace.RunID,
-		ToolName:     base,
-		Action:       action,
-		Reference:    toolName,
-		PolicySource: ToolApprovalSourcePolicy,
-		CreatedAt:    time.Now(),
+		ID:              uuid.New().String(),
+		NodeID:          n.ID(),
+		RunID:           env.Trace.RunID,
+		ToolName:        base,
+		Action:          action,
+		Reference:       toolName,
+		ArgumentsDigest: digest,
+		PolicySource:    ToolApprovalSourcePolicy,
+		CreatedAt:       time.Now(),
 	}
 
 	emit(runtime.NewEvent(runtime.EventApprovalRequested, env.Trace.RunID).
@@ -266,17 +275,24 @@ func (n *ToolNode) requestToolApproval(
 		WithPayload("approval_id", req.ID).
 		WithPayload("tool_name", req.ToolName).
 		WithPayload("action", req.Action).
+		WithPayload("reference", req.Reference).
+		WithPayload("arguments_digest", digest).
 		WithPayload("policy_source", req.PolicySource).
 		WithPayload("expires_at", req.ExpiresAt))
 
+	// A durable bridge may replace req.ID with the ID of the stored
+	// request it replays, so req.ID is read again below.
 	value, handlerErr := handler(ctx, req)
 	if handlerErr != nil {
 		// Pending requests pause the run instead of failing it.
 		var pendingErr *ToolApprovalPendingError
 		if errors.As(handlerErr, &pendingErr) {
-			return false, "", "", handlerErr
+			return toolpolicy.ApprovalGrant{}, handlerErr
 		}
-		return false, "", "", fmt.Errorf("tool %q approval flow failed: %w", toolName, handlerErr)
+		if errors.Is(handlerErr, ErrToolApprovalMismatch) {
+			blocked("")
+		}
+		return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q approval flow failed: %w", toolName, handlerErr)
 	}
 
 	var response *ToolApprovalResponse
@@ -286,16 +302,17 @@ func (n *ToolNode) requestToolApproval(
 	case ToolApprovalResponse:
 		response = &typed
 	default:
-		return false, "", "", fmt.Errorf("tool %q approval bridge returned %T, want *ToolApprovalResponse", toolName, value)
+		return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q approval bridge returned %T, want *ToolApprovalResponse", toolName, value)
 	}
 	if response == nil {
-		return false, "", "", fmt.Errorf("tool %q approval bridge returned nil decision", toolName)
+		return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q approval bridge returned nil decision", toolName)
 	}
 
 	emit(runtime.NewEvent(runtime.EventApprovalDecided, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("approval_id", req.ID).
 		WithPayload("tool_name", req.ToolName).
+		WithPayload("arguments_digest", digest).
 		WithPayload("decision", response.Decision).
 		WithPayload("decided_by", response.DecisionBy).
 		WithPayload("note", response.Note))
@@ -306,16 +323,32 @@ func (n *ToolNode) requestToolApproval(
 			// Unrecognized explicit decisions fail closed as well.
 			decisionErr = ErrToolApprovalExpired
 		}
-		emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
-			WithNode(n.ID(), n.Kind()).
-			WithPayload("tool_name", toolName).
-			WithPayload("is_error", true).
-			WithPayload("policy_rejected", true).
-			WithPayload("error_code", toolpolicy.ToolErrorCodePolicyApprovalRequired).
-			WithPayload("approval_decision", response.Decision))
-		return false, "", "", fmt.Errorf("tool %q invocation blocked: approval %w", toolName, decisionErr)
+		blocked(response.Decision)
+		return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q invocation blocked: approval %w", toolName, decisionErr)
 	}
-	return true, req.ID, response.DecisionBy, nil
+
+	// Spend the approval once, on exactly this invocation. Without an
+	// installed verifier (embedded use) the bridge decision stands.
+	if verifier := runtime.ToolApprovalInvocationVerifierFromContext(ctx); verifier != nil {
+		if err := verifier(ctx, runtime.ToolApprovalInvocation{
+			RunID:           env.Trace.RunID,
+			ApprovalID:      req.ID,
+			ToolName:        base,
+			Reference:       toolName,
+			ArgumentsDigest: digest,
+		}); err != nil {
+			blocked(response.Decision)
+			return toolpolicy.ApprovalGrant{}, fmt.Errorf("tool %q invocation blocked: %w", toolName, err)
+		}
+	}
+
+	return toolpolicy.ApprovalGrant{
+		ToolName:        base,
+		ApprovalID:      req.ID,
+		DecidedBy:       response.DecisionBy,
+		Reference:       toolName,
+		ArgumentsDigest: digest,
+	}, nil
 }
 
 // getTool retrieves the tool to execute.

@@ -99,6 +99,43 @@ func ToolApprovalVerifierFromContext(ctx context.Context) ToolApprovalVerifier {
 	return nil
 }
 
+// ToolApprovalInvocation identifies the exact invocation an approval is
+// being spent on.
+type ToolApprovalInvocation struct {
+	RunID      string
+	ApprovalID string
+	// ToolName is the base registered tool name ("tool").
+	ToolName string
+	// Reference is the name as invoked ("tool.action").
+	Reference string
+	// ArgumentsDigest is tool.ArgumentsDigest(Reference, args) for the
+	// arguments about to be invoked.
+	ArgumentsDigest string
+}
+
+// ToolApprovalInvocationVerifier validates and single-use-claims an
+// approval for one exact invocation. Beyond ToolApprovalVerifier's
+// checks, implementations refuse an approval recorded for another
+// reference or another arguments digest.
+type ToolApprovalInvocationVerifier func(ctx context.Context, invocation ToolApprovalInvocation) error
+
+type toolApprovalInvocationVerifierKey struct{}
+
+// ContextWithToolApprovalInvocationVerifier attaches an invocation-bound
+// verifier for nodes that spend approvals on tool invocations.
+func ContextWithToolApprovalInvocationVerifier(ctx context.Context, verifier ToolApprovalInvocationVerifier) context.Context {
+	return context.WithValue(ctx, toolApprovalInvocationVerifierKey{}, verifier)
+}
+
+// ToolApprovalInvocationVerifierFromContext retrieves an invocation-bound
+// verifier.
+func ToolApprovalInvocationVerifierFromContext(ctx context.Context) ToolApprovalInvocationVerifier {
+	if verifier, ok := ctx.Value(toolApprovalInvocationVerifierKey{}).(ToolApprovalInvocationVerifier); ok {
+		return verifier
+	}
+	return nil
+}
+
 // ContextWithIdempotencyKey attaches the caller's stable idempotency key to a
 // node execution. Side-effecting nodes should pass this value to their
 // provider so a replay after a worker failure is safe.
