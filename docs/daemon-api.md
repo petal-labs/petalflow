@@ -166,7 +166,8 @@ standard error response.
 `mocked_tools` is keyed by workflow tool-node ID. Each value is the captured
 tool output object. `tool_mock_mode` accepts `all` or `none`; `all` requires a
 captured result for every tool node and fails closed rather than invoking a
-missing tool live.
+missing tool live. `none` ignores `mocked_tools` and invokes the configured
+tools normally.
 
 Both endpoints share the daemon's normal request authentication and body-size
 limits. Replay metadata (parent run ID, trigger source, source kind, and tags)
