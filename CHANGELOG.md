@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
+### Added
+
+- **PetalTrace replay compatibility**
+  ([#255](https://github.com/petal-labs/petalflow/pull/255), tests in
+  [#256](https://github.com/petal-labs/petalflow/pull/256)). Adds the two
+  execution endpoints used by PetalTrace's replay clients: `POST /api/execute`
+  (live replay) and `POST /api/execute/hybrid` (hybrid replay, which replaces
+  captured tool-node calls with recorded outputs). Hybrid replay's tool mocks
+  are keyed by workflow tool-node ID, and `tool_mock_mode` accepts `all` or
+  `none`; `all` requires a captured result for every tool node and fails
+  closed rather than invoking a missing tool live. Replay metadata (parent
+  run ID, trigger source, and tags) is emitted on run spans, and when
+  `observability.petaltrace.capture_mode` is `full`, run spans include graph,
+  input, and config snapshots with tool spans carrying captured outputs.
+  Both endpoints share the daemon's normal authentication and body-size
+  limits; see the new "PetalTrace Replay Compatibility" section in
+  `docs/daemon-api.md`. Expands PetalTrace runtime contract coverage for the
+  replay paths.
+
 ## [1.1.0] - 2026-11-18
 
 ### Security
