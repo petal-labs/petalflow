@@ -33,14 +33,20 @@ func (e *runAPIError) Error() string {
 }
 
 type workflowRunPlan struct {
-	execGraph       *graph.BasicGraph
-	env             *core.Envelope
-	timeout         time.Duration
-	workflowVersion string
-	resume          bool
-	resumeToken     string
-	idempotencyKey  string
-	tenantID        string
+	execGraph        *graph.BasicGraph
+	env              *core.Envelope
+	timeout          time.Duration
+	workflowVersion  string
+	graphDefinition  any
+	inputs           any
+	configSnapshot   any
+	captureSnapshots bool
+	triggerSource    string
+	toolMocks        *runtime.ToolMockSet
+	resume           bool
+	resumeToken      string
+	idempotencyKey   string
+	tenantID         string
 	// workflowPolicy is the workflow-scoped tool policy override;
 	// nil means the tenant default policy applies.
 	workflowPolicy *tool.ToolPolicy
@@ -220,11 +226,15 @@ func (s *Server) planWorkflowRunWithDefinition(
 	}
 
 	return &workflowRunPlan{
-		execGraph:       execGraph,
-		env:             EnvelopeFromJSON(req.Input),
-		timeout:         timeout,
-		workflowVersion: compiled.Version,
-		idempotencyKey:  req.Options.IdempotencyKey,
+		execGraph:        execGraph,
+		env:              EnvelopeFromJSON(req.Input),
+		timeout:          timeout,
+		workflowVersion:  compiled.Version,
+		graphDefinition:  compiled,
+		inputs:           req.Input,
+		captureSnapshots: s.captureSnapshots,
+		triggerSource:    "api",
+		idempotencyKey:   req.Options.IdempotencyKey,
 	}, nil
 }
 
@@ -250,6 +260,9 @@ func (s *Server) executeWorkflowRunSync(
 	if evaluator != nil {
 		runCtx = tool.ContextWithPolicyEvaluator(runCtx, evaluator)
 	}
+	if plan.toolMocks != nil {
+		runCtx = runtime.ContextWithToolMocks(runCtx, *plan.toolMocks)
+	}
 	// Workflow-run audit identity: tool lifecycle events from this run
 	// scope to the tenant + workflow with the run actor attributed.
 	runCtx = tool.ContextWithAuditContext(runCtx, tool.ToolAuditContext{
@@ -267,6 +280,11 @@ func (s *Server) executeWorkflowRunSync(
 	opts.WorkflowID = workflowID
 	opts.TenantID = plan.tenantID
 	opts.WorkflowVersion = plan.workflowVersion
+	opts.CaptureSnapshots = plan.captureSnapshots
+	opts.GraphDefinition = plan.graphDefinition
+	opts.Inputs = plan.inputs
+	opts.ConfigSnapshot = plan.configSnapshot
+	opts.TriggerSource = plan.triggerSource
 	if plan.env.Trace.RunID == "" && s.runStore != nil {
 		plan.env.Trace.RunID = uuid.New().String()
 	}

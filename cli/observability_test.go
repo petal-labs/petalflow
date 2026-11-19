@@ -41,6 +41,9 @@ func TestSetupObservabilityNoopDefault(t *testing.T) {
 	if stack.capture.Enabled {
 		t.Error("capture enabled by default, want metadata-only")
 	}
+	if stack.captureSnapshots {
+		t.Error("snapshots enabled by default, want metadata-only")
+	}
 	if err := stack.shutdown(context.Background()); err != nil {
 		t.Errorf("shutdown: %v", err)
 	}
@@ -94,6 +97,9 @@ observability:
 	}
 	if !stack.capture.Enabled {
 		t.Error("standard capture mode should enable run event content capture")
+	}
+	if stack.captureSnapshots {
+		t.Error("standard capture mode must not enable graph/input snapshots")
 	}
 	if stack.runtimeEvents() == nil {
 		t.Error("runtime event handlers missing under petaltrace")
@@ -250,6 +256,9 @@ observability:
 	}
 	if !stack.capture.Enabled {
 		t.Error("full capture mode should enable run event content capture")
+	}
+	if !stack.captureSnapshots {
+		t.Error("full capture mode should enable graph/input snapshots")
 	}
 	if stack.runtimeEvents() == nil {
 		t.Error("runtime event handlers missing")

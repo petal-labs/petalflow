@@ -109,6 +109,71 @@ If valid, the daemon runs the workflow with that trigger node as the entry point
 | `GET` | `/api/runs/{run_id}/artifacts/{artifact_id}` | Stream an artifact download |
 | `GET` | `/api/runs/{run_id}/export` | Export a terminal run, events, and referenced artifacts |
 
+### PetalTrace Replay Compatibility
+
+PetalFlow v1.2.0 adds two execution endpoints used by PetalTrace's live and
+hybrid replay clients. New workflow clients should use
+`POST /api/workflows/graph` and `POST /api/workflows/{id}/run`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/execute` | Execute a graph for a live PetalTrace replay |
+| `POST` | `/api/execute/hybrid` | Execute a graph while replacing captured tool-node calls with recorded outputs |
+
+`POST /api/execute` accepts:
+
+```json
+{
+  "workflow_id": "workflow-123",
+  "workflow_name": "support-agent",
+  "graph": {
+    "id": "workflow-123",
+    "schema_version": "v1",
+    "kind": "graph",
+    "nodes": [{"id": "answer", "type": "noop"}],
+    "edges": [],
+    "entry": "answer"
+  },
+  "input": {"question": "Where is my order?"},
+  "config": {},
+  "parent_run_id": "source-run-id",
+  "tags": {"replay_mode": "live"},
+  "trigger_source": "petaltrace-replay",
+  "model_override": "example-model",
+  "provider_override": "example-provider",
+  "temperature_override": 0.2,
+  "max_tokens_override": 512
+}
+```
+
+`graph` and `workflow_id` identify the graph to execute; `input` is the initial
+envelope variables. The optional model overrides are applied to `llm_prompt`
+and `llm` node configurations. Successful responses have the shape
+`{"run_id":"...","status":"completed"}`. Execution errors use the daemon's
+standard error response.
+
+`POST /api/execute/hybrid` accepts the same fields plus:
+
+```json
+{
+  "tool_mock_mode": "all",
+  "mocked_tools": {
+    "lookup_order": {"order": {"status": "shipped"}}
+  }
+}
+```
+
+`mocked_tools` is keyed by workflow tool-node ID. Each value is the captured
+tool output object. `tool_mock_mode` accepts `all` or `none`; `all` requires a
+captured result for every tool node and fails closed rather than invoking a
+missing tool live.
+
+Both endpoints share the daemon's normal request authentication and body-size
+limits. Replay metadata (parent run ID, trigger source, source kind, and tags)
+is emitted on run spans. When `observability.petaltrace.capture_mode` is
+`full`, run spans also include graph, input, and config snapshots, and tool
+spans include captured outputs. Lower capture modes do not emit snapshots.
+
 ### Run artifacts
 
 Artifact routes require the same bearer identity and tenant ownership as the

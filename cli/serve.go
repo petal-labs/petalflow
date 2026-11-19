@@ -340,6 +340,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		RuntimeEvents:       observability.runtimeEvents(),
 		EmitDecorator:       observability.emitDecorator(),
 		ContentCapture:      observability.capture,
+		CaptureSnapshots:    observability.captureSnapshots,
 		CORSOrigin:          corsOrigin,
 		MaxBody:             maxBody,
 		JobStore:            workflowStore,

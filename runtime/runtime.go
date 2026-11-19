@@ -215,6 +215,9 @@ type RunOptions struct {
 	// Inputs are the initial workflow inputs to include in snapshots.
 	// Only used when CaptureSnapshots is true.
 	Inputs any
+	// ConfigSnapshot is execution configuration to include in the run.started
+	// event when CaptureSnapshots is true.
+	ConfigSnapshot any
 
 	// TriggerSource identifies what triggered this run (e.g., "cli", "api", "ui", "schedule").
 	TriggerSource string
@@ -440,6 +443,9 @@ func (r *BasicRuntime) Run(ctx context.Context, g graph.Graph, env *core.Envelop
 		}
 		if opts.Inputs != nil {
 			runStartEvent = runStartEvent.WithPayload("inputs", opts.Inputs)
+		}
+		if opts.ConfigSnapshot != nil {
+			runStartEvent = runStartEvent.WithPayload("config", opts.ConfigSnapshot)
 		}
 	}
 

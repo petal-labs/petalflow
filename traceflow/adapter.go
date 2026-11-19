@@ -156,8 +156,12 @@ func (a *Adapter) Initialize(ctx context.Context) error {
 		return nil // Already initialized
 	}
 
+	endpointOption := otlptracehttp.WithEndpoint(a.Endpoint)
+	if strings.Contains(a.Endpoint, "://") {
+		endpointOption = otlptracehttp.WithEndpointURL(a.Endpoint)
+	}
 	exporter, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(a.Endpoint),
+		endpointOption,
 		otlptracehttp.WithInsecure(), // Development default; configure TLS for production
 	)
 	if err != nil {

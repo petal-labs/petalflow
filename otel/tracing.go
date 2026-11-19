@@ -3,6 +3,8 @@ package otel
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -129,6 +131,10 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 			workflowID = s
 		}
 	}
+	workflowName := payloadStringValue(e, "workflow_name")
+	workflowVersion := payloadStringValue(e, "workflow_version")
+	parentRunID := payloadStringValue(e, "parent_run_id")
+	sourceKind := payloadStringValue(e, "source_kind")
 	webhookTriggerID := ""
 	if value, ok := e.Payload["webhook_trigger_id"]; ok {
 		if s, ok := value.(string); ok {
@@ -177,6 +183,38 @@ func (h *TracingHandler) handleRunStarted(e runtime.Event) {
 	}
 	if workflowID != "" {
 		span.SetAttributes(attribute.String("petalflow.workflow_id", workflowID))
+	}
+	if workflowName != "" {
+		span.SetAttributes(attribute.String("petalflow.workflow.name", workflowName))
+	}
+	if workflowVersion != "" {
+		span.SetAttributes(attribute.String("petalflow.workflow_version", workflowVersion))
+	}
+	if parentRunID != "" {
+		span.SetAttributes(attribute.String("petalflow.parent_run_id", parentRunID))
+	}
+	if sourceKind != "" {
+		span.SetAttributes(attribute.String("petalflow.source_kind", sourceKind))
+	}
+	for key, value := range e.Payload {
+		if strings.HasPrefix(key, "petalflow.tag.") {
+			if tag, ok := value.(string); ok {
+				span.SetAttributes(attribute.String(key, tag))
+			}
+		}
+	}
+	if h.capture.Enabled {
+		for payloadKey, attrKey := range map[string]string{
+			"graph_definition": "petalflow.graph_definition",
+			"inputs":           "petalflow.input_snapshot",
+			"config":           "petalflow.config_snapshot",
+		} {
+			if value, ok := e.Payload[payloadKey]; ok && value != nil {
+				if encoded := snapshotAttribute(value); encoded != "" {
+					span.SetAttributes(attribute.String(attrKey, encoded))
+				}
+			}
+		}
 	}
 	if webhookTriggerID != "" {
 		span.SetAttributes(attribute.String("petalflow.webhook_trigger_id", webhookTriggerID))
@@ -354,6 +392,13 @@ func (h *TracingHandler) handleToolResult(e runtime.Event) {
 		}
 		span.SetStatus(codes.Error, errMsg)
 	} else {
+		if h.capture.Enabled {
+			if outputs, found := e.Payload["outputs"]; found && outputs != nil {
+				if encoded := snapshotAttribute(outputs); encoded != "" {
+					span.SetAttributes(attribute.String("petalflow.tool.outputs", encoded))
+				}
+			}
+		}
 		span.SetStatus(codes.Ok, "")
 	}
 	span.End(trace.WithTimestamp(e.Time))
@@ -363,6 +408,17 @@ func (h *TracingHandler) handleToolResult(e runtime.Event) {
 func payloadStringValue(e runtime.Event, key string) string {
 	s, _ := e.Payload[key].(string)
 	return s
+}
+
+func snapshotAttribute(value any) string {
+	if encoded, ok := value.(string); ok && json.Valid([]byte(encoded)) {
+		return encoded
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 // handleRunFinished ends the root run span.

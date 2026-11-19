@@ -78,6 +78,63 @@ func TestTracingHandler_RunStartedCreatesRootSpan(t *testing.T) {
 	}
 }
 
+func TestTracingHandler_RunStartedExportsReplaySnapshotsWhenCaptureEnabled(t *testing.T) {
+	exporter, tp := newTestTracer()
+	h := petalotel.NewTracingHandlerWithCapture(tp.Tracer("test"), runtime.ContentCapture{Enabled: true})
+	now := time.Now()
+	graphDefinition := map[string]any{"id": "workflow-1", "nodes": []any{}}
+	inputs := map[string]any{"question": "hello"}
+
+	h.Handle(runtime.Event{
+		Kind:  runtime.EventRunStarted,
+		RunID: "run-1",
+		Time:  now,
+		Payload: map[string]any{
+			"graph":                     "workflow-1",
+			"workflow_id":               "workflow-1",
+			"workflow_version":          "1",
+			"trigger":                   "petaltrace-replay",
+			"parent_run_id":             "source-run",
+			"source_kind":               "petalflow-replay",
+			"petalflow.tag.replay_mode": "hybrid",
+			"graph_definition":          graphDefinition,
+			"inputs":                    inputs,
+		},
+	})
+	h.Handle(runtime.Event{
+		Kind:    runtime.EventRunFinished,
+		RunID:   "run-1",
+		Time:    now.Add(time.Second),
+		Elapsed: time.Second,
+		Payload: map[string]any{"status": "completed"},
+	})
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported spans = %d, want 1", len(spans))
+	}
+	attributes := make(map[string]string, len(spans[0].Attributes))
+	for _, attr := range spans[0].Attributes {
+		if attr.Value.Type().String() == "STRING" {
+			attributes[string(attr.Key)] = attr.Value.AsString()
+		}
+	}
+	for key, want := range map[string]string{
+		"petalflow.workflow_id":      "workflow-1",
+		"petalflow.workflow_version": "1",
+		"petalflow.trigger":          "petaltrace-replay",
+		"petalflow.parent_run_id":    "source-run",
+		"petalflow.source_kind":      "petalflow-replay",
+		"petalflow.tag.replay_mode":  "hybrid",
+		"petalflow.graph_definition": `{"id":"workflow-1","nodes":[]}`,
+		"petalflow.input_snapshot":   `{"question":"hello"}`,
+	} {
+		if got := attributes[key]; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
 func TestTracingHandler_RunStartedUsesRunIDWhenNoGraphName(t *testing.T) {
 	exporter, tp := newTestTracer()
 	tracer := tp.Tracer("test")
