@@ -31,6 +31,8 @@ type observabilityStack struct {
 	// capture is the content capture policy from the PetalTrace ladder
 	// (standard/full enable capture; minimal stays metadata-only).
 	capture petalruntime.ContentCapture
+	// captureSnapshots is enabled only for the full PetalTrace capture mode.
+	captureSnapshots bool
 	// enabled reports whether any telemetry pipeline is active. When
 	// false, serve runs with no runtime event handlers wired (the
 	// documented no-op default).
@@ -60,6 +62,7 @@ func setupObservability(ctx context.Context, petaltraceCfg *daemon.PetalTraceCon
 		shutdowns = append(shutdowns, adapter.Shutdown)
 		stack.tracer = adapter.Tracer()
 		stack.capture = adapter.ContentCapture()
+		stack.captureSnapshots = adapter.ShouldCaptureSnapshots()
 		petaltraceOwnsTraces = true
 		stack.enabled = true
 	}
@@ -84,7 +87,7 @@ func setupObservability(ctx context.Context, petaltraceCfg *daemon.PetalTraceCon
 		stack.tracer = otelapi.GetTracerProvider().Tracer("petalflow")
 	}
 
-	stack.tracing = petalotel.NewTracingHandler(stack.tracer)
+	stack.tracing = petalotel.NewTracingHandlerWithCapture(stack.tracer, stack.capture)
 
 	if len(shutdowns) > 0 {
 		stack.shutdown = func(ctx context.Context) error {

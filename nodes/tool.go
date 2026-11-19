@@ -162,34 +162,46 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 		}
 	}
 
-	// Execute with retries
+	// Replay runs may replace tool execution with a captured result.
 	var result map[string]any
 	var lastErr error
-
-	for attempt := 1; attempt <= n.config.RetryPolicy.MaxAttempts; attempt++ {
-		result, lastErr = tool.Invoke(ctx, args)
-		if lastErr == nil {
-			break
+	mocked := false
+	if mocks, ok := runtime.ToolMocksFromContext(ctx); ok && mocks.Mode != runtime.ToolMockModeNone {
+		if output, found := mocks.Results[n.ID()]; found {
+			result = output
+			mocked = true
+		} else if mocks.Mode == runtime.ToolMockModeAll {
+			lastErr = fmt.Errorf("no captured tool result for node %q", n.ID())
 		}
+	}
 
-		// Typed payload and budget rejections are deterministic: they
-		// fail immediately instead of burning retries (budgets cannot
-		// be bypassed or multiplied by retries).
-		if code := toolpayloadRejectedCode(lastErr); code != "" {
-			break
-		}
+	// Execute with retries when no captured result was supplied.
+	if !mocked && lastErr == nil {
+		for attempt := 1; attempt <= n.config.RetryPolicy.MaxAttempts; attempt++ {
+			result, lastErr = tool.Invoke(ctx, args)
+			if lastErr == nil {
+				break
+			}
 
-		// Check if context is done
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
+			// Typed payload and budget rejections are deterministic: they
+			// fail immediately instead of burning retries (budgets cannot
+			// be bypassed or multiplied by retries).
+			if code := toolpayloadRejectedCode(lastErr); code != "" {
+				break
+			}
 
-		// Wait before retry (except on last attempt)
-		if attempt < n.config.RetryPolicy.MaxAttempts {
-			select {
-			case <-ctx.Done():
+			// Check if context is done
+			if ctx.Err() != nil {
 				return nil, ctx.Err()
-			case <-time.After(n.config.RetryPolicy.Backoff * time.Duration(attempt)):
+			}
+
+			// Wait before retry (except on last attempt)
+			if attempt < n.config.RetryPolicy.MaxAttempts {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(n.config.RetryPolicy.Backoff * time.Duration(attempt)):
+				}
 			}
 		}
 	}
@@ -198,11 +210,15 @@ func (n *ToolNode) Run(ctx context.Context, env *core.Envelope) (*core.Envelope,
 	// and budget rejections surface their stable error codes without
 	// echoing payload contents to untrusted consumers.
 	errCode := toolpayloadRejectedCode(lastErr)
-	emit(runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
+	resultEvent := runtime.NewEvent(runtime.EventToolResult, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
 		WithPayload("tool_name", tool.Name()).
 		WithPayload("is_error", lastErr != nil).
-		WithPayload("error_code", errCode))
+		WithPayload("error_code", errCode)
+	if lastErr == nil {
+		resultEvent = resultEvent.WithContentPayload("outputs", result, capture)
+	}
+	emit(resultEvent)
 
 	if lastErr != nil {
 		return nil, fmt.Errorf("tool %q failed after %d attempts: %w",

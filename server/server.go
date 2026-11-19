@@ -51,6 +51,9 @@ type ServerConfig struct {
 	// zero value is the default: metadata only. Captured values are
 	// size-bounded and redacted before emission or persistence.
 	ContentCapture runtime.ContentCapture
+	// CaptureSnapshots opts in to graph/input/config snapshots in run.started
+	// events. This is enabled by the PetalTrace full capture mode.
+	CaptureSnapshots bool
 }
 
 // SecurityConfig controls authentication, CORS, and request concurrency.
@@ -97,7 +100,8 @@ type Server struct {
 	// audit records the tool lifecycle trail; nil disables recording.
 	audit *tool.ToolAuditRecorder
 	// contentCapture is the configured event content capture policy.
-	contentCapture runtime.ContentCapture
+	contentCapture   runtime.ContentCapture
+	captureSnapshots bool
 	// planHook, when set, overrides run planning. It is a test seam.
 	planHook func(ctx context.Context, workflowID string, req RunRequest) (*workflowRunPlan, error)
 }
@@ -164,6 +168,7 @@ func NewServer(cfg ServerConfig) *Server {
 		defaultTenantPolicy: cfg.DefaultTenantPolicy,
 		audit:               tool.NewToolAuditRecorder(cfg.AuditStore),
 		contentCapture:      cfg.ContentCapture,
+		captureSnapshots:    cfg.CaptureSnapshots,
 	}
 }
 
@@ -204,6 +209,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/workflows", s.handleListWorkflows)
 	mux.HandleFunc("POST /api/workflows/agent", s.handleCreateAgentWorkflow)
 	mux.HandleFunc("POST /api/workflows/graph", s.handleCreateGraphWorkflow)
+	mux.HandleFunc("POST /api/execute", s.handlePetalTraceExecute)
+	mux.HandleFunc("POST /api/execute/hybrid", s.handlePetalTraceHybridExecute)
 	mux.HandleFunc("GET /api/workflows/{id}", s.handleGetWorkflow)
 	mux.HandleFunc("PUT /api/workflows/{id}", s.handleUpdateWorkflow)
 	mux.HandleFunc("DELETE /api/workflows/{id}", s.handleDeleteWorkflow)

@@ -196,8 +196,22 @@ func (r *BasicRuntime) runDurable(ctx context.Context, g graph.Graph, env *core.
 		if opts.WorkflowID != "" {
 			event = event.WithPayload("workflow_id", opts.WorkflowID)
 		}
+		if opts.WorkflowVersion != "" {
+			event = event.WithPayload("workflow_version", opts.WorkflowVersion)
+		}
 		if opts.TenantID != "" {
 			event = event.WithPayload("tenant_id", opts.TenantID)
+		}
+		if opts.CaptureSnapshots {
+			if opts.GraphDefinition != nil {
+				event = event.WithPayload("graph_definition", opts.GraphDefinition)
+			}
+			if opts.Inputs != nil {
+				event = event.WithPayload("inputs", opts.Inputs)
+			}
+			if opts.ConfigSnapshot != nil {
+				event = event.WithPayload("config", opts.ConfigSnapshot)
+			}
 		}
 		emit(event)
 	}
