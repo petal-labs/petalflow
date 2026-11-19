@@ -135,6 +135,120 @@ func TestTracingHandler_RunStartedExportsReplaySnapshotsWhenCaptureEnabled(t *te
 	}
 }
 
+func TestTracingHandler_SnapshotAttributeValidatesJSON(t *testing.T) {
+	exporter, tp := newTestTracer()
+	handler := petalotel.NewTracingHandlerWithCapture(tp.Tracer("test"), runtime.ContentCapture{Enabled: true})
+	now := time.Now()
+	handler.Handle(runtime.Event{
+		Kind:  runtime.EventRunStarted,
+		RunID: "run-json-snapshot",
+		Time:  now,
+		Payload: map[string]any{
+			"graph":            "workflow",
+			"graph_definition": `{"id":"workflow"}`,
+			"inputs":           make(chan int),
+		},
+	})
+	handler.Handle(runtime.Event{
+		Kind:    runtime.EventRunFinished,
+		RunID:   "run-json-snapshot",
+		Time:    now.Add(time.Second),
+		Elapsed: time.Second,
+		Payload: map[string]any{"status": "completed"},
+	})
+
+	attributes := make(map[string]string)
+	for _, attr := range exporter.GetSpans()[0].Attributes {
+		if attr.Value.Type().String() == "STRING" {
+			attributes[string(attr.Key)] = attr.Value.AsString()
+		}
+	}
+	if got := attributes["petalflow.graph_definition"]; got != `{"id":"workflow"}` {
+		t.Fatalf("graph definition attribute = %q, want unquoted JSON", got)
+	}
+	if _, ok := attributes["petalflow.input_snapshot"]; ok {
+		t.Fatal("input snapshot attribute was emitted for an invalid JSON value")
+	}
+}
+
+func TestTracingHandler_ToolOutputsFollowCapturePolicy(t *testing.T) {
+	for _, capture := range []bool{false, true} {
+		t.Run(fmt.Sprintf("capture=%t", capture), func(t *testing.T) {
+			exporter, tp := newTestTracer()
+			handler := petalotel.NewTracingHandlerWithCapture(
+				tp.Tracer("test"),
+				runtime.ContentCapture{Enabled: capture},
+			)
+			now := time.Now()
+			handler.Handle(runtime.Event{
+				Kind:  runtime.EventRunStarted,
+				RunID: "run-1",
+				Time:  now,
+				Payload: map[string]any{
+					"graph": "workflow",
+				},
+			})
+			handler.Handle(runtime.Event{
+				Kind:     runtime.EventNodeStarted,
+				RunID:    "run-1",
+				NodeID:   "lookup",
+				NodeKind: "tool",
+				Time:     now,
+			})
+			handler.Handle(runtime.Event{
+				Kind:     runtime.EventToolCall,
+				RunID:    "run-1",
+				NodeID:   "lookup",
+				NodeKind: "tool",
+				Time:     now,
+				Payload:  map[string]any{"tool_name": "lookup"},
+			})
+			handler.Handle(runtime.Event{
+				Kind:     runtime.EventToolResult,
+				RunID:    "run-1",
+				NodeID:   "lookup",
+				NodeKind: "tool",
+				Time:     now.Add(time.Millisecond),
+				Payload: map[string]any{
+					"is_error": false,
+					"outputs":  map[string]any{"answer": "captured"},
+				},
+			})
+			handler.Handle(runtime.Event{
+				Kind:     runtime.EventNodeFinished,
+				RunID:    "run-1",
+				NodeID:   "lookup",
+				NodeKind: "tool",
+				Time:     now.Add(2 * time.Millisecond),
+			})
+			handler.Handle(runtime.Event{
+				Kind:    runtime.EventRunFinished,
+				RunID:   "run-1",
+				Time:    now.Add(3 * time.Millisecond),
+				Payload: map[string]any{"status": "completed"},
+			})
+
+			var output string
+			for _, span := range exporter.GetSpans() {
+				if span.Name != "lookup" {
+					continue
+				}
+				for _, attr := range span.Attributes {
+					if string(attr.Key) == "petalflow.tool.outputs" {
+						output = attr.Value.AsString()
+					}
+				}
+			}
+			if capture && output != `{"answer":"captured"}` {
+				t.Fatalf("tool output attribute = %q, want captured JSON", output)
+			}
+			if !capture && output != "" {
+				t.Fatalf("tool output attribute = %q, want no content without capture", output)
+			}
+		})
+	}
+}
+
 func TestTracingHandler_RunStartedUsesRunIDWhenNoGraphName(t *testing.T) {
 	exporter, tp := newTestTracer()
 	tracer := tp.Tracer("test")

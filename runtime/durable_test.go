@@ -199,6 +199,51 @@ func TestRuntime_PersistsAndValidatesResumeToken(t *testing.T) {
 	}
 }
 
+func TestDurableRuntime_CapturesReplaySnapshots(t *testing.T) {
+	store := NewMemoryRunStore()
+	g := graph.NewGraph("snapshot-workflow")
+	if err := g.AddNode(core.NewFuncNode("done", func(_ context.Context, env *core.Envelope) (*core.Envelope, error) {
+		return env.Clone(), nil
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetEntry("done"); err != nil {
+		t.Fatal(err)
+	}
+
+	graphDefinition := map[string]any{"id": "snapshot-workflow"}
+	inputs := map[string]any{"question": "hello"}
+	config := map[string]any{"environment": "test"}
+	var runStarted Event
+	_, err := NewRuntime().Run(context.Background(), g, core.NewEnvelope(), RunOptions{
+		RunStore:         store,
+		RunID:            "snapshot-run",
+		WorkflowID:       "snapshot-workflow",
+		CaptureSnapshots: true,
+		ContentCapture:   ContentCapture{Enabled: true},
+		GraphDefinition:  graphDefinition,
+		Inputs:           inputs,
+		ConfigSnapshot:   config,
+		EventHandler: func(event Event) {
+			if event.Kind == EventRunStarted {
+				runStarted = event
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run(): %v", err)
+	}
+	for key, want := range map[string]any{
+		"graph_definition": graphDefinition,
+		"inputs":           inputs,
+		"config":           config,
+	} {
+		if got := runStarted.Payload[key]; got == nil {
+			t.Errorf("run.started %s = nil, want %#v", key, want)
+		}
+	}
+}
+
 func TestMemoryRunStore_ClonesPendingActionPayloads(t *testing.T) {
 	store := NewMemoryRunStore()
 	data := map[string]any{"nested": map[string]any{"value": "original"}}

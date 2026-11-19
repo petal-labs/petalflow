@@ -103,6 +103,79 @@ func TestToolNode_Run_BasicExecution(t *testing.T) {
 	}
 }
 
+func TestToolNode_Run_UsesCapturedToolResult(t *testing.T) {
+	tool := &mockPetalTool{name: "live-tool", result: map[string]any{"result": "live"}}
+	node := NewToolNode("render", tool, ToolNodeConfig{OutputKey: "result"})
+	var events []runtime.Event
+	ctx := runtime.ContextWithEmitter(context.Background(), func(event runtime.Event) {
+		events = append(events, event)
+	})
+	ctx = runtime.ContextWithContentCapture(ctx, runtime.ContentCapture{Enabled: true})
+	ctx = runtime.ContextWithToolMocks(ctx, runtime.ToolMockSet{
+		Mode:    runtime.ToolMockModeAll,
+		Results: map[string]map[string]any{"render": {"result": "captured"}},
+	})
+
+	result, err := node.Run(ctx, core.NewEnvelope())
+	if err != nil {
+		t.Fatalf("Run(): %v", err)
+	}
+	if len(tool.calls) != 0 {
+		t.Fatalf("live tool calls = %d, want 0", len(tool.calls))
+	}
+	output, ok := result.GetVar("result")
+	if !ok || output.(map[string]any)["result"] != "captured" {
+		t.Fatalf("envelope result = %#v, want captured output", output)
+	}
+
+	var resultEvent runtime.Event
+	for _, event := range events {
+		if event.Kind == runtime.EventToolResult {
+			resultEvent = event
+		}
+	}
+	if outputs, ok := resultEvent.Payload["outputs"].(map[string]any); !ok || outputs["result"] != "captured" {
+		t.Fatalf("tool.result outputs = %#v, want captured output", resultEvent.Payload["outputs"])
+	}
+}
+
+func TestToolNode_Run_AllMockModeFailsClosedOnMissingResult(t *testing.T) {
+	tool := &mockPetalTool{name: "live-tool", result: map[string]any{"result": "live"}}
+	node := NewToolNode("render", tool, ToolNodeConfig{OutputKey: "result"})
+	ctx := runtime.ContextWithToolMocks(context.Background(), runtime.ToolMockSet{
+		Mode:    runtime.ToolMockModeAll,
+		Results: map[string]map[string]any{},
+	})
+
+	if _, err := node.Run(ctx, core.NewEnvelope()); err == nil {
+		t.Fatal("Run() error = nil, want missing mock error")
+	}
+	if len(tool.calls) != 0 {
+		t.Fatalf("live tool calls = %d, want 0", len(tool.calls))
+	}
+}
+
+func TestToolNode_Run_NoneMockModeUsesLiveTool(t *testing.T) {
+	tool := &mockPetalTool{name: "live-tool", result: map[string]any{"result": "live"}}
+	node := NewToolNode("render", tool, ToolNodeConfig{OutputKey: "result"})
+	ctx := runtime.ContextWithToolMocks(context.Background(), runtime.ToolMockSet{
+		Mode:    runtime.ToolMockModeNone,
+		Results: map[string]map[string]any{"render": {"result": "captured"}},
+	})
+
+	result, err := node.Run(ctx, core.NewEnvelope())
+	if err != nil {
+		t.Fatalf("Run(): %v", err)
+	}
+	if len(tool.calls) != 1 {
+		t.Fatalf("live tool calls = %d, want 1", len(tool.calls))
+	}
+	output, ok := result.GetVar("result")
+	if !ok || output.(map[string]any)["result"] != "live" {
+		t.Fatalf("envelope result = %#v, want live output", output)
+	}
+}
+
 func TestToolNode_Run_WithArgsTemplate(t *testing.T) {
 	tool := &mockPetalTool{
 		name:   "weather",
