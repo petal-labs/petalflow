@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Session-oriented voice execution boundary**
+  ([#252](https://github.com/petal-labs/petalflow/issues/252)). Adds the
+  `voice` package — typed `voice.Session` handles for full-duplex real-time
+  voice conversations, layered over the Iris voice session API
+  (`iris/v2@v2.0.0`, iris #155/#156): session lifecycle separate from
+  one-shot DAG nodes (sessions never enter the graph IR), typed
+  `iriscore.VoiceEvent` envelopes reused verbatim over a bounded channel
+  (sequence numbers, session/turn correlation, prompt-free privacy),
+  monotonic turn IDs with per-turn cancellation contexts (supersede,
+  complete, observe), and interrupt/cancel propagation converging on turn
+  tracking (client cancel → Iris session interrupt + turn context + stale
+  audio suppression via `ShouldPlayAudio`; provider barge-in via
+  `ObserveEvent`; session close cancels turns and closes `Events`/`Err`
+  promptly). `llmprovider.NewVoiceSessionStarter` resolves provider
+  credentials through the standard hydration flow and discovers the
+  `voice_session` capability at construction (errors never echo the API
+  key). Deterministic mocked tests cover lifecycle, turn/turn-supersede,
+  barge-in, stale-audio filtering, event correlation, terminal errors,
+  cancellation, and concurrent close races (`-race`). Spec:
+  `docs/voice-sessions.md`.
+
 - **Hydration + credential resolution for ElevenLabs speech**
   ([#251](https://github.com/petal-labs/petalflow/issues/251)). Speech nodes
   (`speech_transcribe`, `speech_synthesize`) now hydrate through the default

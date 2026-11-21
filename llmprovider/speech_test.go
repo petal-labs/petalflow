@@ -70,6 +70,7 @@ func init() {
 	irisproviders.Register("speech-fake", func(string) iriscore.Provider { return speechProvider{} })
 	irisproviders.Register("chat-only", func(string) iriscore.Provider { return chatOnlyProvider{} })
 	irisproviders.Register("tts-fake", func(string) iriscore.Provider { return ttsProvider{} })
+	irisproviders.Register("voice-fake", func(string) iriscore.Provider { return voiceSessionFakeProvider{} })
 }
 
 func TestNewSpeechRecognizer_Discovered(t *testing.T) {
@@ -190,6 +191,131 @@ func TestNewSpeechSynthesizer_ErrorDoesNotLeakCredential(t *testing.T) {
 
 func TestNewSpeechSynthesizer_UnknownProvider(t *testing.T) {
 	_, err := NewSpeechSynthesizer("does-not-exist", hydrate.ProviderConfig{APIKey: "sk-x"})
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}
+
+// voiceSessionFakeProvider advertises full-duplex voice sessions and returns
+// a canned in-process session.
+type voiceSessionFakeProvider struct{}
+
+func (voiceSessionFakeProvider) ID() string                   { return "voice-fake" }
+func (voiceSessionFakeProvider) Models() []iriscore.ModelInfo { return nil }
+func (voiceSessionFakeProvider) Supports(f iriscore.Feature) bool {
+	return f == iriscore.FeatureChat || f == iriscore.FeatureVoiceSession
+}
+func (voiceSessionFakeProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
+	return nil, nil
+}
+func (voiceSessionFakeProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+	return nil, nil
+}
+func (voiceSessionFakeProvider) StartVoiceSession(_ context.Context, cfg iriscore.VoiceSessionConfig) (iriscore.VoiceSession, error) {
+	sessionID := cfg.SessionID
+	if sessionID == "" {
+		sessionID = "fake-session-1"
+	}
+	emitter := iriscore.NewVoiceEventEmitter(sessionID, 0)
+	sess := &cannedVoiceSession{emitter: emitter}
+	return sess, nil
+}
+
+// cannedVoiceSession is a deterministic iriscore.VoiceSession for starter
+// tests; its channels close when Close is called.
+type cannedVoiceSession struct {
+	emitter *iriscore.VoiceEventEmitter
+}
+
+func (s *cannedVoiceSession) ID() string { return "fake-session-1" }
+func (s *cannedVoiceSession) State() iriscore.VoiceSessionState {
+	return iriscore.VoiceSessionStateActive
+}
+func (s *cannedVoiceSession) SendAudio(context.Context, iriscore.AudioChunk) error { return nil }
+func (s *cannedVoiceSession) SendText(context.Context, string) error               { return nil }
+func (s *cannedVoiceSession) SubmitToolResult(context.Context, iriscore.ToolResult) error {
+	return nil
+}
+func (s *cannedVoiceSession) Interrupt(context.Context) error { return nil }
+func (s *cannedVoiceSession) Events() <-chan iriscore.VoiceEvent {
+	return s.emitter.Events()
+}
+func (s *cannedVoiceSession) Err() <-chan error {
+	return s.emitter.Err()
+}
+func (s *cannedVoiceSession) Close() error {
+	s.emitter.Close()
+	return nil
+}
+
+func TestNewVoiceSessionStarter_Discovered(t *testing.T) {
+	starter, err := NewVoiceSessionStarter("voice-fake", hydrate.ProviderConfig{APIKey: "sk-voice-fake"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	session, err := starter.StartVoiceSession(context.Background(), iriscore.VoiceSessionConfig{})
+	if err != nil {
+		t.Fatalf("StartVoiceSession: %v", err)
+	}
+	defer func() { _ = session.Close() }()
+
+	if session.ID() != "fake-session-1" {
+		t.Errorf("session ID = %q", session.ID())
+	}
+	if session.State() != iriscore.VoiceSessionStateActive {
+		t.Errorf("session state = %q", session.State())
+	}
+
+	// Typed PetalFlow handle semantics over the Iris session.
+	turnID, turnCtx := session.StartTurn()
+	if turnID == "" {
+		t.Fatal("expected a turn ID")
+	}
+	if err := session.SendText(context.Background(), "hello"); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if !session.CompleteTurn(turnID) {
+		t.Error("expected CompleteTurn to succeed for the active turn")
+	}
+	select {
+	case <-turnCtx.Done():
+	default:
+		t.Error("completed turn context must be released")
+	}
+}
+
+func TestNewVoiceSessionStarter_CapabilityMissing(t *testing.T) {
+	_, err := NewVoiceSessionStarter("chat-only", hydrate.ProviderConfig{APIKey: "sk-chat-only"})
+	if err == nil {
+		t.Fatal("expected error for provider without voice sessions")
+	}
+	if !strings.Contains(err.Error(), "does not support voice sessions") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewVoiceSessionStarter_MissingCredential(t *testing.T) {
+	const apiKey = "sk-secret-voice-key-123456"
+	_, missingErr := NewVoiceSessionStarter("voice-fake", hydrate.ProviderConfig{})
+	if missingErr == nil {
+		t.Fatal("expected error for missing API key")
+	}
+	if !strings.Contains(missingErr.Error(), "requires an API key for speech") {
+		t.Errorf("error = %v", missingErr)
+	}
+
+	// Capability failures must not leak the resolved key either.
+	_, err := NewVoiceSessionStarter("chat-only", hydrate.ProviderConfig{APIKey: apiKey})
+	if err == nil {
+		t.Fatal("expected capability error")
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Errorf("error leaks API key: %q", err.Error())
+	}
+}
+
+func TestNewVoiceSessionStarter_UnknownProvider(t *testing.T) {
+	_, err := NewVoiceSessionStarter("does-not-exist", hydrate.ProviderConfig{APIKey: "sk-x"})
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
 	}
