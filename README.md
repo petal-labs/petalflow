@@ -139,11 +139,18 @@ Examples:
 ```bash
 export PETALFLOW_PROVIDER_OPENAI_API_KEY=sk-...
 export PETALFLOW_PROVIDER_ANTHROPIC_API_KEY=sk-ant-...
+export PETALFLOW_PROVIDER_ELEVENLABS_API_KEY=ek-...   # speech nodes
 
 petalflow run workflow.yaml \
   --provider-key openai=sk-... \
   --input '{"topic":"Release notes"}'
 ```
+
+Speech nodes (`speech_transcribe`, `speech_synthesize`) resolve their
+credentials through this same flow — no extra wiring is needed beyond the
+provider key. Missing credentials and providers without speech capabilities
+fail hydration with an error naming the resolution paths (never echoing the
+key).
 
 ## Agent/Task Workflows (Simple Explanation)
 

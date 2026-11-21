@@ -105,13 +105,27 @@ func NewLiveNodeFactory(providers ProviderMap, clientFactory ClientFactory, opts
 	}
 
 	runtime := liveFactoryRuntime{
-		options:    collectLiveFactoryOptions(opts),
+		options:    resolveLiveFactoryOptions(opts),
 		providers:  providers,
 		getClient:  newLiveFactoryClientGetter(providers, clientFactory),
 		health:     routing.NewHealthTracker(routing.HealthConfig{}),
 		capability: registry,
 	}
 	return runtime.buildNode
+}
+
+// resolveLiveFactoryOptions collects explicit options and falls back to the
+// registered default speech factories (installed by llmprovider at init) when
+// a workflow declares speech nodes but the caller did not wire factories.
+func resolveLiveFactoryOptions(opts []LiveNodeOption) liveFactoryOptions {
+	options := collectLiveFactoryOptions(opts)
+	if options.speechRecognizerFactory == nil {
+		options.speechRecognizerFactory = lookupDefaultSpeechRecognizerFactory()
+	}
+	if options.speechSynthesizerFactory == nil {
+		options.speechSynthesizerFactory = lookupDefaultSpeechSynthesizerFactory()
+	}
+	return options
 }
 
 func collectLiveFactoryOptions(opts []LiveNodeOption) liveFactoryOptions {
@@ -314,7 +328,7 @@ func buildSpeechTranscribeNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Nod
 		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
 	}
 	if r.options.speechRecognizerFactory == nil {
-		return nil, fmt.Errorf("node %q: speech_transcribe node requires a speech recognizer factory (use WithSpeechRecognizerFactory)", nd.ID)
+		return nil, fmt.Errorf("node %q: speech_transcribe node requires a speech recognizer factory (register llmprovider defaults or use WithSpeechRecognizerFactory)", nd.ID)
 	}
 	cfg, err := nodes.ParseSpeechTranscribeConfig(nd.Config)
 	if err != nil {
@@ -343,7 +357,7 @@ func buildSpeechSynthesizeNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Nod
 		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
 	}
 	if r.options.speechSynthesizerFactory == nil {
-		return nil, fmt.Errorf("node %q: speech_synthesize node requires a speech synthesizer factory (use WithSpeechSynthesizerFactory)", nd.ID)
+		return nil, fmt.Errorf("node %q: speech_synthesize node requires a speech synthesizer factory (register llmprovider defaults or use WithSpeechSynthesizerFactory)", nd.ID)
 	}
 	cfg, err := nodes.ParseSpeechSynthesizeConfig(nd.Config)
 	if err != nil {

@@ -73,7 +73,7 @@ func init() {
 }
 
 func TestNewSpeechRecognizer_Discovered(t *testing.T) {
-	recognizer, err := NewSpeechRecognizer("speech-fake", hydrate.ProviderConfig{})
+	recognizer, err := NewSpeechRecognizer("speech-fake", hydrate.ProviderConfig{APIKey: "sk-speech-fake"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,8 +92,7 @@ func TestNewSpeechRecognizer_Discovered(t *testing.T) {
 }
 
 func TestNewSpeechRecognizer_CapabilityMissing(t *testing.T) {
-	// Create via the iris adapter path: chatOnlyProvider must fail discovery.
-	_, err := NewSpeechRecognizer("chat-only", hydrate.ProviderConfig{})
+	_, err := NewSpeechRecognizer("chat-only", hydrate.ProviderConfig{APIKey: "sk-chat-only"})
 	if err == nil {
 		t.Fatal("expected error for provider without speech recognition")
 	}
@@ -102,15 +101,45 @@ func TestNewSpeechRecognizer_CapabilityMissing(t *testing.T) {
 	}
 }
 
+func TestNewSpeechRecognizer_MissingCredential(t *testing.T) {
+	_, err := NewSpeechRecognizer("speech-fake", hydrate.ProviderConfig{})
+	if err == nil {
+		t.Fatal("expected error for missing API key")
+	}
+	for _, want := range []string{
+		"requires an API key for speech",
+		"PETALFLOW_PROVIDER_SPEECH-FAKE_API_KEY",
+		"providers.speech-fake.api_key",
+		"--provider-key speech-fake=<key>",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+}
+
+// TestNewSpeechRecognizer_ErrorDoesNotLeakCredential asserts that
+// construction failures never echo the resolved API key.
+func TestNewSpeechRecognizer_ErrorDoesNotLeakCredential(t *testing.T) {
+	const apiKey = "sk-secret-elevenlabs-key-123456"
+	_, err := NewSpeechRecognizer("chat-only", hydrate.ProviderConfig{APIKey: apiKey})
+	if err == nil {
+		t.Fatal("expected capability error")
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Errorf("error leaks API key: %q", err.Error())
+	}
+}
+
 func TestNewSpeechRecognizer_UnknownProvider(t *testing.T) {
-	_, err := NewSpeechRecognizer("does-not-exist", hydrate.ProviderConfig{})
+	_, err := NewSpeechRecognizer("does-not-exist", hydrate.ProviderConfig{APIKey: "sk-x"})
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
 	}
 }
 
 func TestNewSpeechSynthesizer_Discovered(t *testing.T) {
-	synthesizer, err := NewSpeechSynthesizer("tts-fake", hydrate.ProviderConfig{})
+	synthesizer, err := NewSpeechSynthesizer("tts-fake", hydrate.ProviderConfig{APIKey: "sk-tts-fake"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +156,7 @@ func TestNewSpeechSynthesizer_Discovered(t *testing.T) {
 }
 
 func TestNewSpeechSynthesizer_CapabilityMissing(t *testing.T) {
-	_, err := NewSpeechSynthesizer("chat-only", hydrate.ProviderConfig{})
+	_, err := NewSpeechSynthesizer("chat-only", hydrate.ProviderConfig{APIKey: "sk-chat-only"})
 	if err == nil {
 		t.Fatal("expected error for provider without speech synthesis")
 	}
@@ -136,10 +165,58 @@ func TestNewSpeechSynthesizer_CapabilityMissing(t *testing.T) {
 	}
 }
 
+func TestNewSpeechSynthesizer_MissingCredential(t *testing.T) {
+	_, err := NewSpeechSynthesizer("tts-fake", hydrate.ProviderConfig{})
+	if err == nil {
+		t.Fatal("expected error for missing API key")
+	}
+	if !strings.Contains(err.Error(), "requires an API key for speech") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+// TestNewSpeechSynthesizer_ErrorDoesNotLeakCredential asserts that
+// construction failures never echo the resolved API key.
+func TestNewSpeechSynthesizer_ErrorDoesNotLeakCredential(t *testing.T) {
+	const apiKey = "sk-secret-elevenlabs-key-123456"
+	_, err := NewSpeechSynthesizer("chat-only", hydrate.ProviderConfig{APIKey: apiKey})
+	if err == nil {
+		t.Fatal("expected capability error")
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Errorf("error leaks API key: %q", err.Error())
+	}
+}
+
 func TestNewSpeechSynthesizer_UnknownProvider(t *testing.T) {
-	_, err := NewSpeechSynthesizer("does-not-exist", hydrate.ProviderConfig{})
+	_, err := NewSpeechSynthesizer("does-not-exist", hydrate.ProviderConfig{APIKey: "sk-x"})
 	if err == nil {
 		t.Fatal("expected error for unknown provider")
+	}
+}
+
+func TestDefaultSpeechFactoriesRegistered(t *testing.T) {
+	// llmprovider's init installs itself as the hydration default so speech
+	// nodes resolve credentials through the standard ProviderMap flow.
+	recognizerFactory, synthesizerFactory := hydrate.DefaultSpeechFactories()
+	if recognizerFactory == nil || synthesizerFactory == nil {
+		t.Fatalf("default speech factories not registered: recognizer=%v synthesizer=%v", recognizerFactory, synthesizerFactory)
+	}
+
+	recognizer, err := recognizerFactory("speech-fake", hydrate.ProviderConfig{APIKey: "sk-speech-fake"})
+	if err != nil {
+		t.Fatalf("recognizer factory: %v", err)
+	}
+	if _, ok := recognizer.(nodes.SpeechRecognizer); !ok {
+		t.Fatalf("recognizer factory returned %T", recognizer)
+	}
+
+	synthesizer, err := synthesizerFactory("tts-fake", hydrate.ProviderConfig{APIKey: "sk-tts-fake"})
+	if err != nil {
+		t.Fatalf("synthesizer factory: %v", err)
+	}
+	if _, ok := synthesizer.(nodes.SpeechSynthesizer); !ok {
+		t.Fatalf("synthesizer factory returned %T", synthesizer)
 	}
 }
 
