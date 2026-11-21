@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	iriscore "github.com/petal-labs/iris/core"
+	iriscore "github.com/petal-labs/iris/v2/core"
 
 	"github.com/petal-labs/petalflow/artifact"
 	"github.com/petal-labs/petalflow/core"

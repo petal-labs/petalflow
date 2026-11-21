@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Upgraded Iris to v2.0.0** (from v1.0.0), the first Iris release following
+  Go semantic import versioning. The Iris module path moved to
+  `github.com/petal-labs/iris/v2`, so the root, `irisadapter`, and `examples`
+  modules now require `github.com/petal-labs/iris/v2 v2.0.0` and all Iris
+  imports were rewritten to the `.../iris/v2/...` paths. PetalFlow's use of
+  the Iris surface was otherwise unaffected by the 2.0.0 breaking changes:
+  none of the removed provider model constants (deprecated OpenAI, Anthropic,
+  Gemini, xAI, and Z.ai catalog entries) are referenced by PetalFlow code,
+  and the new speech, real-time voice, and ElevenLabs capabilities are not
+  claimed by `irisadapter` (see `docs/iris-compatibility.md`). The supported
+  Iris floor documented in `docs/compatibility.md` is now `v2.0.x`.
+
 ## [1.2.0] - 2026-11-19
 
 ### Added

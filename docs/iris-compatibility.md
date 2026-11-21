@@ -1,11 +1,11 @@
-# PetalFlow Iris 1.0 compatibility contract
+# PetalFlow Iris 2.0 compatibility contract
 
 PetalFlow exposes a provider-neutral LLM request model and adapts it to Iris
-1.0 `core.ChatRequest` through `irisadapter`. The adapter supports the
+2.0 `core.ChatRequest` through `irisadapter`. The adapter supports the
 capabilities below and rejects requested capabilities before calling a
 provider when the provider or its model catalog does not advertise them.
 
-| Iris 1.0 capability | PetalFlow contract | Adapter behavior |
+| Iris 2.0 capability | PetalFlow contract | Adapter behavior |
 | --- | --- | --- |
 | Chat | `LLMRequest` messages, system prompt, instructions, temperature, and max tokens | Mapped to `core.ChatRequest`; `FeatureChat` is checked before execution |
 | Structured output | `ResponseFormat`, `StructuredOutput`, and legacy `JSONSchema` fields | Maps schema name, description, strict mode, and schema bytes; `JSONValue` supports object, array, scalar, and null roots |
@@ -20,10 +20,11 @@ provider when the provider or its model catalog does not advertise them.
 | Streaming | `StreamingLLMClient` and `StreamChunk` | Text deltas are emitted in order; terminal metadata is equivalent to the synchronous response |
 
 The adapter deliberately does not claim support for Iris batch operations,
-image generation, embeddings, reranking, or provider-specific response items
+image generation, speech synthesis and recognition, real-time voice sessions,
+embeddings, reranking, or provider-specific response items
 that have no representation in the PetalFlow LLM contract. These operations
 must use their Iris-native APIs or a future PetalFlow capability interface.
-Strict tool schemas are also rejected because Iris 1.0's provider-neutral
+Strict tool schemas are also rejected because Iris 2.0's provider-neutral
 `core.Tool` interface has no strict flag; strictness is supported for response
 JSON Schemas.
 

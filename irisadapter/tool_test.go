@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/petal-labs/iris/tools"
+	"github.com/petal-labs/iris/v2/tools"
 	"github.com/petal-labs/petalflow"
 )
 

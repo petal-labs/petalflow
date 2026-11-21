@@ -41,7 +41,7 @@ func TestReleaseDocumentationContract(t *testing.T) {
 
 	release := readDocumentation(t, "../docs/release.md")
 	assertContainsAll(t, "release guide", release,
-		"Go 1.25", "Iris 1.0", "Integration tests", "Release checklist",
+		"Go 1.25", "Iris 2.0", "Integration tests", "Release checklist",
 		"Rollback", "iris-compatibility.md", "compatibility.md", "upgrade-to-1.0.md",
 	)
 

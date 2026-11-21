@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	iriscore "github.com/petal-labs/iris/core"
-	"github.com/petal-labs/iris/providers"
-	anthropicprovider "github.com/petal-labs/iris/providers/anthropic"
-	ollamaprovider "github.com/petal-labs/iris/providers/ollama"
-	openaiprovider "github.com/petal-labs/iris/providers/openai"
+	iriscore "github.com/petal-labs/iris/v2/core"
+	"github.com/petal-labs/iris/v2/providers"
+	anthropicprovider "github.com/petal-labs/iris/v2/providers/anthropic"
+	ollamaprovider "github.com/petal-labs/iris/v2/providers/ollama"
+	openaiprovider "github.com/petal-labs/iris/v2/providers/openai"
 
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/hydrate"

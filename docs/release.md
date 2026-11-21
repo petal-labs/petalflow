@@ -16,7 +16,7 @@ published compatibility claims have been tested together.
 
 Review the supported Go, module, Cortex, provider, and MCP combinations in the
 [compatibility matrix](./compatibility.md). The exact supported and unsupported
-Iris 1.0 capabilities are listed in the
+Iris 2.0 capabilities are listed in the
 [Iris compatibility contract](./iris-compatibility.md). A release must not
 claim support beyond those documents without conformance tests.
 

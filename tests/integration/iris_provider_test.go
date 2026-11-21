@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	iriscore "github.com/petal-labs/iris/core"
-	"github.com/petal-labs/iris/providers/anthropic"
-	"github.com/petal-labs/iris/providers/openai"
-	iristools "github.com/petal-labs/iris/tools"
+	iriscore "github.com/petal-labs/iris/v2/core"
+	"github.com/petal-labs/iris/v2/providers/anthropic"
+	"github.com/petal-labs/iris/v2/providers/openai"
+	iristools "github.com/petal-labs/iris/v2/tools"
 )
 
 func TestIrisProvider_OpenAI_Chat(t *testing.T) {

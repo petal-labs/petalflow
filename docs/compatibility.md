@@ -25,14 +25,14 @@ and migrate existing stored events to that version.
 | --- | --- | --- |
 | PetalFlow root module | current checkout; release dependency pin `v0.1.0` in auxiliary modules | Supported |
 | Go | `1.25.x` (`go.mod` language version `1.25.0`) | Supported and exercised in CI |
-| Iris | `v1.0.x`; repository pin `v1.0.0` | Supported by root, `irisadapter`, and examples; other major versions are unsupported |
-| `irisadapter` | contract `1.x` with Iris `v1.0.x` | Supported; see [Iris compatibility](./iris-compatibility.md) |
-| Examples | root `v0.1.0`, Iris `v1.0.0`, local checkout of `irisadapter` | Supported; local replacements compile against the exact checkout under test |
+| Iris | `v2.0.x`; repository pin `v2.0.0` | Supported by root, `irisadapter`, and examples; other major versions are unsupported |
+| `irisadapter` | contract `1.x` with Iris `v2.0.x` | Supported; see [Iris compatibility](./iris-compatibility.md) |
+| Examples | root `v0.1.0`, Iris `v2.0.0`, local checkout of `irisadapter` | Supported; local replacements compile against the exact checkout under test |
 | Cortex | no direct Go module dependency | Supported only through a public memory provider implementation or MCP; importing Cortex internals is unsupported, and no Cortex release is certified yet |
-| OpenAI | Iris `v1.0.x` provider plus advertised model capabilities | Built-in and adapter-tested; service/model availability is runtime-dependent |
-| Anthropic | Iris `v1.0.x` provider plus advertised model capabilities | Built-in and adapter-tested; service/model availability is runtime-dependent |
-| Ollama | Iris `v1.0.x` provider plus advertised model capabilities | Built-in and adapter-tested; model capabilities are runtime-dependent |
-| Other Iris providers | Iris `v1.0.x` provider registered with Iris | Experimental until requested capabilities pass adapter checks |
+| OpenAI | Iris `v2.0.x` provider plus advertised model capabilities | Built-in and adapter-tested; service/model availability is runtime-dependent |
+| Anthropic | Iris `v2.0.x` provider plus advertised model capabilities | Built-in and adapter-tested; service/model availability is runtime-dependent |
+| Ollama | Iris `v2.0.x` provider plus advertised model capabilities | Built-in and adapter-tested; model capabilities are runtime-dependent |
+| Other Iris providers | Iris `v2.0.x` provider registered with Iris | Experimental until requested capabilities pass adapter checks |
 | MCP stdio | current MCP initialize/tools contract | Supported |
 | MCP Streamable HTTP | sessions, SSE delivery/resumption, bearer auth, and OAuth 2.1 client credentials | Supported |
 | Legacy MCP SSE mode | existing request/response transport | Deprecated; migrate to `streamable_http` |

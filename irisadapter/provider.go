@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/petal-labs/iris/core"
+	"github.com/petal-labs/iris/v2/core"
 	"github.com/petal-labs/petalflow"
 )
 
