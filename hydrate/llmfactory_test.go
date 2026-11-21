@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	iriscore "github.com/petal-labs/iris/v2/core"
+
 	"github.com/petal-labs/petalflow/capability"
 	"github.com/petal-labs/petalflow/core"
 	"github.com/petal-labs/petalflow/graph"
@@ -31,6 +33,25 @@ func newMockClientFactory() (ClientFactory, map[string]int) {
 	return func(name string, cfg ProviderConfig) (core.LLMClient, error) {
 		calls[name]++
 		return &mockLLMClient{providerName: name}, nil
+	}, calls
+}
+
+// mockSpeechRecognizer implements nodes.SpeechRecognizer for testing.
+type mockSpeechRecognizer struct{}
+
+func (mockSpeechRecognizer) Transcribe(context.Context, *iriscore.TranscriptionRequest) (*iriscore.TranscriptionResponse, error) {
+	return nil, nil
+}
+
+func mockSpeechRecognizerFactory(string, ProviderConfig) (nodes.SpeechRecognizer, error) {
+	return mockSpeechRecognizer{}, nil
+}
+
+func newMockSpeechRecognizerFactory() (SpeechRecognizerFactory, map[string]int) {
+	calls := make(map[string]int)
+	return func(name string, cfg ProviderConfig) (nodes.SpeechRecognizer, error) {
+		calls[name]++
+		return mockSpeechRecognizer{}, nil
 	}, calls
 }
 
@@ -552,6 +573,133 @@ func TestNewLiveNodeFactory_MemoryNode_MissingProvider(t *testing.T) {
 
 	if _, err := nodeFactory(nd); err == nil {
 		t.Fatal("expected error for missing memory provider, got nil")
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechTranscribeNode(t *testing.T) {
+	providers := ProviderMap{
+		"elevenlabs": {APIKey: "ek-test"},
+	}
+	factory, _ := newMockClientFactory()
+	recognizerFactory, calls := newMockSpeechRecognizerFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechRecognizerFactory(recognizerFactory))
+
+	nd := graph.NodeDef{
+		ID:   "stt-1",
+		Type: "speech_transcribe",
+		Config: map[string]any{
+			"provider":     "elevenlabs",
+			"model":        "scribe_v1",
+			"input_var":    "audio",
+			"audio_format": "mp3",
+			"language":     "en",
+			"diarize":      true,
+			"num_speakers": 2,
+			"timestamps":   "word",
+			"timeout":      "45s",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Kind() != core.NodeKindSpeechTranscribe {
+		t.Errorf("kind = %q, want %q", node.Kind(), core.NodeKindSpeechTranscribe)
+	}
+	speechNode, ok := node.(*nodes.SpeechTranscribeNode)
+	if !ok {
+		t.Fatalf("expected *nodes.SpeechTranscribeNode, got %T", node)
+	}
+	cfg := speechNode.Config()
+	if cfg.Model != "scribe_v1" || cfg.AudioFormat != "mp3" || !cfg.Diarize {
+		t.Errorf("config = %+v", cfg)
+	}
+	if cfg.Timeout != 45*time.Second {
+		t.Errorf("timeout = %v, want 45s", cfg.Timeout)
+	}
+	if calls["elevenlabs"] != 1 {
+		t.Errorf("recognizer factory calls = %d, want 1", calls["elevenlabs"])
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechTranscribeNode_MissingFactory(t *testing.T) {
+	providers := ProviderMap{"elevenlabs": {APIKey: "ek-test"}}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory) // no WithSpeechRecognizerFactory
+
+	nd := graph.NodeDef{
+		ID:     "stt-1",
+		Type:   "speech_transcribe",
+		Config: map[string]any{"provider": "elevenlabs", "audio_format": "mp3"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for missing speech recognizer factory, got nil")
+	}
+	if !strings.Contains(err.Error(), "WithSpeechRecognizerFactory") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechTranscribeNode_MissingProviderConfig(t *testing.T) {
+	providers := ProviderMap{} // provider never configured
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechRecognizerFactory(mockSpeechRecognizerFactory))
+
+	nd := graph.NodeDef{
+		ID:     "stt-1",
+		Type:   "speech_transcribe",
+		Config: map[string]any{"provider": "elevenlabs", "audio_format": "mp3"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for unconfigured provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechTranscribeNode_InvalidConfig(t *testing.T) {
+	providers := ProviderMap{"elevenlabs": {APIKey: "ek-test"}}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechRecognizerFactory(mockSpeechRecognizerFactory))
+
+	nd := graph.NodeDef{
+		ID:     "stt-1",
+		Type:   "speech_transcribe",
+		Config: map[string]any{"provider": "elevenlabs", "audio_format": "midi"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for invalid speech_transcribe config, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid speech_transcribe config") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechTranscribeNode_MissingProviderField(t *testing.T) {
+	providers := ProviderMap{"elevenlabs": {APIKey: "ek-test"}}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechRecognizerFactory(mockSpeechRecognizerFactory))
+
+	nd := graph.NodeDef{
+		ID:     "stt-1",
+		Type:   "speech_transcribe",
+		Config: map[string]any{"audio_format": "mp3"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for missing provider config, got nil")
+	}
+	if !strings.Contains(err.Error(), `missing "provider"`) {
+		t.Errorf("error = %v", err)
 	}
 }
 
@@ -1247,6 +1395,7 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 		WithToolRegistry(toolRegistry),
 		WithHumanHandler(handler),
 		WithMemoryProvider(memory.NewInMemoryProvider()),
+		WithSpeechRecognizerFactory(mockSpeechRecognizerFactory),
 	)
 
 	type caseDef struct {
@@ -1369,6 +1518,16 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 				Config: map[string]any{
 					"namespace":  "ops",
 					"session_id": "sess-1",
+				},
+			},
+		},
+		"speech_transcribe": {
+			node: graph.NodeDef{
+				ID:   "n-speech-transcribe",
+				Type: "speech_transcribe",
+				Config: map[string]any{
+					"provider":     "anthropic",
+					"audio_format": "mp3",
 				},
 			},
 		},

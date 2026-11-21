@@ -63,6 +63,7 @@ petalflow run examples/06_cli_workflow/research.agent.yaml \
 - Tool-driven automation: call internal APIs, databases, and MCP tools as workflow steps.
 - Human-in-the-loop approvals: pause at critical steps for explicit review.
 - Webhook automations: receive inbound events (`webhook_trigger`) and send outbound notifications (`webhook_call`).
+- Speech transcription: transcribe typed audio input into committed transcript text and artifacts (`speech_transcribe`, backed by Iris speech recognition such as ElevenLabs Scribe).
 - Scheduled workflows: run recurring jobs via cron in daemon mode.
 
 ## SDK Quickstart (Go)
@@ -282,6 +283,16 @@ PetalFlow supports both directions of webhook automation:
 - `webhook_call`: send outbound HTTP webhook requests from a workflow
 
 See full walk-through: [`examples/08_webhooks`](./examples/08_webhooks)
+
+## Speech Transcription
+
+The `speech_transcribe` node transcribes typed audio input (an
+`iriscore.AudioData` value, an inline-bytes artifact, raw bytes, or base64
+text on the envelope) through Iris speech recognition providers such as
+ElevenLabs Scribe. The committed transcript is written as an envelope
+variable, a `transcript` artifact, and stats; only final (`IsFinal`) responses
+are committed, and hydration validates audio format and request bounds up
+front.
 
 ## Tools and MCP
 

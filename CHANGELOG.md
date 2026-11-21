@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Typed `speech_transcribe` node and artifact ports**
+  ([#249](https://github.com/petal-labs/petalflow/issues/249)). Adds a
+  `speech_transcribe` graph node backed by the Iris 2.0 speech-recognition
+  capability (ElevenLabs Scribe): typed audio input (`iriscore.AudioData`, an
+  inline-bytes artifact, raw bytes, or base64 text on the envelope) is
+  transcribed through a typed `nodes.SpeechRecognizer` port — Iris providers
+  that implement `iriscore.SpeechRecognizer` satisfy it directly, so no
+  provider speech logic is duplicated. The committed transcript is stored as
+  an envelope variable, a `transcript` artifact (with language, duration,
+  `is_final`, and word/segment counts in metadata), and a stats variable.
+  Partial responses (`IsFinal=false`), malformed responses, and
+  missing/unresolvable audio encodings fail validation instead of committing
+  partial data; recognition retries and rate limiting stay with the Iris
+  client, and cancellation surfaces as a context error with nothing committed.
+  Registry ports: typed `audio` input, `transcript` (string),
+  `transcript_artifact` (artifact), and `stats` (object) outputs. Hydration
+  validates config (`audio_format`, `timestamps`, `num_speakers`,
+  `temperature`, `max_bytes`, keyterms) at load time via
+  `hydrate.WithSpeechRecognizerFactory` + `llmprovider.NewSpeechRecognizer`
+  (capability discovery fails at construction). Deterministic mocked
+  integration tests cover the runtime, hydration, failure, and cancellation
+  paths; an ElevenLabs live test runs when `ELEVENLABS_API_KEY` is set.
+
 ### Changed
 
 - **Upgraded Iris to v2.0.0** (from v1.0.0), the first Iris release following
