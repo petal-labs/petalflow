@@ -25,7 +25,9 @@ Voice sessions are separate from the LLM adapter and one-shot DAG nodes:
 `llmprovider.NewVoiceSessionStarter` discovers Iris `voice_session` on the
 resolved provider, wraps it in an Iris client, and returns `voice.Session`
 handles (session lifecycle, `iriscore.VoiceEvent` envelopes, turn tracking,
-interruption propagation) — see `docs/voice-sessions.md`.
+interruption propagation). Session tool calls connect to the existing
+PetalFlow tool orchestration through `voice.ToolBridge` (registry allowlist,
+policy gate, bounded execution); see `docs/voice-sessions.md`.
 
 `llmprovider` registers both speech factories as hydration defaults
 (`hydrate.RegisterDefaultSpeechFactories`) in binaries that link it, so
