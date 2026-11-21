@@ -33,6 +33,7 @@ const (
 	NodeKindConditional      NodeKind = "conditional"
 	NodeKindMemory           NodeKind = "memory"
 	NodeKindSpeechTranscribe NodeKind = "speech_transcribe"
+	NodeKindSpeechSynthesize NodeKind = "speech_synthesize"
 )
 
 // String returns the string representation of the NodeKind.

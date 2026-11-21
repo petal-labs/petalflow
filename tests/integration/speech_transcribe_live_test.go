@@ -75,13 +75,13 @@ func TestSpeechTranscribeNode_ElevenLabsLive(t *testing.T) {
 	skipIfNoElevenLabsKey(t)
 
 	node := nodes.NewSpeechTranscribeNode("transcribe", newElevenLabsRecognizer(t), nodes.SpeechTranscribeNodeConfig{
-		Model:      "scribe_v1",
-		InputVar:   "audio",
+		Model:       "scribe_v1",
+		InputVar:    "audio",
 		AudioFormat: "wav",
-		Filename:   "one-second.wav",
-		Language:   "en",
-		OutputVar:  "transcript",
-		Timeout:    60 * time.Second,
+		Filename:    "one-second.wav",
+		Language:    "en",
+		OutputVar:   "transcript",
+		Timeout:     60 * time.Second,
 	})
 
 	g, err := graph.NewGraphBuilder("speech-live-test").

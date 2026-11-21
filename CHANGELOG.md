@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Typed `speech_synthesize` node with streaming artifact support**
+  ([#250](https://github.com/petal-labs/petalflow/issues/250)). Adds a
+  `speech_synthesize` graph node backed by the Iris 2.0 speech-synthesis
+  capability (ElevenLabs TTS, iris #147/#148): envelope text is synthesized
+  through a typed `nodes.SpeechSynthesizer` port — Iris providers that
+  implement `iriscore.SpeechSynthesizer` satisfy it directly, so no provider
+  speech logic is duplicated. Audio is committed as a bounded `audio`
+  artifact (raw audio bytes never enter envelope vars; `output_var` holds the
+  artifact ID, default cap 25 MiB, `max_bytes` overruns fail the node rather
+  than truncating). `stream: true` uses Iris HTTP streaming synthesis: chunks
+  are emitted as `node.output.delta` events and assembled into the single
+  artifact. Cancellation mid-stream commits nothing; oversized or empty
+  audio fails validation; synthesis retries and rate limiting stay with the
+  Iris client. Registry ports: `input` (string) with `audio_id` (string),
+  `audio_artifact` (artifact), and `stats` (object) outputs. Hydration
+  validates config (`voice_id` required, `audio_format`, sample/bit rates,
+  seed, bounds) at load time via `hydrate.WithSpeechSynthesizerFactory` +
+  `llmprovider.NewSpeechSynthesizer` (capability discovery fails at
+  construction). Deterministic mocked integration tests cover sync, streamed,
+  hydrated-graph, failure, and cancellation paths; ElevenLabs live tests run
+  when `ELEVENLABS_API_KEY` is set.
+
 - **Typed `speech_transcribe` node and artifact ports**
   ([#249](https://github.com/petal-labs/petalflow/issues/249)). Adds a
   `speech_transcribe` graph node backed by the Iris 2.0 speech-recognition

@@ -31,12 +31,18 @@ type ClientFactory func(providerName string, cfg ProviderConfig) (core.LLMClient
 // by llmprovider; hydrate only resolves provider configs.
 type SpeechRecognizerFactory func(providerName string, cfg ProviderConfig) (nodes.SpeechRecognizer, error)
 
+// SpeechSynthesizerFactory creates a nodes.SpeechSynthesizer for a named
+// provider. Like SpeechRecognizerFactory, the caller supplies the
+// implementation backed by llmprovider.
+type SpeechSynthesizerFactory func(providerName string, cfg ProviderConfig) (nodes.SpeechSynthesizer, error)
+
 // liveFactoryOptions holds optional dependencies for non-LLM node types.
 type liveFactoryOptions struct {
-	toolRegistry            *core.ToolRegistry
-	humanHandler            nodes.HumanHandler
-	memoryProvider          memory.Provider
-	speechRecognizerFactory SpeechRecognizerFactory
+	toolRegistry             *core.ToolRegistry
+	humanHandler             nodes.HumanHandler
+	memoryProvider           memory.Provider
+	speechRecognizerFactory  SpeechRecognizerFactory
+	speechSynthesizerFactory SpeechSynthesizerFactory
 }
 
 type liveFactoryRuntime struct {
@@ -77,6 +83,13 @@ func WithMemoryProvider(p memory.Provider) LiveNodeOption {
 // The factory is invoked once per node with the node's configured provider.
 func WithSpeechRecognizerFactory(f SpeechRecognizerFactory) LiveNodeOption {
 	return func(o *liveFactoryOptions) { o.speechRecognizerFactory = f }
+}
+
+// WithSpeechSynthesizerFactory provides a SpeechSynthesizerFactory so that
+// speech_synthesize nodes resolve to real SpeechSynthesizeNode instances.
+// The factory is invoked once per node with the node's configured provider.
+func WithSpeechSynthesizerFactory(f SpeechSynthesizerFactory) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.speechSynthesizerFactory = f }
 }
 
 // NewLiveNodeFactory returns a NodeFactory that creates executable nodes for
@@ -157,6 +170,8 @@ func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 		return buildMemoryNode(nd, r.options.memoryProvider)
 	case "speech_transcribe":
 		return buildSpeechTranscribeNode(r, nd)
+	case "speech_synthesize":
+		return buildSpeechSynthesizeNode(r, nd)
 	case "merge":
 		return buildMergeNode(nd)
 	case "human":
@@ -316,6 +331,35 @@ func buildSpeechTranscribeNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Nod
 	}
 
 	return nodes.NewSpeechTranscribeNode(nd.ID, recognizer, cfg), nil
+}
+
+// buildSpeechSynthesizeNode creates a SpeechSynthesizeNode from a NodeDef.
+// Returns an error if no speech synthesizer factory was provided or the
+// node's provider is not configured. Config validation (voice, formats,
+// bounds) happens here so malformed workflows fail at hydration, not at run time.
+func buildSpeechSynthesizeNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	providerName := configString(nd.Config, "provider")
+	if providerName == "" {
+		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
+	}
+	if r.options.speechSynthesizerFactory == nil {
+		return nil, fmt.Errorf("node %q: speech_synthesize node requires a speech synthesizer factory (use WithSpeechSynthesizerFactory)", nd.ID)
+	}
+	cfg, err := nodes.ParseSpeechSynthesizeConfig(nd.Config)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: invalid speech_synthesize config: %w", nd.ID, err)
+	}
+
+	providerCfg, ok := r.providers[providerName]
+	if !ok {
+		return nil, fmt.Errorf("node %q: provider %q not configured", nd.ID, providerName)
+	}
+	synthesizer, err := r.options.speechSynthesizerFactory(providerName, providerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", nd.ID, err)
+	}
+
+	return nodes.NewSpeechSynthesizeNode(nd.ID, synthesizer, cfg), nil
 }
 
 func boundNodeDefFromConfig(nd graph.NodeDef, keys []string, defaultID string) (graph.NodeDef, error) {
