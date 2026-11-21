@@ -47,6 +47,21 @@ func mockSpeechRecognizerFactory(string, ProviderConfig) (nodes.SpeechRecognizer
 	return mockSpeechRecognizer{}, nil
 }
 
+// mockSpeechSynthesizer implements nodes.SpeechSynthesizer for testing.
+type mockSpeechSynthesizer struct{}
+
+func (mockSpeechSynthesizer) Synthesize(context.Context, *iriscore.SpeechRequest) (*iriscore.SpeechResponse, error) {
+	return nil, nil
+}
+
+func (mockSpeechSynthesizer) StreamSynthesize(context.Context, *iriscore.SpeechRequest) (*iriscore.SpeechStream, error) {
+	return nil, nil
+}
+
+func mockSpeechSynthesizerFactory(string, ProviderConfig) (nodes.SpeechSynthesizer, error) {
+	return mockSpeechSynthesizer{}, nil
+}
+
 func newMockSpeechRecognizerFactory() (SpeechRecognizerFactory, map[string]int) {
 	calls := make(map[string]int)
 	return func(name string, cfg ProviderConfig) (nodes.SpeechRecognizer, error) {
@@ -699,6 +714,132 @@ func TestNewLiveNodeFactory_SpeechTranscribeNode_MissingProviderField(t *testing
 		t.Fatal("expected error for missing provider config, got nil")
 	}
 	if !strings.Contains(err.Error(), `missing "provider"`) {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechSynthesizeNode(t *testing.T) {
+	providers := ProviderMap{
+		"elevenlabs": {APIKey: "ek-test"},
+	}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechSynthesizerFactory(mockSpeechSynthesizerFactory))
+
+	nd := graph.NodeDef{
+		ID:   "tts-1",
+		Type: "speech_synthesize",
+		Config: map[string]any{
+			"provider":     "elevenlabs",
+			"model":        "eleven_flash_v2_5",
+			"voice_id":     "voice-1",
+			"input_var":    "text",
+			"audio_format": "mp3",
+			"sample_rate":  44100,
+			"bit_rate":     128,
+			"stream":       true,
+			"timeout":      "30s",
+		},
+	}
+
+	node, err := nodeFactory(nd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if node.Kind() != core.NodeKindSpeechSynthesize {
+		t.Errorf("kind = %q, want %q", node.Kind(), core.NodeKindSpeechSynthesize)
+	}
+	speechNode, ok := node.(*nodes.SpeechSynthesizeNode)
+	if !ok {
+		t.Fatalf("expected *nodes.SpeechSynthesizeNode, got %T", node)
+	}
+	cfg := speechNode.Config()
+	if cfg.Model != "eleven_flash_v2_5" || cfg.VoiceID != "voice-1" || !cfg.Stream {
+		t.Errorf("config = %+v", cfg)
+	}
+	if cfg.AudioFormat != "mp3" || cfg.SampleRate != 44100 || cfg.BitRate != 128 {
+		t.Errorf("format config = %+v", cfg)
+	}
+	if cfg.Timeout != 30*time.Second {
+		t.Errorf("timeout = %v, want 30s", cfg.Timeout)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechSynthesizeNode_MissingFactory(t *testing.T) {
+	providers := ProviderMap{"elevenlabs": {APIKey: "ek-test"}}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory) // no WithSpeechSynthesizerFactory
+
+	nd := graph.NodeDef{
+		ID:     "tts-1",
+		Type:   "speech_synthesize",
+		Config: map[string]any{"provider": "elevenlabs", "voice_id": "voice-1"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for missing speech synthesizer factory, got nil")
+	}
+	if !strings.Contains(err.Error(), "WithSpeechSynthesizerFactory") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechSynthesizeNode_MissingProviderConfig(t *testing.T) {
+	providers := ProviderMap{} // provider never configured
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechSynthesizerFactory(mockSpeechSynthesizerFactory))
+
+	nd := graph.NodeDef{
+		ID:     "tts-1",
+		Type:   "speech_synthesize",
+		Config: map[string]any{"provider": "elevenlabs", "voice_id": "voice-1"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for unconfigured provider, got nil")
+	}
+	if !strings.Contains(err.Error(), "not configured") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechSynthesizeNode_InvalidConfig(t *testing.T) {
+	providers := ProviderMap{"elevenlabs": {APIKey: "ek-test"}}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechSynthesizerFactory(mockSpeechSynthesizerFactory))
+
+	nd := graph.NodeDef{
+		ID:     "tts-1",
+		Type:   "speech_synthesize",
+		Config: map[string]any{"provider": "elevenlabs", "voice_id": "voice-1", "audio_format": "midi"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for invalid speech_synthesize config, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid speech_synthesize config") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewLiveNodeFactory_SpeechSynthesizeNode_MissingVoiceID(t *testing.T) {
+	providers := ProviderMap{"elevenlabs": {APIKey: "ek-test"}}
+	factory, _ := newMockClientFactory()
+	nodeFactory := NewLiveNodeFactory(providers, factory, WithSpeechSynthesizerFactory(mockSpeechSynthesizerFactory))
+
+	nd := graph.NodeDef{
+		ID:     "tts-1",
+		Type:   "speech_synthesize",
+		Config: map[string]any{"provider": "elevenlabs"},
+	}
+
+	_, err := nodeFactory(nd)
+	if err == nil {
+		t.Fatal("expected error for missing voice_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "voice_id is required") {
 		t.Errorf("error = %v", err)
 	}
 }
@@ -1396,6 +1537,7 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 		WithHumanHandler(handler),
 		WithMemoryProvider(memory.NewInMemoryProvider()),
 		WithSpeechRecognizerFactory(mockSpeechRecognizerFactory),
+		WithSpeechSynthesizerFactory(mockSpeechSynthesizerFactory),
 	)
 
 	type caseDef struct {
@@ -1528,6 +1670,16 @@ func TestNewLiveNodeFactory_BuiltinTypeConformance(t *testing.T) {
 				Config: map[string]any{
 					"provider":     "anthropic",
 					"audio_format": "mp3",
+				},
+			},
+		},
+		"speech_synthesize": {
+			node: graph.NodeDef{
+				ID:   "n-speech-synthesize",
+				Type: "speech_synthesize",
+				Config: map[string]any{
+					"provider": "anthropic",
+					"voice_id": "voice-1",
 				},
 			},
 		},

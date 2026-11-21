@@ -30,6 +30,27 @@ func (speechProvider) Transcribe(context.Context, *iriscore.TranscriptionRequest
 	return &iriscore.TranscriptionResponse{Text: "hi", IsFinal: true}, nil
 }
 
+// ttsProvider is a fake Iris provider that advertises speech synthesis.
+type ttsProvider struct{}
+
+func (ttsProvider) ID() string                   { return "tts-fake" }
+func (ttsProvider) Models() []iriscore.ModelInfo { return nil }
+func (ttsProvider) Supports(f iriscore.Feature) bool {
+	return f == iriscore.FeatureChat || f == iriscore.FeatureSpeechSynthesis
+}
+func (ttsProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
+	return nil, nil
+}
+func (ttsProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+	return nil, nil
+}
+func (ttsProvider) Synthesize(context.Context, *iriscore.SpeechRequest) (*iriscore.SpeechResponse, error) {
+	return &iriscore.SpeechResponse{Audio: iriscore.AudioData{Data: []byte("audio")}}, nil
+}
+func (ttsProvider) StreamSynthesize(context.Context, *iriscore.SpeechRequest) (*iriscore.SpeechStream, error) {
+	return nil, nil
+}
+
 // chatOnlyProvider is a fake Iris provider without speech recognition.
 type chatOnlyProvider struct{}
 
@@ -45,9 +66,10 @@ func (chatOnlyProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iri
 
 func init() {
 	// Register fake providers in the Iris provider registry so
-	// NewSpeechRecognizer can resolve them by name.
+	// NewSpeechRecognizer / NewSpeechSynthesizer can resolve them by name.
 	irisproviders.Register("speech-fake", func(string) iriscore.Provider { return speechProvider{} })
 	irisproviders.Register("chat-only", func(string) iriscore.Provider { return chatOnlyProvider{} })
+	irisproviders.Register("tts-fake", func(string) iriscore.Provider { return ttsProvider{} })
 }
 
 func TestNewSpeechRecognizer_Discovered(t *testing.T) {
@@ -87,9 +109,46 @@ func TestNewSpeechRecognizer_UnknownProvider(t *testing.T) {
 	}
 }
 
+func TestNewSpeechSynthesizer_Discovered(t *testing.T) {
+	synthesizer, err := NewSpeechSynthesizer("tts-fake", hydrate.ProviderConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp, err := synthesizer.Synthesize(context.Background(), &iriscore.SpeechRequest{
+		VoiceID: "voice-1",
+		Text:    "hi",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(resp.Audio.Data) != "audio" {
+		t.Errorf("response = %+v", resp)
+	}
+}
+
+func TestNewSpeechSynthesizer_CapabilityMissing(t *testing.T) {
+	_, err := NewSpeechSynthesizer("chat-only", hydrate.ProviderConfig{})
+	if err == nil {
+		t.Fatal("expected error for provider without speech synthesis")
+	}
+	if !strings.Contains(err.Error(), "does not support speech synthesis") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestNewSpeechSynthesizer_UnknownProvider(t *testing.T) {
+	_, err := NewSpeechSynthesizer("does-not-exist", hydrate.ProviderConfig{})
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}
+
 // Compile-time contract checks.
 var (
-	_ iriscore.Provider         = speechProvider{}
-	_ nodes.SpeechRecognizer    = speechProvider{}
-	_ iriscore.SpeechRecognizer = speechProvider{}
+	_ iriscore.Provider          = speechProvider{}
+	_ nodes.SpeechRecognizer     = speechProvider{}
+	_ iriscore.SpeechRecognizer  = speechProvider{}
+	_ iriscore.Provider          = ttsProvider{}
+	_ nodes.SpeechSynthesizer    = ttsProvider{}
+	_ iriscore.SpeechSynthesizer = ttsProvider{}
 )

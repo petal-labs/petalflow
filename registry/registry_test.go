@@ -231,6 +231,7 @@ func TestBuiltins_AllExpectedTypesRegistered(t *testing.T) {
 		"webhook_trigger",
 		"webhook_call",
 		"speech_transcribe",
+		"speech_synthesize",
 		"noop",
 		"func",
 	}
@@ -263,6 +264,7 @@ func TestBuiltins_Categories(t *testing.T) {
 		{"webhook_trigger", "control"},
 		{"webhook_call", "data"},
 		{"speech_transcribe", "ai"},
+		{"speech_synthesize", "ai"},
 		{"noop", "control"},
 		{"func", "control"},
 	}

@@ -256,6 +256,23 @@ func registerBuiltins(r *Registry) {
 	})
 
 	r.Register(NodeTypeDef{
+		Type:        "speech_synthesize",
+		Category:    "ai",
+		DisplayName: "Speech Synthesize",
+		Description: "Synthesize text into a bounded audio artifact, with optional incremental streaming",
+		Ports: PortSchema{
+			Inputs: []PortDef{
+				{Name: "input", Type: "string", Required: true},
+			},
+			Outputs: []PortDef{
+				{Name: "audio_id", Type: "string"},
+				{Name: "audio_artifact", Type: "artifact"},
+				{Name: "stats", Type: "object"},
+			},
+		},
+	})
+
+	r.Register(NodeTypeDef{
 		Type:        "noop",
 		Category:    "control",
 		DisplayName: "No-Op",
@@ -326,6 +343,7 @@ var builtinConfigKeys = map[string][]string{
 	"webhook_call":      {"url", "method", "headers", "timeout", "max_response_bytes", "template", "result_var", "input_vars", "include_artifacts", "include_messages", "include_trace"},
 	"tool":              {"tool_name", "args_template", "static_args", "output_key", "timeout", "required_args"},
 	"speech_transcribe": {"provider", "model", "input_var", "audio_format", "filename", "language", "prompt", "keyterms", "diarize", "num_speakers", "timestamps", "tag_audio_events", "temperature", "max_bytes", "output_var", "omit_artifacts", "timeout"},
+	"speech_synthesize": {"provider", "model", "voice_id", "input_var", "audio_format", "sample_rate", "bit_rate", "language", "seed", "stream", "max_bytes", "output_var", "omit_artifacts", "timeout"},
 }
 
 // applyBuiltinConfigKeys attaches the recognized config keys to each registered

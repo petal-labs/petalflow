@@ -18,15 +18,16 @@ provider when the provider or its model catalog does not advertise them.
 | Multimodal input | `LLMContentPart` and `LLMArtifactReference` | Maps text, image URL/file ID, file URL/file ID/data, and artifact file references; per-part provider support is checked |
 | Response metadata | `LLMResponse.ResponseID`, `Status`, `Citations`, `Reasoning`, `ToolCalls`, and `Meta` | Preserved for synchronous responses and on the terminal streaming chunk |
 | Streaming | `StreamingLLMClient` and `StreamChunk` | Text deltas are emitted in order; terminal metadata is equivalent to the synchronous response |
-| Speech recognition | Typed `speech_transcribe` node and `nodes.SpeechRecognizer` | The node's typed recognizer port accepts Iris providers that implement `iriscore.SpeechRecognizer` directly; `llmprovider.NewSpeechRecognizer` performs capability discovery at construction. The node builds `iriscore.TranscriptionRequest`s, validates responses, and commits only final (`IsFinal`) transcripts. Speech synthesis and real-time voice remain unclaimed |
+| Speech recognition | Typed `speech_transcribe` node and `nodes.SpeechRecognizer` | The node's typed recognizer port accepts Iris providers that implement `iriscore.SpeechRecognizer` directly; `llmprovider.NewSpeechRecognizer` performs capability discovery at construction. The node builds `iriscore.TranscriptionRequest`s, validates responses, and commits only final (`IsFinal`) transcripts |
+| Speech synthesis | Typed `speech_synthesize` node and `nodes.SpeechSynthesizer` | The node's typed synthesizer port accepts Iris providers that implement `iriscore.SpeechSynthesizer` directly; `llmprovider.NewSpeechSynthesizer` performs capability discovery at construction. The node builds `iriscore.SpeechRequest`s, supports both synchronous synthesis and Iris HTTP streaming (`StreamSynthesize` with per-chunk delta events), and commits bounded audio artifacts only. Real-time voice sessions remain unclaimed |
 
 The adapter deliberately does not claim support for Iris batch operations,
-image generation, speech synthesis and real-time voice sessions,
-embeddings, reranking, or provider-specific response items
-that have no representation in the PetalFlow LLM contract. These operations
-must use their Iris-native APIs or a future PetalFlow capability interface.
-Speech recognition is claimed through the typed `speech_transcribe` node
-port rather than through `irisadapter`'s LLM contract.
+image generation, real-time voice sessions, embeddings, reranking, or
+provider-specific response items that have no representation in the
+PetalFlow LLM contract. These operations must use their Iris-native APIs or
+a future PetalFlow capability interface. Speech recognition and synthesis
+are claimed through the typed `speech_transcribe` / `speech_synthesize` node
+ports rather than through `irisadapter`'s LLM contract.
 Strict tool schemas are also rejected because Iris 2.0's provider-neutral
 `core.Tool` interface has no strict flag; strictness is supported for response
 JSON Schemas.
