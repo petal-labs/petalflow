@@ -1,7 +1,8 @@
 # Voice Sessions: Session-Oriented Voice Execution Boundary
 
 This document specifies PetalFlow's execution boundary for full-duplex,
-real-time voice conversations (ElevenLabs Voice FRD; issue #252). It is built
+real-time voice conversations (ElevenLabs Voice FRD; issues #252 and #253).
+It is built
 on the Iris voice session API (`iris/v2@v2.0.0`, gates iris #155 "real-time
 voice session and event API" and #156 "Iris-managed voice pipeline", both
 shipped in v2.0.0) and deliberately stays **separate from one-shot DAG
@@ -122,6 +123,44 @@ Three cancellation paths, all converging on the turn tracker:
 belonging to interrupted, superseded, or completed turns are never playable —
 so an interrupted assistant response cannot leak stale audio after barge-in.
 
+## Tools: session ↔ PetalFlow tool orchestration
+
+`voice.ToolBridge` (new in the voice package) connects session tool_call
+events to PetalFlow's existing tool orchestration and delivers outcomes back
+to the session as `tool_result` envelopes:
+
+- **Allowlist execution** — only tools registered in the bridge's
+  `core.ToolRegistry` execute. Model-requested tool names outside the
+  registry are answered with an `IsError` result (`"tool %q is not available
+  in this session"`) and never touched.
+- **Bounded input** — model-supplied arguments larger than
+  `ArgsMaxBytes` (default 64 KiB) or arguments that are not a JSON object are
+  rejected as error results before any tool is touched.
+- **Policy gate** — the same `toolpolicy` evaluator contract as `ToolNode`
+  applies: when an evaluator is installed in the bridge context, denials
+  (`POLICY_DENIED`) and approval requirements (`POLICY_APPROVAL_REQUIRED`)
+  fail closed as error results. Voice sessions cannot pause for durable
+  approvals, so approval requirements are reported, never awaited.
+- **Bounded execution** — parallel executions are capped per session
+  (`Concurrency`, default 4) and each invocation is bounded by `Timeout`
+  (default 30s). Tool failures become `ToolResult{IsError: true}` with the
+  tool's error string — the event loop never panics and the session is never
+  wedged.
+- **Correlation** — result `CallID` always echoes the model's `ToolCall.ID`;
+  results are submitted through `Session.SubmitToolResult`. Results that
+  would arrive after bridge shutdown or session close are dropped silently.
+- **Lifecycle** — `ToolBridge.Serve(ctx)` consumes the session's event stream
+  (non-tool events are ignored) until the stream closes (session ended) or
+  ctx is cancelled, then waits for in-flight executions to settle before
+  returning nil. The host still owns `Session.Close()`.
+
+**Replay boundary:** session tool calls are live interaction, like
+ReplayAware=false nodes (e.g. `webhook_call`). They always execute live —
+runtime replay mocks (`runtime.ToolMockSet`) are never consulted — and they
+are not recorded into run replay captures, because sessions live outside run
+execution entirely. Hosts that need deterministic behavior in tests inject a
+mock `core.ToolRegistry` (or `core.FuncTool`) into the bridge.
+
 ## Failure and cancellation behavior
 
 - **Construction failures** (unsupported capability, unresolved credentials,
@@ -144,9 +183,10 @@ so an interrupted assistant response cannot leak stale audio after barge-in.
 
 Voice sessions receive tools through `iriscore.VoiceSessionConfig.Tools`
 (Iris `core.Tool` contract — unchanged from Iris). Model-requested
-invocations arrive as `tool_call` envelopes; hosts execute and deliver
-outcomes with `Session.SubmitToolResult` (`tool_result` envelopes). PetalFlow
-tool contracts (`core.PetalTool`, tool registry, MCP overlays) are untouched.
+invocations arrive as `tool_call` envelopes; the `voice.ToolBridge` executes
+them through PetalFlow's existing tool orchestration and delivers outcomes
+with `Session.SubmitToolResult` (see the section above). PetalFlow tool
+contracts (`core.PetalTool`, tool registry, MCP overlays) are untouched.
 
 ## Iris dependency revision
 

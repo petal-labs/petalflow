@@ -190,8 +190,10 @@ func finishedSynthesisStream(chunks []iriscore.AudioChunk, final *iriscore.Speec
 // voiceSessionFakeSession is a deterministic in-process iriscore.VoiceSession
 // for the voice integration tests; events flow through a bounded emitter.
 type voiceSessionFakeSession struct {
-	id      string
-	emitter *iriscore.VoiceEventEmitter
+	id          string
+	emitter     *iriscore.VoiceEventEmitter
+	resultsMu   sync.Mutex
+	toolResults []iriscore.ToolResult
 }
 
 func (s *voiceSessionFakeSession) ID() string { return s.id }
@@ -200,9 +202,20 @@ func (s *voiceSessionFakeSession) State() iriscore.VoiceSessionState {
 }
 func (s *voiceSessionFakeSession) SendAudio(context.Context, iriscore.AudioChunk) error { return nil }
 func (s *voiceSessionFakeSession) SendText(context.Context, string) error               { return nil }
-func (s *voiceSessionFakeSession) SubmitToolResult(context.Context, iriscore.ToolResult) error {
+func (s *voiceSessionFakeSession) SubmitToolResult(_ context.Context, result iriscore.ToolResult) error {
+	s.resultsMu.Lock()
+	defer s.resultsMu.Unlock()
+	s.toolResults = append(s.toolResults, result)
 	return nil
 }
+
+// submittedResults returns the recorded tool results.
+func (s *voiceSessionFakeSession) submittedResults() []iriscore.ToolResult {
+	s.resultsMu.Lock()
+	defer s.resultsMu.Unlock()
+	return append([]iriscore.ToolResult(nil), s.toolResults...)
+}
+
 func (s *voiceSessionFakeSession) Interrupt(context.Context) error { return nil }
 func (s *voiceSessionFakeSession) Events() <-chan iriscore.VoiceEvent {
 	return s.emitter.Events()

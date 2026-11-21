@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voice tool bridge: session events → PetalFlow tool orchestration**
+  ([#253](https://github.com/petal-labs/petalflow/issues/253)). Connects
+  voice session `tool_call` events to the existing tool registry execution
+  with safe tool-call semantics: registry allowlist (unregistered tool names
+  are answered with error results and never executed), bounded model-supplied
+  arguments (size cap and JSON-object validation), the same `toolpolicy`
+  evaluator gate as `ToolNode` (denials and approval requirements fail closed
+  — voice sessions cannot pause for durable approvals), bounded concurrency
+  and per-call timeouts, and error results that never wedge the event loop;
+  result `CallID` correlations are preserved through
+  `Session.SubmitToolResult`. Replay boundary specified and tested: session
+  tool calls always execute live, never consult runtime replay mocks, and are
+  not recorded into run replay captures. `ToolBridge.Serve` consumes the
+  bounded event stream until the session ends or the context is cancelled and
+  settles in-flight executions before returning. Deterministic mocked
+  integration tests cover registry execution, allowlist fail-closed, policy
+  rejection, timeouts, concurrency bounds, cancellation, and the replay
+  boundary.
+
 - **Session-oriented voice execution boundary**
   ([#252](https://github.com/petal-labs/petalflow/issues/252)). Adds the
   `voice` package — typed `voice.Session` handles for full-duplex real-time
