@@ -1,0 +1,43 @@
+{
+  "id": "voice-workflow",
+  "version": "1",
+  "entry": "transcribe",
+  "nodes": [
+    {
+      "id": "transcribe",
+      "type": "speech_transcribe",
+      "config": {
+        "provider": "voice-demo",
+        "input_var": "audio",
+        "audio_format": "wav",
+        "language": "en",
+        "output_var": "transcript"
+      }
+    },
+    {
+      "id": "agent",
+      "type": "llm_prompt",
+      "config": {
+        "provider": "voice-demo",
+        "model": "voice-demo-model",
+        "system_prompt": "You are a concise voice assistant.",
+        "prompt_template": "The user asked: {{.transcript}}",
+        "output_key": "reply"
+      }
+    },
+    {
+      "id": "speak",
+      "type": "speech_synthesize",
+      "config": {
+        "provider": "voice-demo",
+        "voice_id": "demo-voice",
+        "input_var": "reply",
+        "output_var": "audio_id"
+      }
+    }
+  ],
+  "edges": [
+    { "source": "transcribe", "target": "agent" },
+    { "source": "agent", "target": "speak" }
+  ]
+}

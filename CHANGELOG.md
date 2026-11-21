@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Voice workflow example and end-to-end tests**
+  ([#254](https://github.com/petal-labs/petalflow/issues/254)). Adds
+  `examples/09_voice_workflow`: a voice DAG (audio → `speech_transcribe` →
+  `llm_prompt` agent → `speech_synthesize`) hydrated entirely through the
+  default live-node factory (speech nodes resolve from the provider
+  credential alone), plus a simulated live voice session demo (turn
+  lifecycle, typed event envelopes, and the tool bridge executing registry
+  tools) — both deterministic and offline against an in-process simulated
+  Iris provider. Ships a CLI-runnable `voice_workflow.graph.json`, optional
+  live ElevenLabs synthesize→transcribe round trip (gated on
+  `ELEVENLABS_API_KEY`), README walkthroughs, and CI tests: examples-module
+  tests (demos, graph-definition validation, speech-capability hydration
+  failure, cancelled-run commit-nothing) and deterministic mocked
+  integration tests that load the example's graph definition through the
+  default-factory hydration and runtime end to end, including a
+  cancellation case.
+
 - **Voice tool bridge: session events → PetalFlow tool orchestration**
   ([#253](https://github.com/petal-labs/petalflow/issues/253)). Connects
   voice session `tool_call` events to the existing tool registry execution

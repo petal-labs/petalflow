@@ -120,3 +120,22 @@ Demonstrates:
 - End-to-end local testing using `ngrok` tunnels + a local TypeScript receiver
 
 See `./08_webhooks/README.md` for setup and `curl` commands.
+
+---
+
+### 09_voice_workflow
+**Voice workflows: audio → transcript → agent → speech, and simulated live voice sessions.**
+
+Demonstrates:
+- `speech_transcribe` → `llm_prompt` (agent) → `speech_synthesize` as one DAG
+- Default hydration: speech nodes hydrate from the provider credential alone
+- Bounded audio artifacts (raw audio never in envelope vars)
+- `voice.Session` handles with typed event envelopes, turn IDs, and turn lifecycle
+- `voice.ToolBridge` connecting session tool calls to the PetalFlow tool registry
+- Failure (capability errors at hydration) and cancellation (nothing committed)
+
+Runs fully offline against a deterministic simulated Iris provider; set
+`ELEVENLABS_API_KEY` for an optional live synthesize → transcribe round trip.
+
+See `./09_voice_workflow/README.md` for details and
+`../docs/voice-sessions.md` for the session boundary specification.
