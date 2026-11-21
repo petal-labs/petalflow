@@ -65,6 +65,7 @@ petalflow run examples/06_cli_workflow/research.agent.yaml \
 - Webhook automations: receive inbound events (`webhook_trigger`) and send outbound notifications (`webhook_call`).
 - Speech transcription: transcribe typed audio input into committed transcript text and artifacts (`speech_transcribe`, backed by Iris speech recognition such as ElevenLabs Scribe).
 - Speech synthesis: synthesize text into bounded audio artifacts with optional incremental streaming (`speech_synthesize`, backed by Iris speech synthesis such as ElevenLabs TTS).
+- Voice sessions: full-duplex real-time voice conversations with typed session handles, event envelopes, turn IDs, and interruption (see [`docs/voice-sessions.md`](./docs/voice-sessions.md)).
 - Scheduled workflows: run recurring jobs via cron in daemon mode.
 
 ## SDK Quickstart (Go)

@@ -4,6 +4,8 @@ package integration
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"time"
 
 	iriscore "github.com/petal-labs/iris/v2/core"
@@ -90,6 +92,7 @@ func init() {
 	// default factories can resolve them by name without network access.
 	irisproviders.Register("elevenlabs-mock", func(string) iriscore.Provider { return speechAndTTSFakeProvider{} })
 	irisproviders.Register("chat-only-mock", func(string) iriscore.Provider { return chatOnlyFakeProvider{} })
+	irisproviders.Register("voice-fake-mock", func(string) iriscore.Provider { return voiceProviderFakeProvider{} })
 }
 
 // mockIntegrationSynthesizer returns a complete canned audio response.
@@ -182,4 +185,106 @@ func finishedSynthesisStream(chunks []iriscore.AudioChunk, final *iriscore.Speec
 	}
 	close(finalCh)
 	return &iriscore.SpeechStream{Ch: ch, Err: errCh, Final: finalCh}
+}
+
+// voiceSessionFakeSession is a deterministic in-process iriscore.VoiceSession
+// for the voice integration tests; events flow through a bounded emitter.
+type voiceSessionFakeSession struct {
+	id      string
+	emitter *iriscore.VoiceEventEmitter
+}
+
+func (s *voiceSessionFakeSession) ID() string { return s.id }
+func (s *voiceSessionFakeSession) State() iriscore.VoiceSessionState {
+	return iriscore.VoiceSessionStateActive
+}
+func (s *voiceSessionFakeSession) SendAudio(context.Context, iriscore.AudioChunk) error { return nil }
+func (s *voiceSessionFakeSession) SendText(context.Context, string) error               { return nil }
+func (s *voiceSessionFakeSession) SubmitToolResult(context.Context, iriscore.ToolResult) error {
+	return nil
+}
+func (s *voiceSessionFakeSession) Interrupt(context.Context) error { return nil }
+func (s *voiceSessionFakeSession) Events() <-chan iriscore.VoiceEvent {
+	return s.emitter.Events()
+}
+func (s *voiceSessionFakeSession) Err() <-chan error {
+	return s.emitter.Err()
+}
+func (s *voiceSessionFakeSession) Close() error {
+	s.emitter.Close()
+	return nil
+}
+
+// fakeVoiceMock hands out deterministic fake voice sessions and lets tests
+// drive events through the most recently started session.
+var fakeVoiceMock = &voiceSessionFakeHarness{}
+
+type voiceSessionFakeHarness struct {
+	mu       sync.Mutex
+	sessions []*voiceSessionFakeSession
+	counter  int
+}
+
+func (h *voiceSessionFakeHarness) StartVoiceSession(_ context.Context, cfg iriscore.VoiceSessionConfig) (iriscore.VoiceSession, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.counter++
+	id := cfg.SessionID
+	if id == "" {
+		id = fmt.Sprintf("fake-voice-session-%d", h.counter)
+	}
+	sess := &voiceSessionFakeSession{
+		id:      id,
+		emitter: iriscore.NewVoiceEventEmitter(id, 0),
+	}
+	h.sessions = append(h.sessions, sess)
+	return sess, nil
+}
+
+// latest emits evt through the most recently started fake session.
+func (h *voiceSessionFakeHarness) latest() *voiceSessionFakeSession {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.sessions) == 0 {
+		return nil
+	}
+	return h.sessions[len(h.sessions)-1]
+}
+
+// emitTurnCompleted delivers the committed agent text and turn_completed
+// envelope for turnID.
+func (h *voiceSessionFakeHarness) emitTurnCompleted(turnID, text string) {
+	sess := h.latest()
+	if sess == nil {
+		return
+	}
+	_ = sess.emitter.Emit(context.Background(), iriscore.VoiceEvent{
+		Type:    iriscore.VoiceEventAgentTextCommitted,
+		TurnID:  turnID,
+		Text:    text,
+		IsFinal: true,
+	})
+	_ = sess.emitter.Emit(context.Background(), iriscore.VoiceEvent{
+		Type:   iriscore.VoiceEventTurnCompleted,
+		TurnID: turnID,
+		Text:   text,
+	})
+}
+
+// voiceProviderFakeProvider advertises full-duplex voice sessions.
+type voiceProviderFakeProvider struct{}
+
+func (voiceProviderFakeProvider) ID() string                   { return "voice-fake-mock" }
+func (voiceProviderFakeProvider) Models() []iriscore.ModelInfo { return nil }
+func (voiceProviderFakeProvider) Supports(f iriscore.Feature) bool {
+	return f == iriscore.FeatureChat || f == iriscore.FeatureVoiceSession
+}
+func (voiceProviderFakeProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
+	return nil, nil
+}
+func (voiceProviderFakeProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+	return nil, nil
+}
+func (voiceProviderFakeProvider) StartVoiceSession(ctx context.Context, cfg iriscore.VoiceSessionConfig) (iriscore.VoiceSession, error) {
+	return fakeVoiceMock.StartVoiceSession(ctx, cfg)
 }

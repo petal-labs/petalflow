@@ -19,7 +19,13 @@ provider when the provider or its model catalog does not advertise them.
 | Response metadata | `LLMResponse.ResponseID`, `Status`, `Citations`, `Reasoning`, `ToolCalls`, and `Meta` | Preserved for synchronous responses and on the terminal streaming chunk |
 | Streaming | `StreamingLLMClient` and `StreamChunk` | Text deltas are emitted in order; terminal metadata is equivalent to the synchronous response |
 | Speech recognition | Typed `speech_transcribe` node and `nodes.SpeechRecognizer` | The node's typed recognizer port accepts Iris providers that implement `iriscore.SpeechRecognizer` directly; `llmprovider.NewSpeechRecognizer` performs capability discovery at construction, resolves credentials through the standard ProviderMap flow (config file, `PETALFLOW_PROVIDER_*`, `--provider-key`), wraps the provider in an Iris client (rate limiting, retry for in-memory audio, default timeout, telemetry), and reports missing credentials or unsupported capabilities without echoing the API key. The node builds `iriscore.TranscriptionRequest`s, validates responses, and commits only final (`IsFinal`) transcripts |
-| Speech synthesis | Typed `speech_synthesize` node and `nodes.SpeechSynthesizer` | Same construction contract as recognition (`llmprovider.NewSpeechSynthesizer`). The node builds `iriscore.SpeechRequest`s, supports both synchronous synthesis and Iris HTTP streaming (`StreamSynthesize` with per-chunk delta events), and commits bounded audio artifacts only. Real-time voice sessions remain unclaimed |
+| Speech synthesis | Typed `speech_synthesize` node and `nodes.SpeechSynthesizer` | Same construction contract as recognition (`llmprovider.NewSpeechSynthesizer`). The node builds `iriscore.SpeechRequest`s, supports both synchronous synthesis and Iris HTTP streaming (`StreamSynthesize` with per-chunk delta events), and commits bounded audio artifacts only. Real-time voice sessions are claimed through the voice boundary below |
+
+Voice sessions are separate from the LLM adapter and one-shot DAG nodes:
+`llmprovider.NewVoiceSessionStarter` discovers Iris `voice_session` on the
+resolved provider, wraps it in an Iris client, and returns `voice.Session`
+handles (session lifecycle, `iriscore.VoiceEvent` envelopes, turn tracking,
+interruption propagation) — see `docs/voice-sessions.md`.
 
 `llmprovider` registers both speech factories as hydration defaults
 (`hydrate.RegisterDefaultSpeechFactories`) in binaries that link it, so
