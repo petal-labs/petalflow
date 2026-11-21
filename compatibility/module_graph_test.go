@@ -9,10 +9,10 @@ import (
 
 const (
 	goVersion           = "1.25.0"
-	irisVersion         = "v1.0.0"
+	irisVersion         = "v2.0.0"
 	petalFlowVersion    = "v0.1.0"
 	petalFlowModule     = "github.com/petal-labs/petalflow"
-	irisModule          = "github.com/petal-labs/iris"
+	irisModule          = "github.com/petal-labs/iris/v2"
 	cortexModule        = "github.com/petal-labs/cortex"
 	irisAdapterModule   = petalFlowModule + "/irisadapter"
 	localAdapterVersion = "v0.0.0-00010101000000-000000000000"

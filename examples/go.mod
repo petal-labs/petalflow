@@ -3,7 +3,6 @@ module github.com/petal-labs/petalflow/examples
 go 1.25.0
 
 require (
-	github.com/petal-labs/iris v1.0.0
 	github.com/petal-labs/petalflow v0.1.0
 	github.com/petal-labs/petalflow/irisadapter v0.0.0-00010101000000-000000000000
 )
@@ -17,6 +16,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/petal-labs/iris/v2 v2.0.0
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
 	golang.org/x/crypto v0.55.0 // indirect

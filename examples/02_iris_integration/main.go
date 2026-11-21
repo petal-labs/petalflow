@@ -20,7 +20,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/petal-labs/iris/providers/ollama"
+	"github.com/petal-labs/iris/v2/providers/ollama"
 	"github.com/petal-labs/petalflow"
 	"github.com/petal-labs/petalflow/irisadapter"
 )

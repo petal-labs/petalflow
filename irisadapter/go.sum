@@ -28,8 +28,8 @@ github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWE
 github.com/mattn/go-isatty v0.0.20/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D7dTCTo3Y=
 github.com/ncruces/go-strftime v1.0.0 h1:HMFp8mLCTPp341M/ZnA4qaf7ZlsbTc+miZjCLOFAw7w=
 github.com/ncruces/go-strftime v1.0.0/go.mod h1:Fwc5htZGVVkseilnfgOVb9mKy6w1naJmn9CehxcKcls=
-github.com/petal-labs/iris v1.0.0 h1:2G/GUlZa0+JBVUTznR9aYTBC5lhjJuvHuJTp1HggjUc=
-github.com/petal-labs/iris v1.0.0/go.mod h1:SFP2K1QINa5uWd4tY7cHPiA3gOaxjmYvCDH1V77yT34=
+github.com/petal-labs/iris/v2 v2.0.0 h1:FH0DEgBpbuzaxHvbtsVgYKwDs7jWjZTpbks5ka25Uao=
+github.com/petal-labs/iris/v2 v2.0.0/go.mod h1:SxFfMpmLmY31n7S59vRJjHOr96uNV9fFNGGfBykfsws=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=

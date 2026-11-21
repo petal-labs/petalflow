@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	iriscore "github.com/petal-labs/iris/core"
-	"github.com/petal-labs/iris/providers/openai"
+	iriscore "github.com/petal-labs/iris/v2/core"
+	"github.com/petal-labs/iris/v2/providers/openai"
 )
 
 func TestEmbedding_SingleInput(t *testing.T) {
