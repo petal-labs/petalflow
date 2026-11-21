@@ -26,11 +26,17 @@ func init() {
 // the caller supplies an implementation backed by llmprovider.
 type ClientFactory func(providerName string, cfg ProviderConfig) (core.LLMClient, error)
 
+// SpeechRecognizerFactory creates a nodes.SpeechRecognizer for a named
+// provider. Like ClientFactory, the caller supplies the implementation backed
+// by llmprovider; hydrate only resolves provider configs.
+type SpeechRecognizerFactory func(providerName string, cfg ProviderConfig) (nodes.SpeechRecognizer, error)
+
 // liveFactoryOptions holds optional dependencies for non-LLM node types.
 type liveFactoryOptions struct {
-	toolRegistry   *core.ToolRegistry
-	humanHandler   nodes.HumanHandler
-	memoryProvider memory.Provider
+	toolRegistry            *core.ToolRegistry
+	humanHandler            nodes.HumanHandler
+	memoryProvider          memory.Provider
+	speechRecognizerFactory SpeechRecognizerFactory
 }
 
 type liveFactoryRuntime struct {
@@ -64,6 +70,13 @@ func WithHumanHandler(h nodes.HumanHandler) LiveNodeOption {
 // nodes in the workflow; scoping happens per node via session and namespace.
 func WithMemoryProvider(p memory.Provider) LiveNodeOption {
 	return func(o *liveFactoryOptions) { o.memoryProvider = p }
+}
+
+// WithSpeechRecognizerFactory provides a SpeechRecognizerFactory so that
+// speech_transcribe nodes resolve to real SpeechTranscribeNode instances.
+// The factory is invoked once per node with the node's configured provider.
+func WithSpeechRecognizerFactory(f SpeechRecognizerFactory) LiveNodeOption {
+	return func(o *liveFactoryOptions) { o.speechRecognizerFactory = f }
 }
 
 // NewLiveNodeFactory returns a NodeFactory that creates executable nodes for
@@ -142,6 +155,8 @@ func (r liveFactoryRuntime) buildNode(nd graph.NodeDef) (core.Node, error) {
 		return buildCacheNode(r, nd)
 	case "memory":
 		return buildMemoryNode(nd, r.options.memoryProvider)
+	case "speech_transcribe":
+		return buildSpeechTranscribeNode(r, nd)
 	case "merge":
 		return buildMergeNode(nd)
 	case "human":
@@ -272,6 +287,35 @@ func buildMemoryNode(nd graph.NodeDef, provider memory.Provider) (core.Node, err
 	}
 
 	return nodes.NewMemoryNode(nd.ID, cfg), nil
+}
+
+// buildSpeechTranscribeNode creates a SpeechTranscribeNode from a NodeDef.
+// Returns an error if no speech recognizer factory was provided or the
+// node's provider is not configured. Config validation (formats, granularities,
+// bounds) happens here so malformed workflows fail at hydration, not at run time.
+func buildSpeechTranscribeNode(r liveFactoryRuntime, nd graph.NodeDef) (core.Node, error) {
+	providerName := configString(nd.Config, "provider")
+	if providerName == "" {
+		return nil, fmt.Errorf("node %q: missing \"provider\" in config", nd.ID)
+	}
+	if r.options.speechRecognizerFactory == nil {
+		return nil, fmt.Errorf("node %q: speech_transcribe node requires a speech recognizer factory (use WithSpeechRecognizerFactory)", nd.ID)
+	}
+	cfg, err := nodes.ParseSpeechTranscribeConfig(nd.Config)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: invalid speech_transcribe config: %w", nd.ID, err)
+	}
+
+	providerCfg, ok := r.providers[providerName]
+	if !ok {
+		return nil, fmt.Errorf("node %q: provider %q not configured", nd.ID, providerName)
+	}
+	recognizer, err := r.options.speechRecognizerFactory(providerName, providerCfg)
+	if err != nil {
+		return nil, fmt.Errorf("node %q: %w", nd.ID, err)
+	}
+
+	return nodes.NewSpeechTranscribeNode(nd.ID, recognizer, cfg), nil
 }
 
 func boundNodeDefFromConfig(nd graph.NodeDef, keys []string, defaultID string) (graph.NodeDef, error) {

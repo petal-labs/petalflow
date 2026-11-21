@@ -19,6 +19,8 @@ require (
 	modernc.org/sqlite v1.44.3
 )
 
+require github.com/coder/websocket v1.8.15 // indirect
+
 require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
