@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Hydration + credential resolution for ElevenLabs speech**
+  ([#251](https://github.com/petal-labs/petalflow/issues/251)). Speech nodes
+  (`speech_transcribe`, `speech_synthesize`) now hydrate through the default
+  live-node factory without explicit wiring: `llmprovider` registers
+  Iris-backed speech factories at init (`hydrate.RegisterDefaultSpeechFactories`),
+  and `hydrate.NewLiveNodeFactory` falls back to them whenever the caller did
+  not pass `WithSpeechRecognizerFactory`/`WithSpeechSynthesizerFactory`
+  (explicit options still override). Credentials resolve through the standard
+  provider flow — `~/.petalflow/config.json` (`providers.<name>.api_key`),
+  `PETALFLOW_PROVIDER_<NAME>_API_KEY` env vars, and `--provider-key` flags.
+  Both speech factories discover Iris speech capabilities on the resolved
+  provider and wrap it in an Iris client (rate limiting, retry for in-memory
+  audio / stream setup, default timeout, telemetry); unsupported capabilities
+  and unresolved credentials fail hydration with a diagnosable error that
+  never echoes the API key — missing credentials name all three resolution
+  paths. Binaries that do not link `llmprovider` keep the previous behavior
+  (explicit factories required). Deterministic mocked integration and CLI
+  tests cover default-factory hydration, config-file credential resolution,
+  unsupported-capability rejection, and secret non-leakage.
+
 - **Typed `speech_synthesize` node with streaming artifact support**
   ([#250](https://github.com/petal-labs/petalflow/issues/250)). Adds a
   `speech_synthesize` graph node backed by the Iris 2.0 speech-synthesis

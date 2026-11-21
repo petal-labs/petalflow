@@ -7,10 +7,90 @@ import (
 	"time"
 
 	iriscore "github.com/petal-labs/iris/v2/core"
+	irisproviders "github.com/petal-labs/iris/v2/providers"
 )
 
 // Deterministic speech mocks shared by the speech_transcribe and
 // speech_synthesize integration tests. None of these touch the network.
+
+// speechAndTTSFakeProvider implements both Iris speech capabilities so the
+// hydration default-factory e2e can resolve speech nodes by provider name.
+type speechAndTTSFakeProvider struct{}
+
+func (speechAndTTSFakeProvider) ID() string { return "elevenlabs-mock" }
+
+func (speechAndTTSFakeProvider) Models() []iriscore.ModelInfo { return nil }
+
+func (speechAndTTSFakeProvider) Supports(f iriscore.Feature) bool {
+	return f == iriscore.FeatureChat ||
+		f == iriscore.FeatureSpeechRecognition ||
+		f == iriscore.FeatureSpeechSynthesis
+}
+
+func (speechAndTTSFakeProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
+	return nil, nil
+}
+
+func (speechAndTTSFakeProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+	return nil, nil
+}
+
+func (speechAndTTSFakeProvider) Transcribe(context.Context, *iriscore.TranscriptionRequest) (*iriscore.TranscriptionResponse, error) {
+	return &iriscore.TranscriptionResponse{
+		ID:       "mock-transcript-1",
+		Model:    "scribe_v1",
+		Text:     "PetalFlow transcribed this line deterministically.",
+		Language: "en",
+		Duration: 2 * time.Second,
+		IsFinal:  true,
+	}, nil
+}
+
+func (speechAndTTSFakeProvider) Synthesize(context.Context, *iriscore.SpeechRequest) (*iriscore.SpeechResponse, error) {
+	return &iriscore.SpeechResponse{
+		ID:      "mock-audio-1",
+		Model:   "eleven_flash_v2_5",
+		VoiceID: "voice-1",
+		Audio: iriscore.AudioData{
+			Data:   []byte("deterministic-fake-audio"),
+			Format: iriscore.AudioFormatMP3_44100_128,
+		},
+		Usage: iriscore.SpeechUsage{
+			InputCharacters: 7,
+			AudioDuration:   2 * time.Second,
+			OutputBytes:     int64(len("deterministic-fake-audio")),
+		},
+	}, nil
+}
+
+func (speechAndTTSFakeProvider) StreamSynthesize(context.Context, *iriscore.SpeechRequest) (*iriscore.SpeechStream, error) {
+	return finishedSynthesisStream([]iriscore.AudioChunk{
+		{Data: []byte("deterministic-fake-audio"), Format: iriscore.AudioFormatMP3_44100_128},
+	}, nil, nil), nil
+}
+
+// chatOnlyFakeProvider implements only chat, mirroring a provider without
+// speech capabilities.
+type chatOnlyFakeProvider struct{}
+
+func (chatOnlyFakeProvider) ID() string                   { return "chat-only-mock" }
+func (chatOnlyFakeProvider) Models() []iriscore.ModelInfo { return nil }
+func (chatOnlyFakeProvider) Supports(iriscore.Feature) bool {
+	return true
+}
+func (chatOnlyFakeProvider) Chat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatResponse, error) {
+	return nil, nil
+}
+func (chatOnlyFakeProvider) StreamChat(context.Context, *iriscore.ChatRequest) (*iriscore.ChatStream, error) {
+	return nil, nil
+}
+
+func init() {
+	// Register the fake providers in the Iris provider registry so hydration
+	// default factories can resolve them by name without network access.
+	irisproviders.Register("elevenlabs-mock", func(string) iriscore.Provider { return speechAndTTSFakeProvider{} })
+	irisproviders.Register("chat-only-mock", func(string) iriscore.Provider { return chatOnlyFakeProvider{} })
+}
 
 // mockIntegrationSynthesizer returns a complete canned audio response.
 type mockIntegrationSynthesizer struct{}
