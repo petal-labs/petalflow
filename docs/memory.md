@@ -100,6 +100,24 @@ attaching document text for debugging. The `llm.response` event additionally
 reports `cache_read_tokens` / `cache_creation_tokens` when the provider
 reports prompt-cache activity.
 
+## Graph retrieval (Cortex v2)
+
+Graph-capable providers (such as Cortex v2 in `search_mode: "graph"`) can
+implement the optional `memory.GraphProvider` interface to return compact
+entity/relationship `GraphContext` alongside retrieved documents, or attach a
+`*memory.GraphContext` under `Document.Metadata[memory.MetadataKeyGraphContext]`:
+
+- Set `RetrievalMode: memory.RetrievalModeGraph` (`"vector"`, `"text"`,
+  `"hybrid"`, or `"graph"`), `IncludeGraphContext: true`, and `MaxHops` (`1` or
+  `2`) on `MemoryNodeConfig` (or in YAML config).
+- `memory.AssembleWithGraph` enforces `ContextBudget.MaxTokens` across both
+  rendered graph context (capped at 25% of `MaxTokens`) and documents so
+  combined output never exceeds the budget.
+- When returned, the assembled `*memory.GraphContext` is rendered into
+  `output_var` and exposed structurally on `<output_var>_graph`, while
+  `memory.read` events record only content-free `retrieval_mode`,
+  `graph_entities`, and `graph_relationships` counts.
+
 ## Declarative workflows
 
 Register a provider when hydrating:
@@ -117,6 +135,9 @@ nodes:
     type: memory
     config:
       query_template: "{{.input}}"
+      retrieval_mode: graph        # optional: vector, text, hybrid, graph
+      include_graph_context: true  # optional: attach compact graph triples
+      max_hops: 2                  # optional: 1 or 2 for graph mode
       namespace: support
       session_id: "{{.vars.session_id}}"
       max_documents: 8

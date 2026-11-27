@@ -119,6 +119,84 @@ func Assemble(ctx context.Context, docs []Document, budget ContextBudget, compac
 	return compactor.Compact(ctx, docs, budget, counter)
 }
 
+// AssembleWithGraph applies budget-aware compaction across both retrieved
+// documents and optional GraphContext. When budget.MaxTokens > 0, graph
+// context is trimmed to fit within a bounded share (at most 25% of MaxTokens,
+// and never exceeding MaxTokens) and its rendered token cost is deducted from
+// the remaining token budget available to documents so combined TokensOut
+// never exceeds budget.MaxTokens.
+func AssembleWithGraph(ctx context.Context, docs []Document, gc *GraphContext, budget ContextBudget, compactor Compactor, counter TokenCounter) ([]Document, *GraphContext, CompactionStats, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, CompactionStats{}, err
+	}
+	if compactor == nil {
+		compactor = NewTruncateCompactor()
+	}
+	if counter == nil {
+		counter = EstimateTokens
+	}
+	if gc.IsEmpty() {
+		kept, stats, err := compactor.Compact(ctx, docs, budget, counter)
+		return kept, nil, stats, err
+	}
+
+	graphTokensIn := counter(RenderGraphContext(gc))
+	trimmedGraph := gc
+	graphTruncated := false
+	docBudget := budget
+
+	if budget.MaxTokens > 0 {
+		// Reserve at most 25% of the token budget for graph context (or up to
+		// full MaxTokens when there are no documents), keeping documents
+		// primary while ensuring graph triples fit within the overall cap.
+		graphCap := budget.MaxTokens / 4
+		if len(docs) == 0 {
+			graphCap = budget.MaxTokens
+		}
+		if graphCap == 0 && budget.MaxTokens > 0 {
+			graphCap = budget.MaxTokens
+		}
+		trimmedGraph, graphTruncated = trimGraphContext(gc, graphCap, counter)
+		graphTokensOut := 0
+		if !trimmedGraph.IsEmpty() {
+			graphTokensOut = counter(RenderGraphContext(trimmedGraph))
+		}
+		remainingForDocs := budget.MaxTokens - graphTokensOut
+		if remainingForDocs <= 0 {
+			// Budget is completely consumed by graph context; drop documents.
+			stats := CompactionStats{
+				DocumentsIn:  len(docs),
+				DocumentsOut: 0,
+				TokensIn:     countTokens(docs, counter) + graphTokensIn,
+				TokensOut:    graphTokensOut,
+				Truncated:    graphTruncated || len(docs) > 0,
+				Strategy:     "truncate",
+			}
+			return nil, trimmedGraph, stats, nil
+		}
+		docBudget.MaxTokens = remainingForDocs
+	}
+
+	kept, stats, err := compactor.Compact(ctx, docs, docBudget, counter)
+	if err != nil {
+		return nil, nil, CompactionStats{}, err
+	}
+
+	graphTokensOut := 0
+	if !trimmedGraph.IsEmpty() {
+		graphTokensOut = counter(RenderGraphContext(trimmedGraph))
+	}
+	stats.TokensIn += graphTokensIn
+	stats.TokensOut += graphTokensOut
+	if graphTruncated {
+		stats.Truncated = true
+		if stats.Strategy == "" || stats.Strategy == "none" {
+			stats.Strategy = "truncate"
+		}
+	}
+	return kept, trimmedGraph, stats, nil
+}
+
 // RenderContext renders documents into a single context block suitable for
 // prompt injection. Each document becomes a citation-style entry with its
 // source when available.
@@ -136,6 +214,109 @@ func RenderContext(docs []Document) string {
 		}
 	}
 	return b.String()
+}
+
+// RenderGraphContext renders a compact GraphContext block (typed relationships
+// and top entities) suitable for prompt injection. Returns empty string when
+// gc is nil or empty.
+func RenderGraphContext(gc *GraphContext) string {
+	if gc.IsEmpty() {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("Graph context:")
+	if len(gc.Relationships) > 0 {
+		b.WriteString("\nRelationships:")
+		for _, r := range gc.Relationships {
+			fmt.Fprintf(&b, "\n- %s -[%s]-> %s", r.Source, r.RelationType, r.Target)
+			if r.Description != "" {
+				fmt.Fprintf(&b, ": %s", r.Description)
+			}
+		}
+	}
+	if len(gc.Entities) > 0 {
+		b.WriteString("\nEntities:")
+		for _, e := range gc.Entities {
+			fmt.Fprintf(&b, "\n- %s", e.Name)
+			if e.Type != "" {
+				fmt.Fprintf(&b, " (%s)", e.Type)
+			}
+			if e.Summary != "" {
+				fmt.Fprintf(&b, ": %s", e.Summary)
+			}
+		}
+	}
+	return b.String()
+}
+
+// RenderContextWithGraph renders retrieved documents and optional graph
+// context into a single prompt-ready block. When gc is nil or empty, the
+// output is identical to RenderContext(docs).
+func RenderContextWithGraph(docs []Document, gc *GraphContext) string {
+	docBlock := RenderContext(docs)
+	graphBlock := RenderGraphContext(gc)
+	switch {
+	case docBlock == "":
+		return graphBlock
+	case graphBlock == "":
+		return docBlock
+	default:
+		return docBlock + "\n\n" + graphBlock
+	}
+}
+
+// trimGraphContext keeps as many leading relationships and entities as fit
+// within maxTokens (relationships first because multi-hop triples carry the
+// highest connective value). Returns (nil, true) if nothing fits.
+func trimGraphContext(gc *GraphContext, maxTokens int, counter TokenCounter) (*GraphContext, bool) {
+	if gc.IsEmpty() {
+		return nil, false
+	}
+	if maxTokens <= 0 {
+		return nil, true
+	}
+	if counter(RenderGraphContext(gc)) <= maxTokens {
+		return gc, false
+	}
+
+	out := &GraphContext{}
+	truncated := false
+
+	for _, rel := range gc.Relationships {
+		candidate := &GraphContext{
+			Relationships: append(append([]GraphRelationship(nil), out.Relationships...), rel),
+			Entities:      out.Entities,
+		}
+		if counter(RenderGraphContext(candidate)) > maxTokens {
+			truncated = true
+			break
+		}
+		out.Relationships = candidate.Relationships
+	}
+	if len(out.Relationships) < len(gc.Relationships) {
+		truncated = true
+	}
+
+	for _, ent := range gc.Entities {
+		candidate := &GraphContext{
+			Relationships: out.Relationships,
+			Entities:      append(append([]GraphEntity(nil), out.Entities...), ent),
+		}
+		if counter(RenderGraphContext(candidate)) > maxTokens {
+			truncated = true
+			break
+		}
+		out.Entities = candidate.Entities
+	}
+	if len(out.Entities) < len(gc.Entities) {
+		truncated = true
+	}
+
+	if out.IsEmpty() {
+		return nil, true
+	}
+	return out, truncated
 }
 
 // countTokens sums the estimated tokens across documents.

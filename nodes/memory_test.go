@@ -491,3 +491,155 @@ func TestMemoryNodeWriteMissingVarWritesEmpty(t *testing.T) {
 		t.Errorf("written text = %q, want empty for missing var", provider.lastWrite.Text)
 	}
 }
+
+type stubGraphProvider struct {
+	stubProvider
+	graphCtx       *memory.GraphContext
+	graphRetrieveN int
+}
+
+func (p *stubGraphProvider) RetrieveWithGraph(ctx context.Context, query memory.RetrievalQuery) (memory.GraphResult, error) {
+	p.graphRetrieveN++
+	p.lastQuery = query
+	if p.retrieveErr != nil {
+		return memory.GraphResult{}, p.retrieveErr
+	}
+	return memory.GraphResult{
+		Documents:    p.docs,
+		GraphContext: p.graphCtx,
+	}, nil
+}
+
+func TestMemoryNodeRetrieveGraphProvider(t *testing.T) {
+	provider := &stubGraphProvider{
+		stubProvider: stubProvider{
+			docs: []memory.Document{
+				{ID: "c1", Text: "Checkout Gateway persists orders in PaymentsDB.", Source: "gateway.md", Score: 0.9},
+				{ID: "c2", Text: "PaymentsDB replicates to AuroraRegion us-west-2.", Source: "dr.md", Score: 0.8},
+			},
+		},
+		graphCtx: &memory.GraphContext{
+			Entities: []memory.GraphEntity{
+				{ID: "e1", Name: "Checkout Gateway", Type: "product"},
+				{ID: "e2", Name: "PaymentsDB", Type: "product"},
+			},
+			Relationships: []memory.GraphRelationship{
+				{Source: "Checkout Gateway", Target: "PaymentsDB", RelationType: "persists_in"},
+				{Source: "PaymentsDB", Target: "AuroraRegion", RelationType: "replicated_to"},
+			},
+		},
+	}
+
+	node := NewMemoryNode("mem", MemoryNodeConfig{
+		Provider:            provider,
+		Namespace:           "arch",
+		SessionID:           "sess-1",
+		RetrievalMode:       memory.RetrievalModeGraph,
+		IncludeGraphContext: true,
+		MaxHops:             2,
+		Budget:              memory.ContextBudget{MaxDocuments: 5, MaxTokens: 500},
+	})
+
+	var events []runtime.Event
+	ctx := runtime.ContextWithEmitter(context.Background(), func(e runtime.Event) { events = append(events, e) })
+
+	result, err := node.Run(ctx, newTestEnvelope())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if provider.graphRetrieveN != 1 || provider.retrieveOps != 0 {
+		t.Errorf("expected RetrieveWithGraph called once, got graph=%d plain=%d", provider.graphRetrieveN, provider.retrieveOps)
+	}
+	if provider.lastQuery.Mode != memory.RetrievalModeGraph {
+		t.Errorf("query.Mode = %q, want %q", provider.lastQuery.Mode, memory.RetrievalModeGraph)
+	}
+	if !provider.lastQuery.IncludeGraphContext || provider.lastQuery.MaxHops != 2 {
+		t.Errorf("query graph options not forwarded: %+v", provider.lastQuery)
+	}
+
+	contextText, _ := result.GetVar("mem_memory")
+	s, _ := contextText.(string)
+	for _, want := range []string{
+		"Checkout Gateway persists orders in PaymentsDB.",
+		"Graph context:",
+		"Checkout Gateway -[persists_in]-> PaymentsDB",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("rendered context missing %q:\n%s", want, s)
+		}
+	}
+
+	graphVar, ok := result.GetVar("mem_memory_graph")
+	if !ok {
+		t.Fatal("expected mem_memory_graph variable to be populated")
+	}
+	gc, ok := graphVar.(*memory.GraphContext)
+	if !ok || len(gc.Relationships) != 2 || len(gc.Entities) != 2 {
+		t.Errorf("unexpected mem_memory_graph value: %#v", graphVar)
+	}
+
+	statsVar, _ := result.GetVar("mem_memory_stats")
+	stats := statsVar.(MemoryResult)
+	if stats.RetrievalMode != memory.RetrievalModeGraph {
+		t.Errorf("stats.RetrievalMode = %q, want graph", stats.RetrievalMode)
+	}
+	if stats.GraphEntityCount != 2 || stats.GraphRelationshipCount != 2 {
+		t.Errorf("stats graph counts = %d/%d, want 2/2", stats.GraphEntityCount, stats.GraphRelationshipCount)
+	}
+	if stats.EstimatedTokens > 500 {
+		t.Errorf("stats.EstimatedTokens = %d exceeds budget 500", stats.EstimatedTokens)
+	}
+
+	var sawRead bool
+	for _, e := range events {
+		if e.Kind == runtime.EventMemoryRead {
+			sawRead = true
+			if e.Payload["retrieval_mode"] != "graph" {
+				t.Errorf("event retrieval_mode = %v, want graph", e.Payload["retrieval_mode"])
+			}
+			if e.Payload["graph_entities"] != 2 || e.Payload["graph_relationships"] != 2 {
+				t.Errorf("event graph counts = %v/%v, want 2/2", e.Payload["graph_entities"], e.Payload["graph_relationships"])
+			}
+		}
+	}
+	if !sawRead {
+		t.Error("expected EventMemoryRead to be emitted")
+	}
+}
+
+func TestMemoryNodeRetrieveGraphMetadataFallback(t *testing.T) {
+	provider := &stubProvider{
+		docs: []memory.Document{
+			{
+				ID:   "c1",
+				Text: "Service A calls Service B.",
+				Metadata: map[string]any{
+					memory.MetadataKeyGraphContext: &memory.GraphContext{
+						Relationships: []memory.GraphRelationship{
+							{Source: "Service A", Target: "Service B", RelationType: "calls"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	node := NewMemoryNode("mem", MemoryNodeConfig{
+		Provider:            provider,
+		Namespace:           "arch",
+		SessionID:           "sess-1",
+		RetrievalMode:       memory.RetrievalModeGraph,
+		IncludeGraphContext: true,
+	})
+
+	result, err := node.Run(context.Background(), newTestEnvelope())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	contextText, _ := result.GetVar("mem_memory")
+	if s, _ := contextText.(string); !strings.Contains(s, "Service A -[calls]-> Service B") {
+		t.Errorf("expected metadata graph_context rendered in fallback mode, got:\n%s", s)
+	}
+}

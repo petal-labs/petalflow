@@ -286,6 +286,7 @@ func buildMemoryNode(nd graph.NodeDef, provider memory.Provider) (core.Node, err
 	cfg := nodes.MemoryNodeConfig{
 		Provider:      provider,
 		Mode:          nodes.MemoryMode(configString(nd.Config, "mode")),
+		RetrievalMode: memory.RetrievalMode(configString(nd.Config, "retrieval_mode")),
 		QueryTemplate: configString(nd.Config, "query_template"),
 		Namespace:     configString(nd.Config, "namespace"),
 		SessionID:     configString(nd.Config, "session_id"),
@@ -295,6 +296,20 @@ func buildMemoryNode(nd graph.NodeDef, provider memory.Provider) (core.Node, err
 		WriteVar:      configString(nd.Config, "write_var"),
 		WriteKey:      configString(nd.Config, "write_key"),
 		OnUnavailable: nodes.MemoryUnavailableAction(configString(nd.Config, "on_unavailable")),
+	}
+	switch cfg.RetrievalMode {
+	case memory.RetrievalModeDefault, memory.RetrievalModeVector, memory.RetrievalModeText, memory.RetrievalModeHybrid, memory.RetrievalModeGraph:
+	default:
+		return nil, fmt.Errorf("node %q: invalid retrieval_mode %q (supported: vector, text, hybrid, graph)", nd.ID, cfg.RetrievalMode)
+	}
+	if v, ok := nd.Config["include_graph_context"].(bool); ok {
+		cfg.IncludeGraphContext = v
+	}
+	if maxHops, ok := configInt(nd.Config, "max_hops"); ok {
+		if maxHops < 0 || maxHops > 2 {
+			return nil, fmt.Errorf("node %q: max_hops must be between 0 and 2 (got %d)", nd.ID, maxHops)
+		}
+		cfg.MaxHops = maxHops
 	}
 	if vars, ok := configStringSlice(nd.Config, "input_vars"); ok {
 		cfg.InputVars = vars

@@ -141,3 +141,113 @@ func endsWithRune(s string, r rune) bool {
 	runes := []rune(s)
 	return len(runes) > 0 && runes[len(runes)-1] == r
 }
+
+func TestRenderGraphContext(t *testing.T) {
+	if got := RenderGraphContext(nil); got != "" {
+		t.Errorf("RenderGraphContext(nil) = %q, want empty", got)
+	}
+	if got := RenderGraphContext(&GraphContext{}); got != "" {
+		t.Errorf("RenderGraphContext(empty) = %q, want empty", got)
+	}
+
+	gc := &GraphContext{
+		Entities: []GraphEntity{
+			{ID: "e1", Name: "PaymentsDB", Type: "product", Summary: "Primary transactional database"},
+		},
+		Relationships: []GraphRelationship{
+			{Source: "Checkout Gateway", Target: "PaymentsDB", RelationType: "persists_in", Description: "Persists order state"},
+		},
+	}
+	got := RenderGraphContext(gc)
+	for _, want := range []string{
+		"Graph context:",
+		"Checkout Gateway -[persists_in]-> PaymentsDB: Persists order state",
+		"PaymentsDB (product): Primary transactional database",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RenderGraphContext() missing %q in:\n%s", want, got)
+		}
+	}
+
+	docs := []Document{{ID: "d1", Text: "Order flow chunk", Source: "arch.md"}}
+	if same := RenderContextWithGraph(docs, nil); same != RenderContext(docs) {
+		t.Errorf("RenderContextWithGraph(docs, nil) diverged from RenderContext(docs)")
+	}
+	combined := RenderContextWithGraph(docs, gc)
+	if !strings.Contains(combined, "Retrieved context:") || !strings.Contains(combined, "Graph context:") {
+		t.Errorf("RenderContextWithGraph missing sections:\n%s", combined)
+	}
+}
+
+func TestAssembleWithGraphBudgetEnforced(t *testing.T) {
+	docs := []Document{
+		{ID: "d1", Text: strings.Repeat("a", 200)}, // 50 tokens
+		{ID: "d2", Text: strings.Repeat("b", 200)}, // 50 tokens
+	}
+	gc := &GraphContext{
+		Relationships: []GraphRelationship{
+			{Source: "Checkout Gateway", Target: "PaymentsDB", RelationType: "persists_in"},
+			{Source: "PaymentsDB", Target: "AuroraRegion", RelationType: "replicated_to"},
+			{Source: "AuroraRegion", Target: "DRRunbook", RelationType: "documented_by", Description: strings.Repeat("x", 200)},
+		},
+		Entities: []GraphEntity{
+			{Name: "Checkout Gateway", Type: "product"},
+			{Name: "PaymentsDB", Type: "product", Summary: strings.Repeat("y", 200)},
+		},
+	}
+
+	budget := ContextBudget{MaxTokens: 120}
+	keptDocs, keptGraph, stats, err := AssembleWithGraph(context.Background(), docs, gc, budget, nil, nil)
+	if err != nil {
+		t.Fatalf("AssembleWithGraph: %v", err)
+	}
+	if stats.TokensOut > budget.MaxTokens {
+		t.Errorf("TokensOut = %d exceeds MaxTokens = %d", stats.TokensOut, budget.MaxTokens)
+	}
+	if !stats.Truncated {
+		t.Error("expected Truncated=true under tight budget")
+	}
+	if len(keptDocs) == 0 {
+		t.Error("expected at least one document kept alongside graph context")
+	}
+	if keptGraph.IsEmpty() {
+		t.Error("expected at least one relationship kept within graph cap")
+	}
+	if len(keptGraph.Relationships) >= len(gc.Relationships) && len(keptGraph.Entities) >= len(gc.Entities) {
+		t.Error("expected graph context to be trimmed to fit 25% cap")
+	}
+
+	// Unbounded budget keeps everything.
+	allDocs, allGraph, unboundedStats, err := AssembleWithGraph(context.Background(), docs, gc, ContextBudget{}, nil, nil)
+	if err != nil {
+		t.Fatalf("AssembleWithGraph unbounded: %v", err)
+	}
+	if len(allDocs) != 2 || len(allGraph.Relationships) != 3 || len(allGraph.Entities) != 2 {
+		t.Errorf("unbounded assembly unexpectedly dropped items: docs=%d rels=%d ents=%d",
+			len(allDocs), len(allGraph.Relationships), len(allGraph.Entities))
+	}
+	if unboundedStats.Truncated {
+		t.Error("unbounded assembly should not mark Truncated=true")
+	}
+}
+
+func TestExtractGraphContext(t *testing.T) {
+	if got := ExtractGraphContext(nil); got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+	gc := GraphContext{
+		Entities: []GraphEntity{{Name: "PaymentsDB"}},
+	}
+	fromVal := ExtractGraphContext([]Document{
+		{ID: "d1", Metadata: map[string]any{MetadataKeyGraphContext: gc}},
+	})
+	if fromVal == nil || len(fromVal.Entities) != 1 {
+		t.Fatalf("expected GraphContext extracted from value, got %+v", fromVal)
+	}
+	fromPtr := ExtractGraphContext([]Document{
+		{ID: "d1", Metadata: map[string]any{MetadataKeyGraphContext: &gc}},
+	})
+	if fromPtr == nil || len(fromPtr.Entities) != 1 {
+		t.Fatalf("expected GraphContext extracted from pointer, got %+v", fromPtr)
+	}
+}

@@ -538,14 +538,17 @@ func TestNewLiveNodeFactory_MemoryNode(t *testing.T) {
 		ID:   "recall",
 		Type: "memory",
 		Config: map[string]any{
-			"mode":           "retrieve",
-			"query_template": "{{.input}}",
-			"namespace":      "ops",
-			"session_id":     "sess-1",
-			"max_documents":  5,
-			"max_tokens":     512,
-			"on_unavailable": "skip",
-			"output_var":     "context",
+			"mode":                  "retrieve",
+			"retrieval_mode":        "graph",
+			"include_graph_context": true,
+			"max_hops":              2,
+			"query_template":        "{{.input}}",
+			"namespace":             "ops",
+			"session_id":            "sess-1",
+			"max_documents":         5,
+			"max_tokens":            512,
+			"on_unavailable":        "skip",
+			"output_var":            "context",
 		},
 	}
 
@@ -562,6 +565,12 @@ func TestNewLiveNodeFactory_MemoryNode(t *testing.T) {
 	if cfg.Mode != nodes.MemoryModeRetrieve {
 		t.Errorf("Mode = %q, want %q", cfg.Mode, nodes.MemoryModeRetrieve)
 	}
+	if cfg.RetrievalMode != memory.RetrievalModeGraph {
+		t.Errorf("RetrievalMode = %q, want %q", cfg.RetrievalMode, memory.RetrievalModeGraph)
+	}
+	if !cfg.IncludeGraphContext || cfg.MaxHops != 2 {
+		t.Errorf("graph options = include:%v hops:%d, want true/2", cfg.IncludeGraphContext, cfg.MaxHops)
+	}
 	if cfg.Budget.MaxDocuments != 5 || cfg.Budget.MaxTokens != 512 {
 		t.Errorf("Budget = %+v", cfg.Budget)
 	}
@@ -570,6 +579,17 @@ func TestNewLiveNodeFactory_MemoryNode(t *testing.T) {
 	}
 	if cfg.OutputVar != "context" {
 		t.Errorf("OutputVar = %q, want context", cfg.OutputVar)
+	}
+
+	// Reject invalid retrieval_mode and out-of-range max_hops at hydration time.
+	for _, bad := range []map[string]any{
+		{"retrieval_mode": "invalid"},
+		{"max_hops": 3},
+		{"max_hops": -1},
+	} {
+		if _, err := nodeFactory(graph.NodeDef{ID: "bad", Type: "memory", Config: bad}); err == nil {
+			t.Errorf("expected hydration error for config %v, got nil", bad)
+		}
 	}
 }
 

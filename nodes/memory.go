@@ -46,16 +46,19 @@ const (
 // node's output variable (suffix "_stats") and is content-free except for
 // the assembled context on the result variable itself.
 type MemoryResult struct {
-	Mode            MemoryMode              `json:"mode"`
-	Namespace       string                  `json:"namespace"`
-	SessionID       string                  `json:"session_id"`
-	ThreadID        string                  `json:"thread_id,omitempty"`
-	TenantID        string                  `json:"tenant_id,omitempty"`
-	DocumentCount   int                     `json:"document_count,omitempty"`
-	EstimatedTokens int                     `json:"estimated_tokens,omitempty"`
-	Truncated       bool                    `json:"truncated,omitempty"`
-	Compaction      *memory.CompactionStats `json:"compaction,omitempty"`
-	Unavailable     bool                    `json:"unavailable,omitempty"`
+	Mode                   MemoryMode              `json:"mode"`
+	RetrievalMode          memory.RetrievalMode    `json:"retrieval_mode,omitempty"`
+	Namespace              string                  `json:"namespace"`
+	SessionID              string                  `json:"session_id"`
+	ThreadID               string                  `json:"thread_id,omitempty"`
+	TenantID               string                  `json:"tenant_id,omitempty"`
+	DocumentCount          int                     `json:"document_count,omitempty"`
+	GraphEntityCount       int                     `json:"graph_entity_count,omitempty"`
+	GraphRelationshipCount int                     `json:"graph_relationship_count,omitempty"`
+	EstimatedTokens        int                     `json:"estimated_tokens,omitempty"`
+	Truncated              bool                    `json:"truncated,omitempty"`
+	Compaction             *memory.CompactionStats `json:"compaction,omitempty"`
+	Unavailable            bool                    `json:"unavailable,omitempty"`
 }
 
 // MemoryNodeConfig configures a MemoryNode.
@@ -65,6 +68,21 @@ type MemoryNodeConfig struct {
 
 	// Mode selects retrieve or write. Defaults to retrieve.
 	Mode MemoryMode
+
+	// RetrievalMode optionally selects the backend retrieval strategy in
+	// retrieve mode (e.g. memory.RetrievalModeHybrid, memory.RetrievalModeGraph).
+	// Empty lets the provider choose its default strategy.
+	RetrievalMode memory.RetrievalMode
+
+	// IncludeGraphContext asks graph-capable providers (such as Cortex v2 in
+	// "graph" mode) to return compact entity/relationship graph context
+	// alongside retrieved documents. When returned, it is budget-trimmed,
+	// appended to the rendered context, and stored at "<OutputVar>_graph".
+	IncludeGraphContext bool
+
+	// MaxHops optionally bounds multi-hop graph traversal depth (e.g. 1 or 2)
+	// when RetrievalMode is memory.RetrievalModeGraph. Zero uses provider default.
+	MaxHops int
 
 	// QueryTemplate is a Go text/template for the retrieval query, executed
 	// with {{.input}} and {{.vars.name}}. If empty, InputVars are joined.
@@ -97,7 +115,8 @@ type MemoryNodeConfig struct {
 
 	// OutputVar receives the assembled context text in retrieve mode.
 	// Defaults to the node ID + "_memory". A "<OutputVar>_stats" variable
-	// always receives the MemoryResult for both modes.
+	// always receives the MemoryResult for both modes. When graph context is
+	// returned, "<OutputVar>_graph" receives the assembled *memory.GraphContext.
 	OutputVar string
 
 	// OmitArtifacts disables injecting retrieved documents as envelope
@@ -199,13 +218,37 @@ func (n *MemoryNode) runRetrieve(ctx context.Context, env *core.Envelope) (*core
 		return nil, err
 	}
 
+	req := memory.RetrievalQuery{
+		Scope:               scope,
+		Query:               query,
+		Limit:               n.config.Budget.MaxDocuments,
+		MaxTokens:           n.config.Budget.MaxTokens,
+		Mode:                n.config.RetrievalMode,
+		IncludeGraphContext: n.config.IncludeGraphContext,
+		MaxHops:             n.config.MaxHops,
+	}
+
 	start := time.Now()
-	docs, retrieveErr := n.config.Provider.Retrieve(ctx, memory.RetrievalQuery{
-		Scope:     scope,
-		Query:     query,
-		Limit:     n.config.Budget.MaxDocuments,
-		MaxTokens: n.config.Budget.MaxTokens,
-	})
+	var (
+		docs        []memory.Document
+		graphCtx    *memory.GraphContext
+		retrieveErr error
+	)
+	if n.config.IncludeGraphContext {
+		if gp, ok := n.config.Provider.(memory.GraphProvider); ok {
+			var gr memory.GraphResult
+			gr, retrieveErr = gp.RetrieveWithGraph(ctx, req)
+			docs = gr.Documents
+			graphCtx = gr.GraphContext
+		} else {
+			docs, retrieveErr = n.config.Provider.Retrieve(ctx, req)
+			if retrieveErr == nil {
+				graphCtx = memory.ExtractGraphContext(docs)
+			}
+		}
+	} else {
+		docs, retrieveErr = n.config.Provider.Retrieve(ctx, req)
+	}
 	latency := time.Since(start)
 
 	unavailable := false
@@ -217,9 +260,10 @@ func (n *MemoryNode) runRetrieve(ctx context.Context, env *core.Envelope) (*core
 	}
 
 	var kept []memory.Document
+	var assembledGraph *memory.GraphContext
 	var stats memory.CompactionStats
 	if !unavailable {
-		kept, stats, err = memory.Assemble(ctx, docs, n.config.Budget, n.config.Compactor, n.config.TokenCounter)
+		kept, assembledGraph, stats, err = memory.AssembleWithGraph(ctx, docs, graphCtx, n.config.Budget, n.config.Compactor, n.config.TokenCounter)
 		if err != nil {
 			return nil, fmt.Errorf("memory node %s: context assembly failed: %w", n.ID(), err)
 		}
@@ -227,11 +271,16 @@ func (n *MemoryNode) runRetrieve(ctx context.Context, env *core.Envelope) (*core
 
 	result := MemoryResult{
 		Mode:          MemoryModeRetrieve,
+		RetrievalMode: n.config.RetrievalMode,
 		Namespace:     scope.Namespace,
 		SessionID:     scope.SessionID,
 		ThreadID:      scope.ThreadID,
 		TenantID:      scope.TenantID,
 		DocumentCount: len(kept),
+	}
+	if !assembledGraph.IsEmpty() {
+		result.GraphEntityCount = len(assembledGraph.Entities)
+		result.GraphRelationshipCount = len(assembledGraph.Relationships)
 	}
 	if stats.Strategy != "" {
 		compaction := stats
@@ -240,7 +289,7 @@ func (n *MemoryNode) runRetrieve(ctx context.Context, env *core.Envelope) (*core
 		result.Truncated = stats.Truncated
 	}
 
-	contextText := memory.RenderContext(kept)
+	contextText := memory.RenderContextWithGraph(kept, assembledGraph)
 
 	emitEvent := runtime.NewEvent(runtime.EventMemoryRead, env.Trace.RunID).
 		WithNode(n.ID(), n.Kind()).
@@ -249,6 +298,14 @@ func (n *MemoryNode) runRetrieve(ctx context.Context, env *core.Envelope) (*core
 		WithPayload("query_length", len(query)).
 		WithPayload("document_count", len(kept)).
 		WithPayload("latency_ms", latency.Milliseconds())
+	if n.config.RetrievalMode != "" {
+		emitEvent = emitEvent.WithPayload("retrieval_mode", string(n.config.RetrievalMode))
+	}
+	if !assembledGraph.IsEmpty() {
+		emitEvent = emitEvent.
+			WithPayload("graph_entities", len(assembledGraph.Entities)).
+			WithPayload("graph_relationships", len(assembledGraph.Relationships))
+	}
 	if scope.ThreadID != "" {
 		emitEvent = emitEvent.WithPayload("thread_id", scope.ThreadID)
 	}
@@ -279,6 +336,9 @@ func (n *MemoryNode) runRetrieve(ctx context.Context, env *core.Envelope) (*core
 	resultEnv := env.Clone()
 	resultEnv.SetVar(n.config.OutputVar, contextText)
 	resultEnv.SetVar(n.config.OutputVar+"_stats", result)
+	if !assembledGraph.IsEmpty() {
+		resultEnv.SetVar(n.config.OutputVar+"_graph", assembledGraph)
+	}
 	if !n.config.OmitArtifacts && !unavailable {
 		for _, doc := range kept {
 			resultEnv.AppendArtifact(core.Artifact{
