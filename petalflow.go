@@ -665,6 +665,33 @@ type (
 
 	// MemoryTokenCounter estimates the token count of a text string.
 	MemoryTokenCounter = memory.TokenCounter
+
+	// MemoryRetrievalMode selects the retrieval strategy requested from a provider.
+	MemoryRetrievalMode = memory.RetrievalMode
+
+	// MemoryGraphEntity is a compact entity returned in graph retrieval context.
+	MemoryGraphEntity = memory.GraphEntity
+
+	// MemoryGraphRelationship is a compact typed relationship triple in graph context.
+	MemoryGraphRelationship = memory.GraphRelationship
+
+	// MemoryGraphContext carries the compact subgraph returned by graph retrieval.
+	MemoryGraphContext = memory.GraphContext
+
+	// MemoryGraphResult bundles retrieved documents with optional graph context.
+	MemoryGraphResult = memory.GraphResult
+
+	// MemoryGraphProvider is the optional interface for providers returning GraphContext.
+	MemoryGraphProvider = memory.GraphProvider
+)
+
+// Memory retrieval mode constants.
+const (
+	MemoryRetrievalModeDefault = memory.RetrievalModeDefault
+	MemoryRetrievalModeVector  = memory.RetrievalModeVector
+	MemoryRetrievalModeText    = memory.RetrievalModeText
+	MemoryRetrievalModeHybrid  = memory.RetrievalModeHybrid
+	MemoryRetrievalModeGraph   = memory.RetrievalModeGraph
 )
 
 // ConditionOp constants
@@ -819,12 +846,16 @@ var (
 
 // Memory package constructors
 var (
-	NewMemoryProvider     = memory.NewInMemoryProvider
-	NewTruncateCompactor  = memory.NewTruncateCompactor
-	MemoryEstimateTokens  = memory.EstimateTokens
-	MemoryRenderContext   = memory.RenderContext
-	MemoryErrUnavailable  = memory.ErrUnavailable
-	ErrInvalidMemoryScope = runtime.ErrInvalidMemoryScope
+	NewMemoryProvider            = memory.NewInMemoryProvider
+	NewTruncateCompactor         = memory.NewTruncateCompactor
+	MemoryEstimateTokens         = memory.EstimateTokens
+	MemoryRenderContext          = memory.RenderContext
+	MemoryRenderGraphContext     = memory.RenderGraphContext
+	MemoryRenderContextWithGraph = memory.RenderContextWithGraph
+	MemoryAssembleWithGraph      = memory.AssembleWithGraph
+	MemoryExtractGraphContext    = memory.ExtractGraphContext
+	MemoryErrUnavailable         = memory.ErrUnavailable
+	ErrInvalidMemoryScope        = runtime.ErrInvalidMemoryScope
 )
 
 // =============================================================================

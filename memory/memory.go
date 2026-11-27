@@ -108,6 +108,67 @@ type ContextBudget struct {
 	MaxDocuments int
 }
 
+// RetrievalMode selects the retrieval strategy requested from a Provider.
+// An empty value lets the provider choose its default strategy.
+type RetrievalMode string
+
+const (
+	// RetrievalModeDefault lets the provider pick its default retrieval strategy.
+	RetrievalModeDefault RetrievalMode = ""
+	// RetrievalModeVector selects semantic vector similarity retrieval.
+	RetrievalModeVector RetrievalMode = "vector"
+	// RetrievalModeText selects full-text lexical retrieval.
+	RetrievalModeText RetrievalMode = "text"
+	// RetrievalModeHybrid combines vector and full-text retrieval.
+	RetrievalModeHybrid RetrievalMode = "hybrid"
+	// RetrievalModeGraph selects multi-hop graph-augmented retrieval
+	// (such as Cortex v2 zero-LLM Vector-Graph RAG).
+	RetrievalModeGraph RetrievalMode = "graph"
+)
+
+// MetadataKeyGraphContext is the conventional Document.Metadata key under
+// which a plain Provider (one that does not implement GraphProvider) may
+// attach a *GraphContext or GraphContext value.
+const MetadataKeyGraphContext = "graph_context"
+
+// GraphEntity is a compact entity returned as part of graph retrieval context.
+type GraphEntity struct {
+	ID      string  `json:"id,omitempty"`
+	Name    string  `json:"name"`
+	Type    string  `json:"type,omitempty"`
+	Summary string  `json:"summary,omitempty"`
+	Score   float64 `json:"score,omitempty"`
+}
+
+// GraphRelationship is a compact typed triple connecting two entities.
+type GraphRelationship struct {
+	Source       string  `json:"source"`
+	Target       string  `json:"target"`
+	RelationType string  `json:"relation_type"`
+	Description  string  `json:"description,omitempty"`
+	Confidence   float64 `json:"confidence,omitempty"`
+	Score        float64 `json:"score,omitempty"`
+}
+
+// GraphContext carries the compact subgraph explaining how retrieved
+// documents connect across multi-hop relationships.
+type GraphContext struct {
+	Entities      []GraphEntity       `json:"entities,omitempty"`
+	Relationships []GraphRelationship `json:"relationships,omitempty"`
+}
+
+// IsEmpty reports whether the graph context contains no entities and no
+// relationships.
+func (g *GraphContext) IsEmpty() bool {
+	return g == nil || (len(g.Entities) == 0 && len(g.Relationships) == 0)
+}
+
+// GraphResult bundles retrieved documents with optional graph context.
+type GraphResult struct {
+	Documents    []Document    `json:"documents"`
+	GraphContext *GraphContext `json:"graph_context,omitempty"`
+}
+
 // RetrievalQuery describes a memory read against a Scope.
 type RetrievalQuery struct {
 	// Scope addresses the memory: namespace and session are required.
@@ -121,6 +182,15 @@ type RetrievalQuery struct {
 	// truncate or rank to fit; the caller enforces the budget again during
 	// assembly so a non-compliant provider cannot overrun.
 	MaxTokens int
+	// Mode optionally selects the backend retrieval strategy (e.g.
+	// RetrievalModeHybrid, RetrievalModeGraph). Empty uses provider default.
+	Mode RetrievalMode
+	// IncludeGraphContext asks graph-capable providers (such as Cortex v2 in
+	// "graph" mode) to include compact entity/relationship graph context.
+	IncludeGraphContext bool
+	// MaxHops optionally bounds multi-hop traversal depth (e.g. 1 or 2) when
+	// Mode is RetrievalModeGraph. Zero uses the provider default.
+	MaxHops int
 }
 
 // WriteRequest describes a memory write against a Scope.
@@ -148,4 +218,41 @@ type Provider interface {
 	// Write persists a record. Implementations should return
 	// memory.ErrUnavailable (wrapped) when the backend cannot be reached.
 	Write(ctx context.Context, req WriteRequest) error
+}
+
+// GraphProvider is an optional interface implemented by backends (such as
+// Cortex v2) that return structured GraphContext alongside retrieved
+// documents. MemoryNode uses RetrieveWithGraph automatically when
+// IncludeGraphContext is enabled, falling back to Provider.Retrieve for
+// providers that do not implement this interface.
+type GraphProvider interface {
+	Provider
+	RetrieveWithGraph(ctx context.Context, query RetrievalQuery) (GraphResult, error)
+}
+
+// ExtractGraphContext looks for a *GraphContext or GraphContext value attached
+// to retrieved documents via Metadata[MetadataKeyGraphContext]. Returns nil if
+// none is present or if it is empty.
+func ExtractGraphContext(docs []Document) *GraphContext {
+	for _, doc := range docs {
+		if doc.Metadata == nil {
+			continue
+		}
+		raw, ok := doc.Metadata[MetadataKeyGraphContext]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case *GraphContext:
+			if !v.IsEmpty() {
+				return v
+			}
+		case GraphContext:
+			cp := v
+			if !cp.IsEmpty() {
+				return &cp
+			}
+		}
+	}
+	return nil
 }
